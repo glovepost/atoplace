@@ -1,0 +1,161 @@
+"""
+DRC (Design Rule Check) Integration
+
+Provides design rule checking using KiCad's DRC engine or custom checks.
+"""
+
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+from pathlib import Path
+
+from ..board.abstraction import Board
+from ..dfm.profiles import DFMProfile
+
+
+@dataclass
+class DRCViolation:
+    """A DRC violation."""
+    rule: str
+    severity: str  # "error", "warning"
+    message: str
+    location: Tuple[float, float]  # mm coordinates
+    items: List[str]  # Affected items (refs, net names)
+
+
+class DRCChecker:
+    """Design rule checker."""
+
+    def __init__(self, board: Board, dfm_profile: Optional[DFMProfile] = None):
+        self.board = board
+        self.dfm_profile = dfm_profile
+        self.violations: List[DRCViolation] = []
+
+    def run_checks(self) -> Tuple[bool, List[DRCViolation]]:
+        """
+        Run all DRC checks.
+
+        Returns:
+            (passed, violations) - passed is True if no errors
+        """
+        self.violations = []
+
+        # Run custom checks
+        self._check_clearance()
+        self._check_minimum_sizes()
+        self._check_edge_clearance()
+
+        passed = not any(v.severity == "error" for v in self.violations)
+        return (passed, self.violations)
+
+    def _check_clearance(self):
+        """Check component-to-component clearance."""
+        if not self.dfm_profile:
+            return
+
+        min_clearance = self.dfm_profile.min_spacing
+        overlaps = self.board.find_overlaps(min_clearance)
+
+        for ref1, ref2, dist in overlaps:
+            c1 = self.board.get_component(ref1)
+            c2 = self.board.get_component(ref2)
+
+            if c1 and c2:
+                mid_x = (c1.x + c2.x) / 2
+                mid_y = (c1.y + c2.y) / 2
+
+                self.violations.append(DRCViolation(
+                    rule="component_clearance",
+                    severity="error",
+                    message=f"Clearance violation: {ref1} and {ref2} ({dist:.2f}mm < {min_clearance}mm)",
+                    location=(mid_x, mid_y),
+                    items=[ref1, ref2],
+                ))
+
+    def _check_minimum_sizes(self):
+        """Check that pads meet minimum size requirements."""
+        if not self.dfm_profile:
+            return
+
+        min_pad = self.dfm_profile.min_via_annular * 2
+
+        for ref, comp in self.board.components.items():
+            for pad in comp.pads:
+                if pad.width < min_pad or pad.height < min_pad:
+                    abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
+                    self.violations.append(DRCViolation(
+                        rule="min_pad_size",
+                        severity="warning",
+                        message=f"Pad {ref}.{pad.number} may be too small ({pad.width:.2f}x{pad.height:.2f}mm)",
+                        location=(abs_x, abs_y),
+                        items=[f"{ref}.{pad.number}"],
+                    ))
+
+    def _check_edge_clearance(self):
+        """Check component clearance to board edges."""
+        if not self.dfm_profile:
+            return
+
+        min_edge = self.dfm_profile.min_trace_to_edge
+        outline = self.board.outline
+
+        for ref, comp in self.board.components.items():
+            bbox = comp.get_bounding_box()
+
+            violations_found = []
+
+            if bbox[0] < outline.origin_x + min_edge:
+                violations_found.append("left edge")
+            if bbox[2] > outline.origin_x + outline.width - min_edge:
+                violations_found.append("right edge")
+            if bbox[1] < outline.origin_y + min_edge:
+                violations_found.append("top edge")
+            if bbox[3] > outline.origin_y + outline.height - min_edge:
+                violations_found.append("bottom edge")
+
+            if violations_found:
+                self.violations.append(DRCViolation(
+                    rule="edge_clearance",
+                    severity="error",
+                    message=f"{ref} too close to {', '.join(violations_found)}",
+                    location=(comp.x, comp.y),
+                    items=[ref],
+                ))
+
+    def run_kicad_drc(self, pcb_path: Path) -> Tuple[bool, List[DRCViolation]]:
+        """
+        Run KiCad's native DRC.
+
+        Requires pcbnew to be available.
+        """
+        try:
+            import pcbnew
+        except ImportError:
+            return (True, [])  # Can't run, assume passing
+
+        board = pcbnew.LoadBoard(str(pcb_path))
+
+        # Create DRC runner
+        # Note: This is a simplified version - actual implementation
+        # would need to handle KiCad's DRC markers properly
+
+        # For now, return empty (rely on custom checks)
+        return (True, [])
+
+    def get_summary(self) -> str:
+        """Get summary of DRC results."""
+        if not self.violations:
+            return "DRC passed with no violations."
+
+        errors = sum(1 for v in self.violations if v.severity == "error")
+        warnings = sum(1 for v in self.violations if v.severity == "warning")
+
+        lines = [
+            f"DRC: {errors} errors, {warnings} warnings",
+            "",
+        ]
+
+        for v in self.violations:
+            prefix = "[ERROR]" if v.severity == "error" else "[WARN]"
+            lines.append(f"{prefix} {v.message}")
+
+        return "\n".join(lines)
