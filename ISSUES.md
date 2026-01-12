@@ -27,6 +27,10 @@ This file tracks code review findings and risks discovered during development.
 
 (none)
 
+### Medium - RESOLVED (2026-01-12 Session 6 - Outline Handling)
+
+- ~~**False board boundary violations when outline is missing**: Boards without an explicit outline still trigger boundary errors (e.g., components flagged as outside edge). This likely comes from fallback rectangle inference and blocks outline-less flows even though placement should be allowed.~~ **FIXED**: Added `has_outline` and `auto_generated` flags to `BoardOutline`. Kicad adapter now sets `has_outline=False` when no Edge.Cuts are found. All validation modules (`confidence.py`, `drc.py`) and placement modules (`legalizer.py`, `force_directed.py`) now skip boundary/edge checks when no outline. Added `generate_outline_from_components()` method to `Board` for auto-generation. CLI has `--auto-outline` and `--outline-margin` flags. Files: `atoplace/board/abstraction.py`, `atoplace/board/kicad_adapter.py`, `atoplace/validation/confidence.py`, `atoplace/validation/drc.py`, `atoplace/placement/legalizer.py`, `atoplace/placement/force_directed.py`, `atoplace/cli.py`.
+
 ### Medium - RESOLVED (2026-01-12 Session 5 - Bug Fixes)
 
 - ~~**Placement leaves unresolved overlaps after legalization**: Running `place` on `examples/dogtracker/layouts/default/default.kicad_pcb` reports "Overlaps resolved: 53 in 50 iterations" but also warns "7 overlaps remaining" and still emits multiple CRITICAL overlap errors in validation. This suggests legalization is not guaranteed to converge or lacks a final retry when overlaps remain. Files: `atoplace/placement/legalizer.py`, `atoplace/cli.py`.~~ **FIXED**: Added retry logic with escalating displacement (`overlap_retry_passes=3`, `escalation_factor=1.5`). When overlaps persist, increases displacement and eventually allows non-Manhattan movement for stubborn cases. Also added early termination when no progress is made.

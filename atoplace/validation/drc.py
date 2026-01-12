@@ -160,12 +160,19 @@ class DRCChecker:
         - Polygon outlines (non-rectangular boards)
         - Board cutouts/holes
         - Margin enforcement for edge clearance
+
+        Skipped when board has no explicit outline defined.
         """
         if not self.dfm_profile:
             return
 
-        min_edge = self.dfm_profile.min_trace_to_edge
         outline = self.board.outline
+
+        # Skip edge clearance checks when no explicit outline is defined
+        if not outline.has_outline:
+            return
+
+        min_edge = self.dfm_profile.min_trace_to_edge
 
         for ref, comp in self.board.components.items():
             if comp.dnp:  # Skip Do Not Populate components
@@ -275,12 +282,18 @@ class DRCChecker:
         """Check through-hole pad distance to board edge.
 
         Ensures minimum hole-to-edge clearance is maintained per DFM profile.
+        Skipped when board has no explicit outline defined.
         """
         if not self.dfm_profile:
             return
 
-        min_clearance = self.dfm_profile.min_hole_to_edge
         outline = self.board.outline
+
+        # Skip hole-to-edge checks when no explicit outline is defined
+        if not outline.has_outline:
+            return
+
+        min_clearance = self.dfm_profile.min_hole_to_edge
 
         for ref, comp in self.board.components.items():
             if comp.dnp:

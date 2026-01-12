@@ -247,6 +247,9 @@ class BoardOutline:
 
     Supports both simple rectangular boards and complex polygon outlines
     with optional holes (cutouts).
+
+    When has_outline is False, boundary checks should be skipped as no
+    explicit outline was defined for the board.
     """
     # Simple rectangular board (used when polygon is None)
     width: float = 100.0  # mm
@@ -259,6 +262,13 @@ class BoardOutline:
 
     # For boards with cutouts, store hole polygons
     holes: List[List[Tuple[float, float]]] = field(default_factory=list)
+
+    # Flag indicating if an explicit outline was defined
+    # When False, boundary checks should be skipped
+    has_outline: bool = True
+
+    # Flag indicating if outline was auto-generated from component bounds
+    auto_generated: bool = False
 
     def contains_point(self, x: float, y: float, margin: float = 0.0) -> bool:
         """Check if a point is within the board outline.
@@ -667,6 +677,59 @@ class Board:
         """Load board from KiCad file."""
         from .kicad_adapter import load_kicad_board
         return load_kicad_board(path)
+
+    def generate_outline_from_components(self, margin: float = 5.0) -> BoardOutline:
+        """Generate a rectangular board outline from component positions.
+
+        Creates a bounding box around all components with the specified margin.
+        Useful for boards without an explicit Edge.Cuts outline.
+
+        Args:
+            margin: Distance (mm) to add around components on all sides
+
+        Returns:
+            New BoardOutline based on component positions
+        """
+        if not self.components:
+            # Return a minimal default outline
+            return BoardOutline(
+                width=50.0,
+                height=50.0,
+                origin_x=0.0,
+                origin_y=0.0,
+                has_outline=True,
+                auto_generated=True,
+            )
+
+        # Find bounding box of all components (including pads)
+        min_x = float('inf')
+        min_y = float('inf')
+        max_x = float('-inf')
+        max_y = float('-inf')
+
+        for comp in self.components.values():
+            if comp.dnp:  # Skip Do Not Populate components
+                continue
+            bbox = comp.get_bounding_box_with_pads()
+            min_x = min(min_x, bbox[0])
+            min_y = min(min_y, bbox[1])
+            max_x = max(max_x, bbox[2])
+            max_y = max(max_y, bbox[3])
+
+        # Add margin
+        min_x -= margin
+        min_y -= margin
+        max_x += margin
+        max_y += margin
+
+        return BoardOutline(
+            width=max_x - min_x,
+            height=max_y - min_y,
+            origin_x=min_x,
+            origin_y=min_y,
+            has_outline=True,
+            auto_generated=True,
+        )
 
     def to_kicad(self, path: Path):
         """Save board to KiCad file."""

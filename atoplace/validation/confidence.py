@@ -442,9 +442,16 @@ class ConfidenceScorer:
         - Polygon outlines (non-rectangular boards)
         - Board cutouts/holes
         - Margin enforcement for edge clearance
+
+        Skipped when board has no explicit outline defined.
         """
         flags = []
         outline = board.outline
+
+        # Skip boundary checks when no explicit outline is defined
+        if not outline.has_outline:
+            return flags
+
         margin = self.dfm_profile.min_trace_to_edge
 
         for ref, comp in board.components.items():

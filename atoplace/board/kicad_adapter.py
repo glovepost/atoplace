@@ -177,6 +177,9 @@ def _extract_outline(kicad_board) -> BoardOutline:
 
     Attempts to extract the actual polygon outline from Edge.Cuts layer,
     falling back to bounding box for simple rectangular boards.
+
+    Sets has_outline=False when no explicit Edge.Cuts outline was found,
+    indicating that boundary validation should be skipped.
     """
     # Try to extract polygon outline from Edge.Cuts drawings
     polygon, holes = _extract_polygon_outline(kicad_board)
@@ -193,6 +196,7 @@ def _extract_outline(kicad_board) -> BoardOutline:
             origin_y=min(ys),
             polygon=polygon,
             holes=holes,
+            has_outline=True,
         )
 
     # Fall back to bounding box from edge cuts
@@ -204,15 +208,18 @@ def _extract_outline(kicad_board) -> BoardOutline:
             height=pcbnew.ToMM(bbox.GetHeight()),
             origin_x=pcbnew.ToMM(bbox.GetX()),
             origin_y=pcbnew.ToMM(bbox.GetY()),
+            has_outline=True,
         )
 
-    # Fall back to component bounding box
+    # Fall back to component bounding box - no explicit outline defined
+    # Boundary checks should be skipped for this board
     bbox = kicad_board.ComputeBoundingBox()
     return BoardOutline(
         width=pcbnew.ToMM(bbox.GetWidth()),
         height=pcbnew.ToMM(bbox.GetHeight()),
         origin_x=pcbnew.ToMM(bbox.GetX()),
         origin_y=pcbnew.ToMM(bbox.GetY()),
+        has_outline=False,
     )
 
 

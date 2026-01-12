@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 _LOG_FILE_HANDLE = None
+logger = logging.getLogger(__name__)
 
 
 class _Tee(io.TextIOBase):
@@ -165,9 +166,35 @@ def cmd_place(args):
 
     if board is None:
         return 1
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Board loaded: path=%s components=%d nets=%d layers=%d atopile=%s",
+            pcb_path,
+            len(board.components),
+            len(board.nets),
+            board.layer_count,
+            is_atopile,
+        )
     print(f"  Components: {len(board.components)}")
     print(f"  Nets: {len(board.nets)}")
     print(f"  Layers: {board.layer_count}")
+
+    # Check for missing outline and handle auto-generation
+    if not board.outline.has_outline:
+        if getattr(args, 'auto_outline', False):
+            margin = getattr(args, 'outline_margin', 5.0)
+            board.outline = board.generate_outline_from_components(margin=margin)
+            print(f"  Auto-generated outline: {board.outline.width:.1f}mm x {board.outline.height:.1f}mm (margin={margin}mm)")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Auto-generated outline: width=%.3f height=%.3f margin=%.3f",
+                    board.outline.width,
+                    board.outline.height,
+                    margin,
+                )
+        else:
+            print("  Warning: No board outline defined. Boundary checks will be skipped.")
+            print("           Use --auto-outline to generate one from component positions.")
 
     # Detect modules
     print("\nDetecting functional modules...")
@@ -189,6 +216,8 @@ def cmd_place(args):
             print(f"  {mtype}: {comp_count} components")
         else:
             print(f"  {mtype}: {comp_count} components ({count} modules)")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Module detection summary: %s", module_type_counts)
 
     # Parse constraints if provided
     constraints = []
@@ -198,6 +227,12 @@ def cmd_place(args):
         parsed, summary = parser.parse_interactive(args.constraints)
         constraints = parsed
         print(summary)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Parsed constraints: count=%d descriptions=%s",
+                len(constraints),
+                [c.description for c in constraints],
+            )
 
     # Add atopile module grouping constraints if requested
     if getattr(args, 'use_ato_modules', False) and is_atopile:
@@ -223,6 +258,8 @@ def cmd_place(args):
                 )
                 constraints.append(constraint)
                 print(f"  {module_name}: {len(comp_refs)} components")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Added atopile grouping constraints: %d", len(modules_to_components))
 
     # Get DFM profile for spacing rules
     # Auto-select based on layer count if not specified
@@ -237,6 +274,8 @@ def cmd_place(args):
     else:
         dfm_profile = get_profile_for_layers(board.layer_count)
         print(f"\nAuto-selected DFM profile: {dfm_profile.name}")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("DFM profile: %s", dfm_profile.name)
 
     # Configure refinement with DFM-aware spacing
     config = RefinementConfig(
@@ -251,6 +290,15 @@ def cmd_place(args):
     if args.grid:
         config.snap_to_grid = True
         config.grid_size = args.grid
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Refinement configured: iterations=%d grid=%s snap=%s min_clearance=%.3f preferred=%.3f",
+            config.max_iterations,
+            f"{config.grid_size:.3f}mm" if config.grid_size else "none",
+            config.snap_to_grid,
+            config.min_clearance,
+            config.preferred_clearance,
+        )
 
     # Run force-directed refinement
     print("\nRunning force-directed placement refinement...")
@@ -269,6 +317,13 @@ def cmd_place(args):
         print(f"  Converged after {result.iteration} iterations")
     else:
         print(f"  Stopped after {result.iteration} iterations (max reached)")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Refinement result: converged=%s iterations=%d energy=%.3f",
+            result.converged,
+            result.iteration,
+            result.total_energy,
+        )
 
     # Run legalization pass (Manhattan aesthetics)
     if not getattr(args, 'skip_legalization', False):
@@ -281,6 +336,15 @@ def cmd_place(args):
             min_clearance=dfm_profile.min_spacing,
             row_spacing=dfm_profile.min_spacing * 1.5,  # Comfortable row spacing
         )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Legalizer configured: grid=%.3f snap_rotation=%s align_passives=%s min_clearance=%.3f row_spacing=%.3f",
+                legalize_config.primary_grid,
+                legalize_config.snap_rotation,
+                legalize_config.align_passives_only,
+                legalize_config.min_clearance,
+                legalize_config.row_spacing,
+            )
         # Pass constraints to legalizer so it respects FixedConstraints
         legalizer = PlacementLegalizer(board, legalize_config, constraints=constraints)
         legal_result = legalizer.legalize()
@@ -296,6 +360,15 @@ def cmd_place(args):
                 print(f"    - {ref1} overlaps {ref2}")
             if len(legal_result.locked_conflicts) > 5:
                 print(f"    - ... and {len(legal_result.locked_conflicts) - 5} more")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Legalizer result: snapped=%d rows=%d aligned=%d overlaps_resolved=%d final_overlaps=%d",
+                legal_result.grid_snapped,
+                legal_result.rows_formed,
+                legal_result.components_aligned,
+                legal_result.overlaps_resolved,
+                legal_result.final_overlaps,
+            )
 
     # Validate result
     print("\nValidating placement...")
@@ -616,17 +689,36 @@ Modification examples:
                 continue
 
             print("Applying constraints...")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Interactive apply: constraints=%d descriptions=%s",
+                    len(constraints),
+                    [c.description for c in constraints],
+                )
             # Use DFM-aware config with lock support
             config = RefinementConfig(
                 min_clearance=dfm_profile.min_spacing,
                 preferred_clearance=dfm_profile.min_spacing * 2,
                 lock_placed=True,  # Respect locked components in interactive mode
             )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Interactive refinement config: min_clearance=%.3f preferred=%.3f",
+                    config.min_clearance,
+                    config.preferred_clearance,
+                )
             refiner = ForceDirectedRefiner(board, config)
             for c in constraints:
                 refiner.add_constraint(c)
             result = refiner.refine()
             print(f"Refinement complete ({result.iteration} iterations)")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Interactive refinement result: converged=%s iterations=%d energy=%.3f",
+                    result.converged,
+                    result.iteration,
+                    result.total_energy,
+                )
 
             # Run legalization pass (consistent with place command)
             print("Running legalization...")
@@ -637,11 +729,25 @@ Modification examples:
                 min_clearance=dfm_profile.min_spacing,
                 row_spacing=dfm_profile.min_spacing * 1.5,
             )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Interactive legalizer config: grid=%.3f min_clearance=%.3f row_spacing=%.3f",
+                    legalize_config.primary_grid,
+                    legalize_config.min_clearance,
+                    legalize_config.row_spacing,
+                )
             legalizer = PlacementLegalizer(board, legalize_config, constraints=constraints)
             legal_result = legalizer.legalize()
             print(f"  Grid snapped: {legal_result.grid_snapped}, Aligned: {legal_result.components_aligned}")
             if legal_result.final_overlaps > 0:
                 print(f"  Warning: {legal_result.final_overlaps} overlaps remaining")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Interactive legalizer result: snapped=%d aligned=%d final_overlaps=%d",
+                    legal_result.grid_snapped,
+                    legal_result.components_aligned,
+                    legal_result.final_overlaps,
+                )
 
             scorer = ConfidenceScorer(dfm_profile)
             report = scorer.assess(board)
@@ -727,6 +833,10 @@ Examples:
     place_parser.add_argument('--dry-run', action='store_true', help="Don't save changes")
     place_parser.add_argument('--use-ato-modules', action='store_true',
                               help='Use atopile module hierarchy for grouping constraints')
+    place_parser.add_argument('--auto-outline', action='store_true',
+                              help='Auto-generate board outline from component positions when none exists')
+    place_parser.add_argument('--outline-margin', type=float, default=5.0,
+                              help='Margin (mm) for auto-generated outline (default: 5.0)')
     place_parser.add_argument('--skip-legalization', action='store_true',
                               help='Skip the legalization pass (grid snapping, alignment)')
 

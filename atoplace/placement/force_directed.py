@@ -11,6 +11,7 @@ Based on research in layout_rules_research.md:
 - Maintain modularity (analog/digital/RF separation)
 """
 
+import logging
 import math
 import numpy as np
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ from typing import Dict, List, Tuple, Optional, Set, Callable
 from enum import Enum
 
 from ..board.abstraction import Board, Component, Net
+
+logger = logging.getLogger(__name__)
 
 
 class ForceType(Enum):
@@ -117,6 +120,8 @@ class ForceDirectedRefiner:
     def add_constraint(self, constraint: 'PlacementConstraint'):
         """Add a placement constraint."""
         self.constraints.append(constraint)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Added constraint: %s", getattr(constraint, "description", constraint))
 
     def refine(self, callback: Optional[Callable[[PlacementState], None]] = None
                ) -> PlacementState:
@@ -136,9 +141,28 @@ class ForceDirectedRefiner:
         """
         # Initialize state
         state = self._initialize_state()
+        if logger.isEnabledFor(logging.DEBUG):
+            locked = sum(1 for ref in state.positions if self._is_component_locked(ref))
+            logger.debug(
+                "Force-directed refinement start: components=%d locked=%d grid=%s snap=%s",
+                len(state.positions),
+                locked,
+                f"{self.config.grid_size:.3f}mm" if self.config.grid_size else "none",
+                self.config.snap_to_grid,
+            )
+            logger.debug(
+                "Refinement config: repulsion=%.2f attraction=%.2f boundary=%.2f constraint=%.2f alignment=%.2f",
+                self.config.repulsion_strength,
+                self.config.attraction_strength,
+                self.config.boundary_strength,
+                self.config.constraint_strength,
+                self.config.alignment_strength,
+            )
 
         # Energy history for rolling average convergence detection
         energy_history: List[float] = []
+
+        log_every = 10
 
         for iteration in range(self.config.max_iterations):
             state.iteration = iteration
@@ -163,6 +187,27 @@ class ForceDirectedRefiner:
             # Optional callback for visualization/logging
             if callback:
                 callback(state)
+
+            if logger.isEnabledFor(logging.DEBUG) and iteration % log_every == 0:
+                summary = self._summarize_forces(forces)
+                logger.debug(
+                    "Iteration %d: energy=%.3f max_move=%.4f total_forces=%d avg_force=%.3f max_force=%.3f max_force_ref=%s",
+                    iteration,
+                    state.total_energy,
+                    max_movement,
+                    summary["total_count"],
+                    summary["avg_magnitude"],
+                    summary["max_magnitude"],
+                    summary["max_ref"],
+                )
+                logger.debug(
+                    "  Force counts: repulsion=%d attraction=%d boundary=%d constraint=%d alignment=%d",
+                    summary["counts"].get(ForceType.REPULSION, 0),
+                    summary["counts"].get(ForceType.ATTRACTION, 0),
+                    summary["counts"].get(ForceType.BOUNDARY, 0),
+                    summary["counts"].get(ForceType.CONSTRAINT, 0),
+                    summary["counts"].get(ForceType.ALIGNMENT, 0),
+                )
 
             # Check convergence - requires BOTH low movement AND low energy variance
             # to prevent freezing high-energy states when damping limits movement
@@ -196,6 +241,13 @@ class ForceDirectedRefiner:
 
             if converged:
                 state.converged = True
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Converged at iteration %d: max_move=%.4f energy=%.3f",
+                        iteration,
+                        max_movement,
+                        state.total_energy,
+                    )
                 break
 
         # Apply final positions to board
@@ -209,6 +261,33 @@ class ForceDirectedRefiner:
             return float('inf')
         mean = sum(values) / len(values)
         return sum((v - mean) ** 2 for v in values) / len(values)
+
+    def _summarize_forces(self, forces: Dict[str, List[Force]]) -> Dict[str, object]:
+        """Summarize forces for logging."""
+        counts: Dict[ForceType, int] = {}
+        total_magnitude = 0.0
+        total_count = 0
+        max_magnitude = 0.0
+        max_ref = ""
+
+        for ref, ref_forces in forces.items():
+            for force in ref_forces:
+                counts[force.force_type] = counts.get(force.force_type, 0) + 1
+                total_magnitude += force.magnitude
+                total_count += 1
+                if force.magnitude > max_magnitude:
+                    max_magnitude = force.magnitude
+                    max_ref = ref
+
+        avg_magnitude = total_magnitude / total_count if total_count else 0.0
+
+        return {
+            "counts": counts,
+            "total_count": total_count,
+            "avg_magnitude": avg_magnitude,
+            "max_magnitude": max_magnitude,
+            "max_ref": max_ref,
+        }
 
     def _initialize_state(self) -> PlacementState:
         """Initialize placement state from current board."""
@@ -483,8 +562,14 @@ class ForceDirectedRefiner:
 
         Forces are accumulated (+=) rather than overwritten to properly
         handle corner violations where both X and Y boundaries are exceeded.
+
+        Skipped when board has no explicit outline defined.
         """
         outline = self.board.outline
+
+        # Skip boundary forces when no explicit outline is defined
+        if not outline.has_outline:
+            return
 
         for ref, (x, y) in state.positions.items():
             # Get component dimensions (accounting for rotation)

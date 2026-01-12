@@ -15,12 +15,15 @@ Based on REQ-P-03 from PRODUCT_REQUIREMENTS.md:
 - Removes overlaps using AABB collision detection
 """
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Set
 from enum import Enum
 
 from ..board.abstraction import Board, Component
+
+logger = logging.getLogger(__name__)
 
 
 class PassiveSize(Enum):
@@ -186,6 +189,22 @@ class PlacementLegalizer:
             LegalizationResult with statistics
         """
         result = LegalizationResult()
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Legalization start: components=%d fixed=%d grid=%.3f secondary=%.3f snap_rot=%s",
+                len(self.board.components),
+                len(self._fixed_components),
+                self.config.primary_grid,
+                self.config.secondary_grid,
+                self.config.snap_rotation,
+            )
+            logger.debug(
+                "Legalizer config: row_spacing=%.3f min_clearance=%.3f align_passives_only=%s manhattan=%s",
+                self.config.row_spacing,
+                self.config.min_clearance,
+                self.config.align_passives_only,
+                self.config.manhattan_shove,
+            )
 
         # Phase 1: Grid snapping
         result.grid_snapped = self._snap_to_grid()
@@ -202,6 +221,15 @@ class PlacementLegalizer:
         result.final_overlaps = overlap_result[2]
         result.locked_conflicts = overlap_result[3]
 
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Legalization done: snapped=%d rows=%d aligned=%d overlaps_resolved=%d final_overlaps=%d",
+                result.grid_snapped,
+                result.rows_formed,
+                result.components_aligned,
+                result.overlaps_resolved,
+                result.final_overlaps,
+            )
         return result
 
     def _snap_to_grid(self) -> int:
@@ -217,13 +245,18 @@ class PlacementLegalizer:
             Number of components modified
         """
         snapped = 0
+        skipped = 0
 
         for ref, comp in self.board.components.items():
             # Skip locked or fixed-constraint components
             if self.config.skip_locked and self._is_component_fixed(ref):
+                skipped += 1
                 continue
 
             modified = False
+            old_x = comp.x
+            old_y = comp.y
+            old_rot = comp.rotation
 
             # Determine grid size based on component type
             grid = self.config.primary_grid
@@ -255,6 +288,21 @@ class PlacementLegalizer:
 
             if modified:
                 snapped += 1
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Snap %s: (%.3f, %.3f rot=%.1f) -> (%.3f, %.3f rot=%.1f) grid=%.3f",
+                        ref,
+                        old_x,
+                        old_y,
+                        old_rot,
+                        comp.x,
+                        comp.y,
+                        comp.rotation,
+                        grid,
+                    )
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Grid snapping complete: snapped=%d skipped=%d", snapped, skipped)
 
         return snapped
 
@@ -311,6 +359,8 @@ class PlacementLegalizer:
         for size, refs in passives_by_size.items():
             if len(refs) < self.config.min_row_components:
                 continue
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Row alignment: size=%s candidates=%d", size.value, len(refs))
 
             # Determine grid for this passive size
             use_fine_grid = size in FINE_PITCH_SIZES
@@ -455,6 +505,13 @@ class PlacementLegalizer:
             median_y = sorted_ys[len(sorted_ys) // 2]
             # Snap median to grid
             target_y = round(median_y / grid) * grid
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Align row: refs=%d axis=Y target=%.3f grid=%.3f",
+                    len(refs),
+                    target_y,
+                    grid,
+                )
 
             for ref in refs:
                 comp = self.board.components[ref]
@@ -470,6 +527,13 @@ class PlacementLegalizer:
             median_x = sorted_xs[len(sorted_xs) // 2]
             # Snap median to grid
             target_x = round(median_x / grid) * grid
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Align column: refs=%d axis=X target=%.3f grid=%.3f",
+                    len(refs),
+                    target_x,
+                    grid,
+                )
 
             for ref in refs:
                 comp = self.board.components[ref]
@@ -572,6 +636,13 @@ class PlacementLegalizer:
 
         for retry_pass in range(self.config.overlap_retry_passes):
             pass_resolved = 0
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Overlap pass %d: escalation=%.2f manhattan=%s",
+                    retry_pass + 1,
+                    escalation_multiplier,
+                    use_manhattan,
+                )
 
             for iteration in range(self.config.max_displacement_iterations):
                 total_iterations += 1
@@ -581,6 +652,12 @@ class PlacementLegalizer:
 
                 if not overlaps:
                     break
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Overlap iteration %d: overlaps=%d",
+                        iteration + 1,
+                        len(overlaps),
+                    )
 
                 # Sort overlaps by combined priority (resolve high-priority first)
                 overlaps.sort(key=lambda o: -(priorities[o[0]].value + priorities[o[1]].value))
@@ -640,6 +717,14 @@ class PlacementLegalizer:
         # Count remaining overlaps
         final_overlaps = len(self._find_overlaps())
 
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Overlap removal done: resolved=%d iterations=%d final=%d locked_conflicts=%d",
+                overlaps_resolved,
+                total_iterations,
+                final_overlaps,
+                len(locked_conflicts),
+            )
         return (overlaps_resolved, total_iterations, final_overlaps, locked_conflicts)
 
     def _get_component_priority(self, ref: str) -> ComponentPriority:
@@ -928,12 +1013,20 @@ class PlacementLegalizer:
         return True
 
     def _clamp_to_bounds(self, ref: str, grid: float):
-        """Clamp component position to stay within board boundaries."""
+        """Clamp component position to stay within board boundaries.
+
+        Skipped when board has no explicit outline defined.
+        """
         comp = self.board.components.get(ref)
         if not comp:
             return
 
         outline = self.board.outline
+
+        # Skip boundary clamping when no explicit outline is defined
+        if not outline.has_outline:
+            return
+
         half_w, half_h = self._component_sizes.get(ref, (comp.width / 2, comp.height / 2))
         margin = self.config.min_clearance
 
