@@ -137,19 +137,51 @@ class AtopileProjectLoader:
         """
         Build a mapping from atopile instance paths to KiCad reference designators.
 
-        The ato-lock.yaml file is keyed by instance path (e.g., 'root.voltage_div.r1')
-        and each entry contains a 'designator' field with the KiCad ref (e.g., 'R1').
+        Handles multiple lock file formats:
+        1. Root-level entries with 'designator' field: { "root.r1": { "designator": "R1" } }
+        2. Entries under 'components' key: { "components": { "R1": { "value": "10k" } } }
+        3. Entries with 'address' field: { "components": { "R1": { "address": "root.r1" } } }
         """
         if not hasattr(self, '_instance_to_ref_map') or self._instance_to_ref_map is None:
             self._instance_to_ref_map = {}
-            for instance_path, data in self.lock_data.items():
+
+            # Format 1: Root-level entries with 'designator' field
+            for key, data in self.lock_data.items():
+                if key == 'components':
+                    continue  # Handle separately below
                 if isinstance(data, dict) and 'designator' in data:
-                    self._instance_to_ref_map[instance_path] = data['designator']
+                    instance_path = key
+                    kicad_ref = data['designator']
+                    self._instance_to_ref_map[instance_path] = kicad_ref
                     # Also store short instance name for easier lookup
                     short_name = instance_path.split('.')[-1] if '.' in instance_path else instance_path
-                    # Only add short name if it doesn't conflict
                     if short_name not in self._instance_to_ref_map:
-                        self._instance_to_ref_map[short_name] = data['designator']
+                        self._instance_to_ref_map[short_name] = kicad_ref
+
+            # Format 2 & 3: Entries under 'components' key
+            components_data = self.lock_data.get('components', {})
+            if isinstance(components_data, dict):
+                for kicad_ref, comp_data in components_data.items():
+                    if not isinstance(comp_data, dict):
+                        continue
+
+                    # If there's an 'address' field, use it as the instance path
+                    if 'address' in comp_data:
+                        instance_path = comp_data['address']
+                        self._instance_to_ref_map[instance_path] = kicad_ref
+                        short_name = instance_path.split('.')[-1] if '.' in instance_path else instance_path
+                        if short_name not in self._instance_to_ref_map:
+                            self._instance_to_ref_map[short_name] = kicad_ref
+
+                    # Also map the KiCad ref to itself for direct lookups
+                    # This helps when .ato files use the ref directly
+                    if kicad_ref not in self._instance_to_ref_map:
+                        self._instance_to_ref_map[kicad_ref] = kicad_ref
+                    # Map lowercase version for case-insensitive matching
+                    kicad_ref_lower = kicad_ref.lower()
+                    if kicad_ref_lower not in self._instance_to_ref_map:
+                        self._instance_to_ref_map[kicad_ref_lower] = kicad_ref
+
         return self._instance_to_ref_map
 
     def _load_ato_yaml(self) -> AtopileProject:
@@ -590,12 +622,13 @@ class AtopileModuleParser:
         return None
 
 
-def detect_board_source(path: Path) -> Tuple[str, Path]:
+def detect_board_source(path: Path, build_name: Optional[str] = None) -> Tuple[str, Path]:
     """
     Detect whether a path is a KiCad board or atopile project.
 
     Args:
         path: Path to check
+        build_name: Optional build name for atopile projects (default: first available)
 
     Returns:
         Tuple of (source_type, resolved_path) where:
@@ -612,7 +645,17 @@ def detect_board_source(path: Path) -> Tuple[str, Path]:
     if path.is_dir():
         if (path / "ato.yaml").exists():
             loader = AtopileProjectLoader(path)
-            board_path = loader.get_board_path()
+            # Use specified build or try default, then first available
+            if build_name:
+                board_path = loader.get_board_path(build_name)
+            else:
+                builds = loader.get_build_names()
+                if "default" in builds:
+                    board_path = loader.get_board_path("default")
+                elif builds:
+                    board_path = loader.get_board_path(builds[0])
+                else:
+                    raise ValueError(f"No builds defined in ato.yaml for: {path}")
             return ("atopile", board_path)
 
         # Check for .kicad_pcb files in directory
@@ -624,7 +667,17 @@ def detect_board_source(path: Path) -> Tuple[str, Path]:
     project_root = AtopileProjectLoader.find_project_root(path)
     if project_root:
         loader = AtopileProjectLoader(project_root)
-        board_path = loader.get_board_path()
+        # Use specified build or try default, then first available
+        if build_name:
+            board_path = loader.get_board_path(build_name)
+        else:
+            builds = loader.get_build_names()
+            if "default" in builds:
+                board_path = loader.get_board_path("default")
+            elif builds:
+                board_path = loader.get_board_path(builds[0])
+            else:
+                raise ValueError(f"No builds defined in ato.yaml for: {project_root}")
         return ("atopile", board_path)
 
     raise ValueError(

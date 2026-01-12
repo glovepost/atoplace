@@ -505,7 +505,7 @@ class ConfidenceScorer:
             ))
             score *= 0.5
 
-        # Check board size
+        # Check board size - maximum
         if board.outline.width > self.dfm_profile.max_board_size:
             flags.append(DesignFlag(
                 severity=Severity.ERROR,
@@ -525,6 +525,20 @@ class ConfidenceScorer:
                 confidence=1.0,
             ))
             score *= 0.5
+
+        # Check board size - minimum
+        min_size = self.dfm_profile.min_board_size
+        if board.outline.width < min_size or board.outline.height < min_size:
+            flags.append(DesignFlag(
+                severity=Severity.WARNING,
+                category=FlagCategory.DFM,
+                location="board",
+                message=f"Board dimensions ({board.outline.width:.1f}x{board.outline.height:.1f}mm) below minimum ({min_size}mm)",
+                suggested_action=f"Increase board dimensions or verify with fab house",
+                confidence=0.9,
+                rule_source=f"DFM: {self.dfm_profile.name}",
+            ))
+            score *= 0.9
 
         return flags, score
 

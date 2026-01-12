@@ -2,6 +2,17 @@
 
 This is the AtoPlace project - an AI-powered PCB placement and routing tool.
 
+## Session Start Checklist
+
+At the start of every session:
+
+1. **Review key documents:**
+   - `docs/PRODUCT_REQUIREMENTS.md` - Functional requirements, system architecture, integration specs
+   - `docs/PRODUCT_PLAN.md` - Current development roadmap and priorities
+   - `ISSUES.md` - Active bugs, code review findings, and fix history
+
+2. **Work on resolving all open issues** in `ISSUES.md`, prioritizing High before Medium before Low
+
 ## Project Overview
 
 AtoPlace uses natural language understanding and physics-based algorithms to automate PCB layout. It integrates with KiCad and atopile.
@@ -74,3 +85,16 @@ Issues are tracked in `ISSUES.md`. When fixing issues:
 1. Work through issues in priority order (High before Medium before Low)
 2. After fixing a batch of related issues, create a git commit and push
 3. Update `ISSUES.md` to mark resolved issues with `~~strikethrough~~` and **FIXED** notes
+
+## Development Scratchpad
+
+After completing a major chunk of work, **always update `SCRATCHPAD.md`** with:
+
+1. **Session header**: Date and task summary
+2. **What was done**: Issues fixed, features implemented
+3. **Files modified/created**: Table of changes
+4. **Key algorithms/classes**: Document new classes and important logic
+5. **Current status**: Updated project phase status table
+6. **Next steps**: What should be tackled next
+
+This creates a running log of development decisions and progress that persists across sessions.

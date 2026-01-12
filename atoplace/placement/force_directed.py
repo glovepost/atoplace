@@ -104,7 +104,10 @@ class ForceDirectedRefiner:
         self.constraints: List['PlacementConstraint'] = []
 
         # Precompute connectivity for attraction forces
-        self._connectivity_matrix = self._build_connectivity_matrix()
+        # Note: Connectivity matrix built but reserved for future enhancement
+        # (pin-count weighted attraction). Currently attraction uses per-net model.
+        # Uncomment when implementing multi-net pair attraction boost:
+        # self._connectivity_matrix = self._build_connectivity_matrix()
 
         # Track component sizes for collision detection
         self._component_sizes = self._compute_component_sizes()
@@ -159,23 +162,29 @@ class ForceDirectedRefiner:
             if callback:
                 callback(state)
 
-            # Check convergence using multiple criteria
+            # Check convergence - requires BOTH low movement AND low energy variance
+            # to prevent freezing high-energy states when damping limits movement
             converged = False
+            low_movement = max_movement < self.config.min_movement
 
-            # Criterion 1: Movement-based convergence (original)
-            if max_movement < self.config.min_movement:
-                converged = True
-
-            # Criterion 2: Energy variance convergence (detects oscillation)
+            # Check energy variance when we have enough history
             if len(energy_history) >= self.config.energy_window:
                 energy_variance = self._calculate_variance(energy_history)
                 avg_energy = sum(energy_history) / len(energy_history)
 
                 # Normalize variance by average energy to make threshold meaningful
                 normalized_variance = energy_variance / (avg_energy + 1e-6)
+                low_variance = normalized_variance < self.config.energy_variance_threshold
 
-                if normalized_variance < self.config.energy_variance_threshold:
-                    converged = True
+                # Also check if energy is low (system is settled, not just oscillating)
+                low_energy = avg_energy < self.config.min_movement * 10
+
+                # Converge when movement is low AND (variance is low OR energy is low)
+                # This prevents false convergence when high forces exist but movement is damped
+                converged = low_movement and (low_variance or low_energy)
+            else:
+                # Before we have energy history, use movement + very low energy as fallback
+                converged = low_movement and state.total_energy < self.config.min_movement
 
             if converged:
                 state.converged = True
@@ -411,6 +420,9 @@ class ForceDirectedRefiner:
         for more accurate boundary detection with rectangular components.
         This allows long thin components to get closer to edges without
         false boundary violations.
+
+        Forces are accumulated (+=) rather than overwritten to properly
+        handle corner violations where both X and Y boundaries are exceeded.
         """
         outline = self.board.outline
 
@@ -424,23 +436,23 @@ class ForceDirectedRefiner:
             # Left edge - check component's left boundary
             left_bound = x - half_w - clearance
             if left_bound < outline.origin_x:
-                fx = self.config.boundary_strength * (outline.origin_x - left_bound)
+                fx += self.config.boundary_strength * (outline.origin_x - left_bound)
 
             # Right edge - check component's right boundary
             right_bound = x + half_w + clearance
             if right_bound > outline.origin_x + outline.width:
-                fx = self.config.boundary_strength * (
+                fx += self.config.boundary_strength * (
                     outline.origin_x + outline.width - right_bound)
 
             # Top edge - check component's top boundary
             top_bound = y - half_h - clearance
             if top_bound < outline.origin_y:
-                fy = self.config.boundary_strength * (outline.origin_y - top_bound)
+                fy += self.config.boundary_strength * (outline.origin_y - top_bound)
 
             # Bottom edge - check component's bottom boundary
             bottom_bound = y + half_h + clearance
             if bottom_bound > outline.origin_y + outline.height:
-                fy = self.config.boundary_strength * (
+                fy += self.config.boundary_strength * (
                     outline.origin_y + outline.height - bottom_bound)
 
             if fx != 0 or fy != 0:
@@ -548,7 +560,13 @@ class ForceDirectedRefiner:
         return total_energy
 
     def _apply_rotation_constraints(self, state: PlacementState):
-        """Apply rotation constraints to component rotations."""
+        """Apply rotation constraints to component rotations.
+
+        Respects lock_placed config: locked components don't rotate.
+        Updates component sizes after rotation changes to keep AABB accurate.
+        """
+        rotations_changed = False
+
         for constraint in self.constraints:
             # Check for FixedConstraint with rotation (from constraints.py)
             if hasattr(constraint, 'get_target_rotation'):
@@ -556,6 +574,10 @@ class ForceDirectedRefiner:
                 if target_rot is not None:
                     ref = getattr(constraint, 'component_ref', None)
                     if ref and ref in state.rotations:
+                        # Skip locked components
+                        if self._is_component_locked(ref):
+                            continue
+
                         # Gradually rotate toward target
                         current = state.rotations[ref]
                         diff = target_rot - current
@@ -567,12 +589,19 @@ class ForceDirectedRefiner:
                             diff += 360
 
                         # Apply rotation with damping
-                        state.rotations[ref] = (current + diff * 0.3) % 360
+                        new_rot = (current + diff * 0.3) % 360
+                        if abs(new_rot - current) > 0.01:
+                            state.rotations[ref] = new_rot
+                            rotations_changed = True
 
             # Also handle rotation field directly for force_directed.py constraints
             elif hasattr(constraint, 'rotation') and constraint.rotation is not None:
                 ref = getattr(constraint, 'component_ref', None)
                 if ref and ref in state.rotations:
+                    # Skip locked components
+                    if self._is_component_locked(ref):
+                        continue
+
                     target_rot = constraint.rotation
                     current = state.rotations[ref]
                     diff = target_rot - current
@@ -582,7 +611,14 @@ class ForceDirectedRefiner:
                     elif diff < -180:
                         diff += 360
 
-                    state.rotations[ref] = (current + diff * 0.3) % 360
+                    new_rot = (current + diff * 0.3) % 360
+                    if abs(new_rot - current) > 0.01:
+                        state.rotations[ref] = new_rot
+                        rotations_changed = True
+
+        # Update component sizes if any rotations changed (keeps AABB accurate)
+        if rotations_changed:
+            self._update_component_sizes(state)
 
     def _apply_to_board(self, state: PlacementState):
         """Apply final positions to the board."""
@@ -632,6 +668,29 @@ class ForceDirectedRefiner:
 
             sizes[ref] = (half_w, half_h)
         return sizes
+
+    def _update_component_sizes(self, state: PlacementState):
+        """Update component sizes based on current rotation state.
+
+        Called after rotation constraints are applied to keep AABB
+        dimensions accurate for boundary and collision detection.
+        """
+        for ref, rotation in state.rotations.items():
+            comp = self.board.components.get(ref)
+            if not comp:
+                continue
+
+            w, h = comp.width, comp.height
+            rot_rad = math.radians(rotation)
+
+            # Compute axis-aligned bounding box of rotated rectangle
+            cos_r = abs(math.cos(rot_rad))
+            sin_r = abs(math.sin(rot_rad))
+
+            half_w = (w / 2) * cos_r + (h / 2) * sin_r
+            half_h = (w / 2) * sin_r + (h / 2) * cos_r
+
+            self._component_sizes[ref] = (half_w, half_h)
 
 
 @dataclass

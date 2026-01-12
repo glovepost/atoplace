@@ -1,0 +1,737 @@
+"""
+Placement Legalizer
+
+Post-physics legalization pass that transforms "organic" force-directed
+layouts into professional "Manhattan" aesthetics.
+
+Three-phase process (from manhattan_placement_strategy.md):
+1. Grid Snapping (Quantizer) - Snap positions and rotations to grid
+2. Row Alignment (Beautifier) - Align passives using PCA and median projection
+3. Overlap Removal (Shove) - Priority-based collision resolution with MTV
+
+Based on REQ-P-03 from PRODUCT_REQUIREMENTS.md:
+- Snaps component centroids to the user grid
+- Aligns adjacent same-size components (e.g., 0402 resistors) into shared-axis rows/columns
+- Removes overlaps using AABB collision detection
+"""
+
+import math
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple, Optional, Set
+from enum import Enum
+
+from ..board.abstraction import Board, Component
+
+
+class PassiveSize(Enum):
+    """Standard passive component sizes (imperial)."""
+    SIZE_0201 = "0201"
+    SIZE_0402 = "0402"
+    SIZE_0603 = "0603"
+    SIZE_0805 = "0805"
+    SIZE_1206 = "1206"
+    SIZE_1210 = "1210"
+    SIZE_2010 = "2010"
+    SIZE_2512 = "2512"
+    UNKNOWN = "unknown"
+
+
+class ComponentPriority(Enum):
+    """Priority for overlap resolution (higher = less likely to move)."""
+    LOCKED = 100
+    LARGE_IC = 80
+    CONNECTOR = 60
+    SMALL_IC = 40
+    PASSIVE = 20
+    OTHER = 10
+
+
+# Approximate dimensions for passive sizes (mm)
+PASSIVE_DIMENSIONS = {
+    PassiveSize.SIZE_0201: (0.6, 0.3),
+    PassiveSize.SIZE_0402: (1.0, 0.5),
+    PassiveSize.SIZE_0603: (1.6, 0.8),
+    PassiveSize.SIZE_0805: (2.0, 1.25),
+    PassiveSize.SIZE_1206: (3.2, 1.6),
+    PassiveSize.SIZE_1210: (3.2, 2.5),
+    PassiveSize.SIZE_2010: (5.0, 2.5),
+    PassiveSize.SIZE_2512: (6.3, 3.2),
+}
+
+# Fine-pitch passive sizes that should use secondary grid
+FINE_PITCH_SIZES = {PassiveSize.SIZE_0201, PassiveSize.SIZE_0402}
+
+# Metric to imperial size mapping (common metric codes)
+METRIC_TO_IMPERIAL = {
+    "0603": PassiveSize.SIZE_0201,  # Metric 0603 = Imperial 0201
+    "1005": PassiveSize.SIZE_0402,  # Metric 1005 = Imperial 0402
+    "1608": PassiveSize.SIZE_0603,  # Metric 1608 = Imperial 0603
+    "2012": PassiveSize.SIZE_0805,  # Metric 2012 = Imperial 0805
+    "3216": PassiveSize.SIZE_1206,  # Metric 3216 = Imperial 1206
+    "3225": PassiveSize.SIZE_1210,  # Metric 3225 = Imperial 1210
+    "5025": PassiveSize.SIZE_2010,  # Metric 5025 = Imperial 2010
+    "6332": PassiveSize.SIZE_2512,  # Metric 6332 = Imperial 2512
+}
+
+
+@dataclass
+class LegalizerConfig:
+    """Configuration for the legalization pass."""
+    # Grid snapping (Phase 1: Quantizer)
+    primary_grid: float = 0.5  # mm - standard component placement grid
+    secondary_grid: float = 0.1  # mm - fine-pitch components (0201, 0402)
+    rotation_grid: float = 90.0  # degrees - snap rotations to this increment
+    snap_rotation: bool = True  # whether to snap rotation
+
+    # Row alignment (Phase 2: Beautifier)
+    cluster_radius: float = 10.0  # mm - max distance for clustering
+    alignment_tolerance: float = 2.0  # mm - max distance to consider for alignment
+    min_row_components: int = 2  # minimum components to form a row
+    row_spacing: float = 1.0  # mm - spacing between aligned components
+
+    # Overlap removal (Phase 3: Shove)
+    min_clearance: float = 0.25  # mm - minimum spacing between components
+    max_displacement_iterations: int = 50  # max iterations for overlap removal
+    manhattan_shove: bool = True  # constrain displacement to X/Y axes only
+
+    # Component filtering
+    align_passives_only: bool = True  # only align R/C/L components
+    skip_locked: bool = True  # don't move locked components
+
+
+@dataclass
+class LegalizationResult:
+    """Result of legalization pass."""
+    grid_snapped: int = 0  # components snapped to grid
+    rows_formed: int = 0  # alignment rows created
+    components_aligned: int = 0  # components aligned into rows
+    overlaps_resolved: int = 0  # overlap violations fixed
+    iterations_used: int = 0  # iterations for overlap removal
+    final_overlaps: int = 0  # remaining overlaps (if any)
+
+
+class PlacementLegalizer:
+    """
+    Legalizes component placement after force-directed refinement.
+
+    Transforms organic layouts into professional Manhattan aesthetics by:
+    1. Snapping components to a regular grid
+    2. Aligning same-size passives into neat rows/columns
+    3. Resolving any overlaps created by snapping/alignment
+    """
+
+    def __init__(self, board: Board, config: Optional[LegalizerConfig] = None):
+        self.board = board
+        self.config = config or LegalizerConfig()
+
+        # Cache component sizes for overlap detection
+        self._component_sizes: Dict[str, Tuple[float, float]] = {}
+        self._compute_component_sizes()
+
+    def legalize(self) -> LegalizationResult:
+        """
+        Run full legalization pass.
+
+        Returns:
+            LegalizationResult with statistics
+        """
+        result = LegalizationResult()
+
+        # Phase 1: Grid snapping
+        result.grid_snapped = self._snap_to_grid()
+
+        # Phase 2: Row alignment (passives)
+        rows_result = self._align_rows()
+        result.rows_formed = rows_result[0]
+        result.components_aligned = rows_result[1]
+
+        # Phase 3: Overlap removal
+        overlap_result = self._remove_overlaps()
+        result.overlaps_resolved = overlap_result[0]
+        result.iterations_used = overlap_result[1]
+        result.final_overlaps = overlap_result[2]
+
+        return result
+
+    def _snap_to_grid(self) -> int:
+        """
+        Phase 1: Quantizer - Snap positions and rotations to grid.
+
+        Uses grid hierarchy:
+        - Primary Grid (0.5mm): Standard for most ICs/Connectors
+        - Secondary Grid (0.1mm): Fine-pitch components (0201, 0402)
+        - Rotation Grid (90°): Standard orthogonal alignment
+
+        Returns:
+            Number of components modified
+        """
+        snapped = 0
+
+        for ref, comp in self.board.components.items():
+            if self.config.skip_locked and comp.locked:
+                continue
+
+            modified = False
+
+            # Determine grid size based on component type
+            grid = self.config.primary_grid
+            if self._is_passive(ref):
+                size = self._detect_passive_size(comp)
+                if size in FINE_PITCH_SIZES:
+                    grid = self.config.secondary_grid
+
+            # Snap position to grid
+            new_x = round(comp.x / grid) * grid
+            new_y = round(comp.y / grid) * grid
+
+            if abs(new_x - comp.x) > 0.001 or abs(new_y - comp.y) > 0.001:
+                comp.x = new_x
+                comp.y = new_y
+                modified = True
+
+            # Snap rotation to grid (typically 90°)
+            if self.config.snap_rotation:
+                rot_grid = self.config.rotation_grid
+                new_rot = round(comp.rotation / rot_grid) * rot_grid
+                new_rot = new_rot % 360  # Normalize to 0-359
+
+                if abs(new_rot - comp.rotation) > 0.1:
+                    comp.rotation = new_rot
+                    modified = True
+                    # Update component sizes cache for new rotation
+                    self._update_component_size(ref, comp)
+
+            if modified:
+                snapped += 1
+
+        return snapped
+
+    def _update_component_size(self, ref: str, comp: Component):
+        """Update cached size for a single component after rotation change."""
+        w, h = comp.width, comp.height
+        rot_rad = math.radians(comp.rotation)
+
+        cos_r = abs(math.cos(rot_rad))
+        sin_r = abs(math.sin(rot_rad))
+
+        half_w = (w / 2) * cos_r + (h / 2) * sin_r
+        half_h = (w / 2) * sin_r + (h / 2) * cos_r
+
+        self._component_sizes[ref] = (half_w, half_h)
+
+    def _align_rows(self) -> Tuple[int, int]:
+        """
+        Phase 2: Beautifier - Detect and enforce linear structures.
+
+        Uses PCA (Principal Component Analysis) to detect natural row/column
+        orientation, then projects components onto the median axis.
+
+        Returns:
+            (rows_formed, components_aligned)
+        """
+        if not self.config.align_passives_only:
+            return (0, 0)
+
+        # Group passives by size
+        passives_by_size: Dict[PassiveSize, List[str]] = {}
+
+        for ref, comp in self.board.components.items():
+            if self.config.skip_locked and comp.locked:
+                continue
+
+            # Check if this is a passive (R, C, L)
+            if not self._is_passive(ref):
+                continue
+
+            size = self._detect_passive_size(comp)
+            if size == PassiveSize.UNKNOWN:
+                continue
+
+            if size not in passives_by_size:
+                passives_by_size[size] = []
+            passives_by_size[size].append(ref)
+
+        rows_formed = 0
+        components_aligned = 0
+
+        # For each size group, find and form rows
+        for size, refs in passives_by_size.items():
+            if len(refs) < self.config.min_row_components:
+                continue
+
+            # Find clusters of nearby components within cluster_radius
+            clusters = self._find_alignment_clusters(refs)
+
+            for cluster in clusters:
+                if len(cluster) < self.config.min_row_components:
+                    continue
+
+                # Use PCA to determine row vs column, then align
+                aligned = self._align_cluster_pca(cluster)
+                if aligned > 0:
+                    rows_formed += 1
+                    components_aligned += aligned
+
+        return (rows_formed, components_aligned)
+
+    def _find_alignment_clusters(self, refs: List[str]) -> List[List[str]]:
+        """
+        Find clusters of components that should be aligned together.
+
+        Uses distance-based clustering with cluster_radius parameter.
+        Components within cluster_radius of any cluster member are added.
+        """
+        if not refs:
+            return []
+
+        clusters: List[List[str]] = []
+        assigned: Set[str] = set()
+
+        for ref in refs:
+            if ref in assigned:
+                continue
+
+            # Start new cluster with BFS expansion
+            cluster = [ref]
+            assigned.add(ref)
+            queue = [ref]
+
+            while queue:
+                current_ref = queue.pop(0)
+                current = self.board.components[current_ref]
+
+                # Find nearby unassigned components
+                for other_ref in refs:
+                    if other_ref in assigned:
+                        continue
+
+                    other = self.board.components[other_ref]
+
+                    # Check distance
+                    dx = current.x - other.x
+                    dy = current.y - other.y
+                    distance = math.sqrt(dx*dx + dy*dy)
+
+                    if distance <= self.config.cluster_radius:
+                        cluster.append(other_ref)
+                        assigned.add(other_ref)
+                        queue.append(other_ref)
+
+            if len(cluster) >= self.config.min_row_components:
+                clusters.append(cluster)
+
+        return clusters
+
+    def _align_cluster_pca(self, refs: List[str]) -> int:
+        """
+        Align a cluster using PCA to detect principal axis.
+
+        Uses Principal Component Analysis to determine if the cluster
+        forms a natural row (horizontal) or column (vertical), then
+        projects components onto the median axis.
+
+        Returns:
+            Number of components aligned
+        """
+        if len(refs) < 2:
+            return 0
+
+        # Get positions
+        positions = [(self.board.components[ref].x,
+                      self.board.components[ref].y) for ref in refs]
+        xs = [p[0] for p in positions]
+        ys = [p[1] for p in positions]
+
+        # Calculate covariance matrix for PCA
+        mean_x = sum(xs) / len(xs)
+        mean_y = sum(ys) / len(ys)
+
+        # Covariance components
+        cov_xx = sum((x - mean_x) ** 2 for x in xs) / len(xs)
+        cov_yy = sum((y - mean_y) ** 2 for y in ys) / len(ys)
+        cov_xy = sum((x - mean_x) * (y - mean_y) for x, y in positions) / len(xs)
+
+        # Calculate principal direction angle using eigenvector
+        # For 2D, the principal eigenvector direction is:
+        # angle = 0.5 * atan2(2 * cov_xy, cov_xx - cov_yy)
+        if abs(cov_xx - cov_yy) < 0.001 and abs(cov_xy) < 0.001:
+            # Degenerate case - use spread-based detection
+            x_spread = max(xs) - min(xs)
+            y_spread = max(ys) - min(ys)
+            is_horizontal = x_spread >= y_spread
+        else:
+            angle = 0.5 * math.atan2(2 * cov_xy, cov_xx - cov_yy)
+            # Convert to degrees and determine if closer to horizontal or vertical
+            angle_deg = abs(math.degrees(angle))
+            is_horizontal = angle_deg < 45
+
+        aligned = 0
+
+        if is_horizontal:
+            # Horizontal row - snap Y to MEDIAN (more robust than mean)
+            sorted_ys = sorted(ys)
+            median_y = sorted_ys[len(sorted_ys) // 2]
+            # Snap median to grid
+            target_y = round(median_y / self.config.primary_grid) * self.config.primary_grid
+
+            for ref in refs:
+                comp = self.board.components[ref]
+                if abs(comp.y - target_y) > 0.001:
+                    comp.y = target_y
+                    aligned += 1
+
+            # Re-distribute along X with proper spacing
+            self._distribute_evenly(refs, axis='x')
+        else:
+            # Vertical column - snap X to MEDIAN
+            sorted_xs = sorted(xs)
+            median_x = sorted_xs[len(sorted_xs) // 2]
+            # Snap median to grid
+            target_x = round(median_x / self.config.primary_grid) * self.config.primary_grid
+
+            for ref in refs:
+                comp = self.board.components[ref]
+                if abs(comp.x - target_x) > 0.001:
+                    comp.x = target_x
+                    aligned += 1
+
+            # Re-distribute along Y with proper spacing
+            self._distribute_evenly(refs, axis='y')
+
+        return aligned
+
+    def _distribute_evenly(self, refs: List[str], axis: str):
+        """
+        Distribute components evenly along an axis.
+
+        Maintains relative order but ensures minimum spacing.
+        Snaps positions to the primary grid.
+        """
+        if len(refs) < 2:
+            return
+
+        # Sort by position along axis
+        if axis == 'x':
+            refs_sorted = sorted(refs, key=lambda r: self.board.components[r].x)
+        else:
+            refs_sorted = sorted(refs, key=lambda r: self.board.components[r].y)
+
+        # Get component sizes for spacing calculation
+        sizes = [self._component_sizes.get(ref, (1.0, 1.0)) for ref in refs_sorted]
+
+        # Calculate minimum spacing needed
+        min_spacing = self.config.row_spacing + self.config.min_clearance
+        grid = self.config.primary_grid
+
+        # Adjust positions to ensure minimum spacing
+        for i in range(1, len(refs_sorted)):
+            prev_ref = refs_sorted[i-1]
+            curr_ref = refs_sorted[i]
+
+            prev_comp = self.board.components[prev_ref]
+            curr_comp = self.board.components[curr_ref]
+
+            prev_size = sizes[i-1]
+            curr_size = sizes[i]
+
+            if axis == 'x':
+                # Required separation
+                required_sep = prev_size[0]/2 + curr_size[0]/2 + min_spacing
+                actual_sep = curr_comp.x - prev_comp.x
+
+                if actual_sep < required_sep:
+                    # Move current component right
+                    curr_comp.x = prev_comp.x + required_sep
+                    # Snap to grid
+                    curr_comp.x = round(curr_comp.x / grid) * grid
+            else:
+                # Required separation
+                required_sep = prev_size[1]/2 + curr_size[1]/2 + min_spacing
+                actual_sep = curr_comp.y - prev_comp.y
+
+                if actual_sep < required_sep:
+                    # Move current component down
+                    curr_comp.y = prev_comp.y + required_sep
+                    # Snap to grid
+                    curr_comp.y = round(curr_comp.y / grid) * grid
+
+    def _remove_overlaps(self) -> Tuple[int, int, int]:
+        """
+        Phase 3: Shove - Remove overlaps using priority-based displacement.
+
+        Iteratively resolves collisions by pushing lower-priority components.
+        Uses Minimum Translation Vector (MTV) for efficient separation.
+
+        Priority order: Locked > Large ICs > Connectors > Small ICs > Passives
+
+        Returns:
+            (overlaps_resolved, iterations_used, final_overlaps)
+        """
+        overlaps_resolved = 0
+        iterations = 0
+
+        # Compute priorities once
+        priorities = {ref: self._get_component_priority(ref)
+                      for ref in self.board.components}
+
+        for iteration in range(self.config.max_displacement_iterations):
+            iterations = iteration + 1
+
+            # Find all overlapping pairs
+            overlaps = self._find_overlaps()
+
+            if not overlaps:
+                break
+
+            # Sort overlaps by combined priority (resolve high-priority first)
+            overlaps.sort(key=lambda o: -(priorities[o[0]].value + priorities[o[1]].value))
+
+            # Resolve each overlap
+            for ref1, ref2, overlap_x, overlap_y in overlaps:
+                if self._resolve_overlap_priority(
+                    ref1, ref2, overlap_x, overlap_y,
+                    priorities[ref1], priorities[ref2]
+                ):
+                    overlaps_resolved += 1
+
+        # Count remaining overlaps
+        final_overlaps = len(self._find_overlaps())
+
+        return (overlaps_resolved, iterations, final_overlaps)
+
+    def _get_component_priority(self, ref: str) -> ComponentPriority:
+        """Determine component priority for overlap resolution."""
+        comp = self.board.components.get(ref)
+        if not comp:
+            return ComponentPriority.OTHER
+
+        # Locked components have highest priority
+        if comp.locked:
+            return ComponentPriority.LOCKED
+
+        # Check component type from reference designator
+        first_char = ref[0].upper() if ref else ''
+
+        if first_char == 'J' or first_char == 'P':
+            return ComponentPriority.CONNECTOR
+
+        if first_char == 'U':
+            # Distinguish large ICs from small ICs by size
+            area = comp.width * comp.height
+            if area > 50:  # > 50mm² is a large IC
+                return ComponentPriority.LARGE_IC
+            return ComponentPriority.SMALL_IC
+
+        if first_char in ('R', 'C', 'L'):
+            return ComponentPriority.PASSIVE
+
+        return ComponentPriority.OTHER
+
+    def _find_overlaps(self) -> List[Tuple[str, str, float, float]]:
+        """
+        Find all overlapping component pairs.
+
+        Returns list of (ref1, ref2, overlap_x, overlap_y) tuples.
+        """
+        overlaps = []
+        refs = list(self.board.components.keys())
+
+        for i, ref1 in enumerate(refs):
+            comp1 = self.board.components[ref1]
+            half_w1, half_h1 = self._component_sizes.get(ref1, (1.0, 1.0))
+
+            for ref2 in refs[i+1:]:
+                comp2 = self.board.components[ref2]
+                half_w2, half_h2 = self._component_sizes.get(ref2, (1.0, 1.0))
+
+                # Calculate required separation
+                sep_x = half_w1 + half_w2 + self.config.min_clearance
+                sep_y = half_h1 + half_h2 + self.config.min_clearance
+
+                # Calculate actual separation
+                dx = abs(comp1.x - comp2.x)
+                dy = abs(comp1.y - comp2.y)
+
+                # Check for overlap
+                overlap_x = sep_x - dx
+                overlap_y = sep_y - dy
+
+                if overlap_x > 0 and overlap_y > 0:
+                    overlaps.append((ref1, ref2, overlap_x, overlap_y))
+
+        return overlaps
+
+    def _resolve_overlap_priority(
+        self, ref1: str, ref2: str,
+        overlap_x: float, overlap_y: float,
+        priority1: ComponentPriority, priority2: ComponentPriority
+    ) -> bool:
+        """
+        Resolve overlap using priority-based displacement.
+
+        Uses Minimum Translation Vector (MTV) approach:
+        - Choose axis with minimum overlap (smaller displacement)
+        - Move lower-priority component by MTV
+        - If equal priority, move both components
+
+        Displacement is Manhattan-constrained (X or Y only) to preserve alignment.
+
+        Returns:
+            True if overlap was resolved
+        """
+        comp1 = self.board.components[ref1]
+        comp2 = self.board.components[ref2]
+
+        # Both locked = cannot resolve
+        if priority1 == ComponentPriority.LOCKED and priority2 == ComponentPriority.LOCKED:
+            return False
+
+        # Determine direction from comp1 to comp2
+        dx = comp2.x - comp1.x
+        dy = comp2.y - comp1.y
+
+        # Calculate MTV (Minimum Translation Vector)
+        # Choose axis with smaller overlap for minimum displacement
+        if self.config.manhattan_shove:
+            if overlap_x <= overlap_y:
+                # MTV is along X axis
+                mtv_x = overlap_x + 0.01  # Small buffer
+                mtv_y = 0.0
+            else:
+                # MTV is along Y axis
+                mtv_x = 0.0
+                mtv_y = overlap_y + 0.01
+        else:
+            # Non-Manhattan: MTV along center-to-center direction
+            dist = math.sqrt(dx*dx + dy*dy) if (dx != 0 or dy != 0) else 1.0
+            mtv_mag = min(overlap_x, overlap_y) + 0.01
+            mtv_x = mtv_mag * dx / dist if dist > 0 else mtv_mag
+            mtv_y = mtv_mag * dy / dist if dist > 0 else 0
+
+        # Apply direction (MTV points from comp1 toward comp2)
+        if dx < 0:
+            mtv_x = -abs(mtv_x)
+        else:
+            mtv_x = abs(mtv_x)
+
+        if dy < 0:
+            mtv_y = -abs(mtv_y)
+        else:
+            mtv_y = abs(mtv_y)
+
+        grid = self.config.secondary_grid  # Use fine grid for overlap resolution
+
+        # Determine who moves based on priority
+        if priority1.value > priority2.value:
+            # comp1 has higher priority - move comp2 away
+            comp2.x += mtv_x
+            comp2.y += mtv_y
+            comp2.x = round(comp2.x / grid) * grid
+            comp2.y = round(comp2.y / grid) * grid
+        elif priority2.value > priority1.value:
+            # comp2 has higher priority - move comp1 away
+            comp1.x -= mtv_x
+            comp1.y -= mtv_y
+            comp1.x = round(comp1.x / grid) * grid
+            comp1.y = round(comp1.y / grid) * grid
+        else:
+            # Equal priority - move both by half MTV
+            comp1.x -= mtv_x / 2
+            comp1.y -= mtv_y / 2
+            comp2.x += mtv_x / 2
+            comp2.y += mtv_y / 2
+            comp1.x = round(comp1.x / grid) * grid
+            comp1.y = round(comp1.y / grid) * grid
+            comp2.x = round(comp2.x / grid) * grid
+            comp2.y = round(comp2.y / grid) * grid
+
+        return True
+
+    def _is_passive(self, ref: str) -> bool:
+        """Check if a component reference indicates a passive (R, C, L)."""
+        if not ref:
+            return False
+        first_char = ref[0].upper()
+        return first_char in ('R', 'C', 'L')
+
+    def _detect_passive_size(self, comp: Component) -> PassiveSize:
+        """
+        Detect passive component size from dimensions or footprint.
+
+        Supports both imperial (0402, 0603, etc.) and metric (1005, 1608, etc.) codes.
+
+        Returns PassiveSize enum value.
+        """
+        # Try to detect from footprint name
+        footprint = comp.footprint.lower() if comp.footprint else ""
+
+        # Check imperial codes first
+        for size in PassiveSize:
+            if size == PassiveSize.UNKNOWN:
+                continue
+            if size.value in footprint:
+                return size
+
+        # Check metric codes
+        for metric_code, imperial_size in METRIC_TO_IMPERIAL.items():
+            if metric_code in footprint:
+                return imperial_size
+
+        # Try to detect from dimensions
+        w, h = comp.width, comp.height
+        if w < h:
+            w, h = h, w  # Normalize to width >= height
+
+        # Match against known dimensions with tolerance
+        for size, (ref_w, ref_h) in PASSIVE_DIMENSIONS.items():
+            if abs(w - ref_w) < 0.3 and abs(h - ref_h) < 0.3:
+                return size
+
+        return PassiveSize.UNKNOWN
+
+    def _compute_component_sizes(self):
+        """Compute AABB half-dimensions for all components."""
+        for ref, comp in self.board.components.items():
+            w, h = comp.width, comp.height
+            rot_rad = math.radians(comp.rotation)
+
+            # Axis-aligned bounding box of rotated rectangle
+            cos_r = abs(math.cos(rot_rad))
+            sin_r = abs(math.sin(rot_rad))
+
+            half_w = (w / 2) * cos_r + (h / 2) * sin_r
+            half_h = (w / 2) * sin_r + (h / 2) * cos_r
+
+            self._component_sizes[ref] = (half_w, half_h)
+
+
+def legalize_placement(
+    board: Board,
+    primary_grid: float = 0.5,
+    align_passives: bool = True,
+    snap_rotation: bool = True
+) -> LegalizationResult:
+    """
+    Convenience function to legalize a board placement.
+
+    Runs the full 3-phase legalization pipeline:
+    1. Grid snapping (positions + rotations)
+    2. Row alignment (passives)
+    3. Overlap removal (priority-based)
+
+    Args:
+        board: Board to legalize
+        primary_grid: Placement grid in mm (default 0.5mm)
+        align_passives: Whether to align passive components into rows
+        snap_rotation: Whether to snap rotations to 90° increments
+
+    Returns:
+        LegalizationResult with statistics
+    """
+    config = LegalizerConfig(
+        primary_grid=primary_grid,
+        align_passives_only=align_passives,
+        snap_rotation=snap_rotation,
+    )
+    legalizer = PlacementLegalizer(board, config)
+    return legalizer.legalize()

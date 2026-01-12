@@ -100,6 +100,7 @@ def cmd_place(args):
     from .board.abstraction import Board
     from .board.kicad_adapter import save_kicad_board
     from .placement.force_directed import ForceDirectedRefiner, RefinementConfig
+    from .placement.legalizer import PlacementLegalizer, LegalizerConfig
     from .placement.module_detector import ModuleDetector
     from .nlp.constraint_parser import ConstraintParser
     from .validation.confidence import ConfidenceScorer
@@ -150,8 +151,8 @@ def cmd_place(args):
         for module_name, comp_refs in modules_to_components.items():
             if len(comp_refs) >= 2:
                 constraint = GroupingConstraint(
-                    component_refs=comp_refs,
-                    strength=0.7,  # Moderate strength for module grouping
+                    components=comp_refs,
+                    max_spread=15.0,  # 15mm max spread for module grouping
                     description=f"Group atopile module: {module_name}"
                 )
                 constraints.append(constraint)
@@ -185,6 +186,23 @@ def cmd_place(args):
         print(f"  Converged after {result.iteration} iterations")
     else:
         print(f"  Stopped after {result.iteration} iterations (max reached)")
+
+    # Run legalization pass (Manhattan aesthetics)
+    if not getattr(args, 'skip_legalization', False):
+        print("\nRunning legalization pass...")
+        legalize_config = LegalizerConfig(
+            primary_grid=args.grid if args.grid else 0.5,
+            snap_rotation=True,
+            align_passives_only=True,
+        )
+        legalizer = PlacementLegalizer(board, legalize_config)
+        legal_result = legalizer.legalize()
+
+        print(f"  Grid snapped: {legal_result.grid_snapped} components")
+        print(f"  Rows formed: {legal_result.rows_formed} ({legal_result.components_aligned} components aligned)")
+        print(f"  Overlaps resolved: {legal_result.overlaps_resolved} in {legal_result.iterations_used} iterations")
+        if legal_result.final_overlaps > 0:
+            print(f"  Warning: {legal_result.final_overlaps} overlaps remaining")
 
     # Validate result
     print("\nValidating placement...")
@@ -226,7 +244,8 @@ def cmd_validate(args):
 
     # Run pre-route validation
     print("\nRunning pre-route validation...")
-    pre_validator = PreRouteValidator(board)
+    dfm_profile = get_profile(args.dfm or "jlcpcb_standard")
+    pre_validator = PreRouteValidator(board, dfm_profile)
     can_proceed, issues = pre_validator.validate()
     print(pre_validator.get_summary())
 
@@ -395,8 +414,10 @@ Modification examples:
         parsed, summary = parser.parse_interactive(user_input)
         if parsed:
             constraints.extend(parsed)
+        # Always print summary to show warnings even if no constraints found
+        if summary and summary != "No constraints found.":
             print(summary)
-        else:
+        if not parsed:
             # Try parsing as modification
             mod = modifier.parse_modification(user_input)
             if mod:
@@ -450,6 +471,8 @@ Examples:
     place_parser.add_argument('--dry-run', action='store_true', help="Don't save changes")
     place_parser.add_argument('--use-ato-modules', action='store_true',
                               help='Use atopile module hierarchy for grouping constraints')
+    place_parser.add_argument('--skip-legalization', action='store_true',
+                              help='Skip the legalization pass (grid snapping, alignment)')
 
     # Validate command
     validate_parser = subparsers.add_parser('validate', help='Validate board placement')
