@@ -11,9 +11,58 @@ Usage:
 """
 
 import argparse
+import io
+import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+
+_LOG_FILE_HANDLE = None
+
+
+class _Tee(io.TextIOBase):
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            stream.write(data)
+        return len(data)
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+
+def _configure_logging(args) -> Path:
+    log_path = Path(args.log_file) if args.log_file else Path(args.log_dir) / (
+        f"atoplace-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(logging.DEBUG)
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    root.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.DEBUG if getattr(args, "verbose", False) else logging.INFO)
+    console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    root.addHandler(console_handler)
+
+    global _LOG_FILE_HANDLE
+    _LOG_FILE_HANDLE = log_path.open("a", encoding="utf-8")
+    sys.stdout = _Tee(sys.stdout, _LOG_FILE_HANDLE)
+    sys.stderr = _Tee(sys.stderr, _LOG_FILE_HANDLE)
+
+    return log_path
 
 
 def check_pcbnew():
@@ -125,9 +174,21 @@ def cmd_place(args):
     detector = ModuleDetector(board)
     modules = detector.detect()
 
+    # Aggregate modules by type for cleaner output
+    module_type_counts: Dict[str, int] = {}
+    module_type_components: Dict[str, int] = {}
     for module in modules:
         if module.components:
-            print(f"  {module.module_type.value}: {len(module.components)} components")
+            mtype = module.module_type.value
+            module_type_counts[mtype] = module_type_counts.get(mtype, 0) + 1
+            module_type_components[mtype] = module_type_components.get(mtype, 0) + len(module.components)
+
+    for mtype, count in sorted(module_type_counts.items()):
+        comp_count = module_type_components[mtype]
+        if count == 1:
+            print(f"  {mtype}: {comp_count} components")
+        else:
+            print(f"  {mtype}: {comp_count} components ({count} modules)")
 
     # Parse constraints if provided
     constraints = []
@@ -648,6 +709,8 @@ Examples:
     )
 
     parser.add_argument('--version', action='version', version='atoplace 0.1.0')
+    parser.add_argument('--log-file', help='Write debug logs to this file')
+    parser.add_argument('--log-dir', default='logs', help='Directory for debug logs (default: logs)')
 
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
@@ -692,6 +755,10 @@ Examples:
     if not args.command:
         parser.print_help()
         return 1
+
+    log_path = _configure_logging(args)
+    if log_path:
+        print(f"Debug log: {log_path}")
 
     # Check for pcbnew
     if not check_pcbnew():

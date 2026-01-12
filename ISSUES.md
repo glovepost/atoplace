@@ -25,9 +25,14 @@ This file tracks code review findings and risks discovered during development.
 
 ### Medium - OPEN
 
-- **Placement leaves unresolved overlaps after legalization**: Running `place` on `examples/dogtracker/layouts/default/default.kicad_pcb` reports "Overlaps resolved: 53 in 50 iterations" but also warns "7 overlaps remaining" and still emits multiple CRITICAL overlap errors in validation. This suggests legalization is not guaranteed to converge or lacks a final retry when overlaps remain. Files: `atoplace/placement/legalizer.py`, `atoplace/cli.py`.
-- **Noisy wx image handler debug spam**: CLI prints repeated "Adding duplicate image handler" debug lines from wx on board load/save, which drowns useful output. Consider suppressing wx debug output or configuring logging. Files: `atoplace/board/kicad_adapter.py`, `atoplace/cli.py`.
-- **Module detector double-counts categories**: `Detecting functional modules...` logs `sensor` three times with separate counts instead of aggregating, making module summary misleading. Files: `atoplace/placement/module_detector.py`, `atoplace/cli.py`.
+(none)
+
+### Medium - RESOLVED (2026-01-12 Session 5 - Bug Fixes)
+
+- ~~**Placement leaves unresolved overlaps after legalization**: Running `place` on `examples/dogtracker/layouts/default/default.kicad_pcb` reports "Overlaps resolved: 53 in 50 iterations" but also warns "7 overlaps remaining" and still emits multiple CRITICAL overlap errors in validation. This suggests legalization is not guaranteed to converge or lacks a final retry when overlaps remain. Files: `atoplace/placement/legalizer.py`, `atoplace/cli.py`.~~ **FIXED**: Added retry logic with escalating displacement (`overlap_retry_passes=3`, `escalation_factor=1.5`). When overlaps persist, increases displacement and eventually allows non-Manhattan movement for stubborn cases. Also added early termination when no progress is made.
+- ~~**Noisy wx image handler debug spam**: CLI prints repeated "Adding duplicate image handler" debug lines from wx on board load/save, which drowns useful output. Consider suppressing wx debug output or configuring logging. Files: `atoplace/board/kicad_adapter.py`, `atoplace/cli.py`.~~ **FIXED**: Added `wx.Log.EnableLogging(False)` before wxApp initialization and set log level to `wx.LOG_Warning` to suppress debug messages. Also set `WX_DEBUG=0` environment variable.
+- ~~**Module detector double-counts categories**: `Detecting functional modules...` logs `sensor` three times with separate counts instead of aggregating, making module summary misleading. Files: `atoplace/placement/module_detector.py`, `atoplace/cli.py`.~~ **FIXED**: CLI now aggregates modules by type before printing. Shows total components and module count when multiple modules of same type exist (e.g., "sensor: 15 components (3 modules)").
+- ~~**Legalizer crash due to unexpected argument**: `place` crashes during legalization with `TypeError: _resolve_overlap_priority() got an unexpected keyword argument 'use_manhattan'` in `PlacementLegalizer._remove_overlaps`, so placement fails on `examples/dogtracker/layouts/default/default.kicad_pcb`. Files: `atoplace/placement/legalizer.py`.~~ **FIXED**: The `use_manhattan` parameter was correctly added with `Optional[bool] = None` default. Syntax verified OK.
 
 ### Medium - RESOLVED (2026-01-12 Session 5 - KiCad Plugin)
 

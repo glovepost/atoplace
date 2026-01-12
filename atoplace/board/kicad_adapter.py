@@ -19,21 +19,34 @@ PCBNEW_AVAILABLE = False
 _wx_app = None
 
 try:
-    import pcbnew
-    PCBNEW_AVAILABLE = True
+    # Suppress wx debug messages (e.g., "Adding duplicate image handler")
+    # This must be done before importing wx or pcbnew
+    import os
+    os.environ.setdefault('WX_DEBUG', '0')
 
-    # KiCad's Python may require wxApp to be initialized before certain
-    # operations. If wx is available but no app is running, create a minimal one.
-    # This prevents "create wxApp before calling this" errors.
+    # Also try to suppress via wx.Log if available
     try:
         import wx
+        # Disable wx logging to suppress debug spam
+        wx.Log.EnableLogging(False)
+
+        # KiCad's Python may require wxApp to be initialized before certain
+        # operations. If wx is available but no app is running, create a minimal one.
+        # This prevents "create wxApp before calling this" errors.
         if not wx.App.Get():
             # Create a minimal wxApp for headless operation
             # Use redirect=False to avoid stdout/stderr redirection issues
             _wx_app = wx.App(redirect=False)
-    except (ImportError, RuntimeError, Exception):
+
+        # Re-enable logging but at a higher threshold to filter debug messages
+        wx.Log.EnableLogging(True)
+        wx.Log.SetLogLevel(wx.LOG_Warning)
+    except (ImportError, RuntimeError, AttributeError, Exception):
         # wx not available or already initialized - that's fine
         pass
+
+    import pcbnew
+    PCBNEW_AVAILABLE = True
 
 except ImportError:
     PCBNEW_AVAILABLE = False

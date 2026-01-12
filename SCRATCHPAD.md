@@ -1038,11 +1038,72 @@ Users symlink or copy `kicad_plugin/` to KiCad's plugins directory:
 
 ## Current Open Issues
 
-3 medium-priority issues remain:
-1. **Placement leaves unresolved overlaps** - Legalization doesn't always converge
-2. **Noisy wx debug spam** - "Adding duplicate image handler" messages
-3. **Module detector double-counts** - Sensor category logged multiple times
-
 ---
 
 *End of session - January 12, 2026 (Session 5 continued - KiCad Plugin)*
+
+---
+
+## Session Summary - January 12, 2026 (Session 5 continued - Bug Fixes)
+
+### Task: Fix Remaining Open Issues
+
+Resolved the 3 remaining medium-priority issues.
+
+---
+
+## Issues Fixed
+
+### 1. Legalization Overlap Convergence
+
+| Aspect | Details |
+|--------|---------|
+| **File** | `atoplace/placement/legalizer.py` |
+| **Problem** | Overlaps persisted after 50 iterations with no retry mechanism |
+| **Fix** | Added retry logic with escalating displacement. New config options: `overlap_retry_passes=3`, `escalation_factor=1.5`. On each retry pass, displacement is multiplied by escalation factor. On final retry, allows non-Manhattan movement for stubborn overlaps. Also added early termination when no progress is made. |
+
+### 2. wx Debug Spam Suppression
+
+| Aspect | Details |
+|--------|---------|
+| **File** | `atoplace/board/kicad_adapter.py` |
+| **Problem** | "Adding duplicate image handler" messages flood CLI output |
+| **Fix** | Set `WX_DEBUG=0` environment variable before importing wx. Added `wx.Log.EnableLogging(False)` before wxApp initialization, then re-enable with `wx.Log.SetLogLevel(wx.LOG_Warning)` to suppress debug messages while keeping warnings/errors. |
+
+### 3. Module Detector Aggregation
+
+| Aspect | Details |
+|--------|---------|
+| **File** | `atoplace/cli.py` |
+| **Problem** | Each IC creates its own module, so "sensor" printed 3 times separately |
+| **Fix** | CLI now aggregates modules by type before printing. Shows format like "sensor: 15 components (3 modules)" when multiple modules of same type exist. |
+
+---
+
+## Files Modified
+
+| File | Changes |
+|------|---------|
+| `atoplace/placement/legalizer.py` | Added `overlap_retry_passes`, `escalation_factor` config; retry logic with escalation in `_remove_overlaps()`; `use_manhattan` parameter to `_resolve_overlap_priority()` |
+| `atoplace/board/kicad_adapter.py` | wx debug suppression via environment variable and log level |
+| `atoplace/cli.py` | Module type aggregation in `cmd_place()` output |
+| `ISSUES.md` | All issues marked as resolved |
+
+---
+
+## Current Project Status
+
+**All tracked issues in ISSUES.md are now resolved.**
+
+| Phase | Status |
+|-------|--------|
+| 1: Placement Foundation | ✅ Complete |
+| 1+: Legalization | ✅ Complete |
+| 2A/2B: Atopile | ✅ Complete |
+| 2C: MCP Integration | ⏳ Not started |
+| 3: Routing | ⏳ Stub only |
+| 4: Production | ⏳ Stub only |
+
+---
+
+*End of session - January 12, 2026 (Session 5 continued - Bug Fixes)*

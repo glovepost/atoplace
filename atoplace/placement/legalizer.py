@@ -93,6 +93,8 @@ class LegalizerConfig:
     min_clearance: float = 0.25  # mm - minimum spacing between components
     max_displacement_iterations: int = 50  # max iterations for overlap removal
     manhattan_shove: bool = True  # constrain displacement to X/Y axes only
+    overlap_retry_passes: int = 3  # number of retry passes with escalating displacement
+    escalation_factor: float = 1.5  # multiply displacement by this factor on retry
 
     # Component filtering
     align_passives_only: bool = True  # only align R/C/L components
@@ -548,61 +550,97 @@ class PlacementLegalizer:
         Iteratively resolves collisions by pushing lower-priority components.
         Uses Minimum Translation Vector (MTV) for efficient separation.
 
+        If overlaps persist after initial pass, retries with escalating
+        displacement factors and eventually non-Manhattan movement.
+
         Priority order: Locked > Large ICs > Connectors > Small ICs > Passives
 
         Returns:
             (overlaps_resolved, iterations_used, final_overlaps, locked_conflicts)
         """
         overlaps_resolved = 0
-        iterations = 0
+        total_iterations = 0
         locked_conflicts: List[Tuple[str, str]] = []
 
         # Compute priorities once
         priorities = {ref: self._get_component_priority(ref)
                       for ref in self.board.components}
 
-        for iteration in range(self.config.max_displacement_iterations):
-            iterations = iteration + 1
+        # Track escalation state
+        escalation_multiplier = 1.0
+        use_manhattan = self.config.manhattan_shove
 
-            # Find all overlapping pairs
-            overlaps = self._find_overlaps()
+        for retry_pass in range(self.config.overlap_retry_passes):
+            pass_resolved = 0
 
-            if not overlaps:
+            for iteration in range(self.config.max_displacement_iterations):
+                total_iterations += 1
+
+                # Find all overlapping pairs
+                overlaps = self._find_overlaps()
+
+                if not overlaps:
+                    break
+
+                # Sort overlaps by combined priority (resolve high-priority first)
+                overlaps.sort(key=lambda o: -(priorities[o[0]].value + priorities[o[1]].value))
+
+                made_progress = False
+
+                # Resolve each overlap
+                for ref1, ref2, _, _ in overlaps:
+                    # Recompute current overlap values since earlier resolutions may have
+                    # changed positions, making the initial overlap values stale
+                    current_overlap = self._get_overlap_values(ref1, ref2)
+                    if current_overlap is None:
+                        # No longer overlapping after earlier resolutions
+                        continue
+
+                    overlap_x, overlap_y = current_overlap
+
+                    # Apply escalation multiplier to increase displacement on retries
+                    scaled_overlap_x = overlap_x * escalation_multiplier
+                    scaled_overlap_y = overlap_y * escalation_multiplier
+
+                    resolved = self._resolve_overlap_priority(
+                        ref1, ref2, scaled_overlap_x, scaled_overlap_y,
+                        priorities[ref1], priorities[ref2],
+                        use_manhattan=use_manhattan
+                    )
+                    if resolved:
+                        # Verify the overlap is actually resolved after displacement
+                        # (grid snapping can sometimes re-introduce overlap)
+                        if not self._check_overlap(ref1, ref2):
+                            overlaps_resolved += 1
+                            pass_resolved += 1
+                            made_progress = True
+                    elif (priorities[ref1] == ComponentPriority.LOCKED and
+                          priorities[ref2] == ComponentPriority.LOCKED):
+                        # Both components locked - record unresolvable conflict
+                        conflict = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
+                        if conflict not in locked_conflicts:
+                            locked_conflicts.append(conflict)
+
+                # If no progress was made this iteration, break early
+                if not made_progress:
+                    break
+
+            # Check if we resolved all overlaps
+            remaining = len(self._find_overlaps())
+            if remaining == 0:
                 break
 
-            # Sort overlaps by combined priority (resolve high-priority first)
-            overlaps.sort(key=lambda o: -(priorities[o[0]].value + priorities[o[1]].value))
+            # Escalate for next retry pass
+            escalation_multiplier *= self.config.escalation_factor
 
-            # Resolve each overlap
-            for ref1, ref2, _, _ in overlaps:
-                # Recompute current overlap values since earlier resolutions may have
-                # changed positions, making the initial overlap values stale
-                current_overlap = self._get_overlap_values(ref1, ref2)
-                if current_overlap is None:
-                    # No longer overlapping after earlier resolutions
-                    continue
-
-                overlap_x, overlap_y = current_overlap
-                resolved = self._resolve_overlap_priority(
-                    ref1, ref2, overlap_x, overlap_y,
-                    priorities[ref1], priorities[ref2]
-                )
-                if resolved:
-                    # Verify the overlap is actually resolved after displacement
-                    # (grid snapping can sometimes re-introduce overlap)
-                    if not self._check_overlap(ref1, ref2):
-                        overlaps_resolved += 1
-                elif (priorities[ref1] == ComponentPriority.LOCKED and
-                      priorities[ref2] == ComponentPriority.LOCKED):
-                    # Both components locked - record unresolvable conflict
-                    conflict = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
-                    if conflict not in locked_conflicts:
-                        locked_conflicts.append(conflict)
+            # On final retry, allow non-Manhattan movement for stubborn overlaps
+            if retry_pass == self.config.overlap_retry_passes - 2:
+                use_manhattan = False
 
         # Count remaining overlaps
         final_overlaps = len(self._find_overlaps())
 
-        return (overlaps_resolved, iterations, final_overlaps, locked_conflicts)
+        return (overlaps_resolved, total_iterations, final_overlaps, locked_conflicts)
 
     def _get_component_priority(self, ref: str) -> ComponentPriority:
         """Determine component priority for overlap resolution."""
@@ -772,7 +810,8 @@ class PlacementLegalizer:
     def _resolve_overlap_priority(
         self, ref1: str, ref2: str,
         overlap_x: float, overlap_y: float,
-        priority1: ComponentPriority, priority2: ComponentPriority
+        priority1: ComponentPriority, priority2: ComponentPriority,
+        use_manhattan: Optional[bool] = None
     ) -> bool:
         """
         Resolve overlap using priority-based displacement.
@@ -782,7 +821,13 @@ class PlacementLegalizer:
         - Move lower-priority component by MTV
         - If equal priority, move both components
 
-        Displacement is Manhattan-constrained (X or Y only) to preserve alignment.
+        Displacement can be Manhattan-constrained (X or Y only) or diagonal.
+
+        Args:
+            ref1, ref2: Component references
+            overlap_x, overlap_y: Overlap amounts (may be scaled for escalation)
+            priority1, priority2: Component priorities
+            use_manhattan: Override for manhattan_shove config (for escalation)
 
         Returns:
             True if overlap was resolved
@@ -798,9 +843,12 @@ class PlacementLegalizer:
         dx = comp2.x - comp1.x
         dy = comp2.y - comp1.y
 
+        # Use provided manhattan setting or fall back to config
+        manhattan = use_manhattan if use_manhattan is not None else self.config.manhattan_shove
+
         # Calculate MTV (Minimum Translation Vector)
         # Choose axis with smaller overlap for minimum displacement
-        if self.config.manhattan_shove:
+        if manhattan:
             if overlap_x <= overlap_y:
                 # MTV is along X axis
                 mtv_x = overlap_x + 0.01  # Small buffer
