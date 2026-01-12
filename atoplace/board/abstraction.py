@@ -486,19 +486,34 @@ class Board:
         Find all overlapping component pairs.
 
         Returns:
-            List of (ref1, ref2, overlap_distance) tuples
+            List of (ref1, ref2, penetration_depth) tuples where penetration_depth
+            is the minimum distance the components need to move apart to clear
+            (negative means they need to move that far to meet clearance requirement)
         """
         overlaps = []
         refs = list(self.components.keys())
 
         for i, ref1 in enumerate(refs):
             c1 = self.components[ref1]
+            bb1 = c1.get_bounding_box()
+            # Expand by clearance
+            bb1 = (bb1[0] - clearance, bb1[1] - clearance,
+                   bb1[2] + clearance, bb1[3] + clearance)
+
             for ref2 in refs[i+1:]:
                 c2 = self.components[ref2]
-                if c1.overlaps(c2, clearance):
-                    # Calculate overlap distance
-                    dist = c1.distance_to(c2)
-                    overlaps.append((ref1, ref2, dist))
+                bb2 = c2.get_bounding_box()
+
+                # Calculate overlap on each axis
+                overlap_x = min(bb1[2], bb2[2]) - max(bb1[0], bb2[0])
+                overlap_y = min(bb1[3], bb2[3]) - max(bb1[1], bb2[1])
+
+                # Both axes must overlap for a true overlap
+                if overlap_x > 0 and overlap_y > 0:
+                    # Penetration depth is the minimum of the two overlaps
+                    # (minimum translation vector magnitude)
+                    penetration = min(overlap_x, overlap_y)
+                    overlaps.append((ref1, ref2, penetration))
 
         return overlaps
 
@@ -530,6 +545,9 @@ class Board:
 
     def get_stats(self) -> Dict:
         """Get board statistics."""
+        # Calculate area properly for polygon outlines
+        board_area = self._calculate_board_area()
+
         return {
             "component_count": len(self.components),
             "net_count": len(self.nets),
@@ -537,8 +555,41 @@ class Board:
             "layer_count": self.layer_count,
             "board_width": self.outline.width,
             "board_height": self.outline.height,
-            "board_area": self.outline.width * self.outline.height,
+            "board_area": board_area,
         }
+
+    def _calculate_board_area(self) -> float:
+        """Calculate actual board area, accounting for polygon outlines and holes.
+
+        Uses the shoelace formula for polygon area calculation.
+        Returns area in mm².
+        """
+        if self.outline.polygon:
+            # Calculate polygon area using shoelace formula
+            area = self._polygon_area(self.outline.polygon)
+
+            # Subtract hole areas
+            for hole in self.outline.holes:
+                area -= self._polygon_area(hole)
+
+            return abs(area)
+
+        # Fall back to rectangular area
+        return self.outline.width * self.outline.height
+
+    def _polygon_area(self, polygon: List[Tuple[float, float]]) -> float:
+        """Calculate area of polygon using shoelace formula."""
+        n = len(polygon)
+        if n < 3:
+            return 0.0
+
+        area = 0.0
+        for i in range(n):
+            j = (i + 1) % n
+            area += polygon[i][0] * polygon[j][1]
+            area -= polygon[j][0] * polygon[i][1]
+
+        return abs(area) / 2.0
 
     # --- I/O Methods (to be implemented by subclasses or adapters) ---
 

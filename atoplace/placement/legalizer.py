@@ -261,6 +261,9 @@ class PlacementLegalizer:
             if len(refs) < self.config.min_row_components:
                 continue
 
+            # Determine grid for this passive size
+            use_fine_grid = size in FINE_PITCH_SIZES
+
             # Find clusters of nearby components within cluster_radius
             clusters = self._find_alignment_clusters(refs)
 
@@ -269,7 +272,7 @@ class PlacementLegalizer:
                     continue
 
                 # Use PCA to determine row vs column, then align
-                aligned = self._align_cluster_pca(cluster)
+                aligned = self._align_cluster_pca(cluster, use_fine_grid)
                 if aligned > 0:
                     rows_formed += 1
                     components_aligned += aligned
@@ -324,13 +327,20 @@ class PlacementLegalizer:
 
         return clusters
 
-    def _align_cluster_pca(self, refs: List[str]) -> int:
+    def _align_cluster_pca(self, refs: List[str], use_fine_grid: bool = False) -> int:
         """
         Align a cluster using PCA to detect principal axis.
 
         Uses Principal Component Analysis to determine if the cluster
         forms a natural row (horizontal) or column (vertical), then
         projects components onto the median axis.
+
+        Only aligns components if they are within alignment_tolerance of
+        being collinear to avoid forcing alignment on scattered components.
+
+        Args:
+            refs: List of component references to align
+            use_fine_grid: If True, use secondary_grid for fine-pitch passives
 
         Returns:
             Number of components aligned
@@ -367,14 +377,33 @@ class PlacementLegalizer:
             angle_deg = abs(math.degrees(angle))
             is_horizontal = angle_deg < 45
 
+        # Check alignment_tolerance: verify components are close to collinear
+        # by checking the spread perpendicular to the principal axis
+        tolerance = self.config.alignment_tolerance
+        if is_horizontal:
+            # For horizontal alignment, check y-spread (perpendicular to row)
+            y_spread = max(ys) - min(ys)
+            if y_spread > tolerance:
+                # Components are too scattered vertically to align into a row
+                return 0
+        else:
+            # For vertical alignment, check x-spread (perpendicular to column)
+            x_spread = max(xs) - min(xs)
+            if x_spread > tolerance:
+                # Components are too scattered horizontally to align into a column
+                return 0
+
         aligned = 0
+
+        # Select appropriate grid based on passive size
+        grid = self.config.secondary_grid if use_fine_grid else self.config.primary_grid
 
         if is_horizontal:
             # Horizontal row - snap Y to MEDIAN (more robust than mean)
             sorted_ys = sorted(ys)
             median_y = sorted_ys[len(sorted_ys) // 2]
             # Snap median to grid
-            target_y = round(median_y / self.config.primary_grid) * self.config.primary_grid
+            target_y = round(median_y / grid) * grid
 
             for ref in refs:
                 comp = self.board.components[ref]
@@ -383,13 +412,13 @@ class PlacementLegalizer:
                     aligned += 1
 
             # Re-distribute along X with proper spacing
-            self._distribute_evenly(refs, axis='x')
+            self._distribute_evenly(refs, axis='x', use_fine_grid=use_fine_grid)
         else:
             # Vertical column - snap X to MEDIAN
             sorted_xs = sorted(xs)
             median_x = sorted_xs[len(sorted_xs) // 2]
             # Snap median to grid
-            target_x = round(median_x / self.config.primary_grid) * self.config.primary_grid
+            target_x = round(median_x / grid) * grid
 
             for ref in refs:
                 comp = self.board.components[ref]
@@ -398,16 +427,21 @@ class PlacementLegalizer:
                     aligned += 1
 
             # Re-distribute along Y with proper spacing
-            self._distribute_evenly(refs, axis='y')
+            self._distribute_evenly(refs, axis='y', use_fine_grid=use_fine_grid)
 
         return aligned
 
-    def _distribute_evenly(self, refs: List[str], axis: str):
+    def _distribute_evenly(self, refs: List[str], axis: str, use_fine_grid: bool = False):
         """
         Distribute components evenly along an axis.
 
         Maintains relative order but ensures minimum spacing.
-        Snaps positions to the primary grid.
+        Snaps positions to the appropriate grid based on component type.
+
+        Args:
+            refs: List of component references
+            axis: 'x' or 'y' axis for distribution
+            use_fine_grid: If True, use secondary_grid for fine-pitch passives
         """
         if len(refs) < 2:
             return
@@ -423,7 +457,8 @@ class PlacementLegalizer:
 
         # Calculate minimum spacing needed
         min_spacing = self.config.row_spacing + self.config.min_clearance
-        grid = self.config.primary_grid
+        # Use appropriate grid for fine-pitch passives
+        grid = self.config.secondary_grid if use_fine_grid else self.config.primary_grid
 
         # Adjust positions to ensure minimum spacing
         for i in range(1, len(refs_sorted)):
@@ -490,13 +525,24 @@ class PlacementLegalizer:
             overlaps.sort(key=lambda o: -(priorities[o[0]].value + priorities[o[1]].value))
 
             # Resolve each overlap
-            for ref1, ref2, overlap_x, overlap_y in overlaps:
+            for ref1, ref2, _, _ in overlaps:
+                # Recompute current overlap values since earlier resolutions may have
+                # changed positions, making the initial overlap values stale
+                current_overlap = self._get_overlap_values(ref1, ref2)
+                if current_overlap is None:
+                    # No longer overlapping after earlier resolutions
+                    continue
+
+                overlap_x, overlap_y = current_overlap
                 resolved = self._resolve_overlap_priority(
                     ref1, ref2, overlap_x, overlap_y,
                     priorities[ref1], priorities[ref2]
                 )
                 if resolved:
-                    overlaps_resolved += 1
+                    # Verify the overlap is actually resolved after displacement
+                    # (grid snapping can sometimes re-introduce overlap)
+                    if not self._check_overlap(ref1, ref2):
+                        overlaps_resolved += 1
                 elif (priorities[ref1] == ComponentPriority.LOCKED and
                       priorities[ref2] == ComponentPriority.LOCKED):
                     # Both components locked - record unresolvable conflict
@@ -536,6 +582,47 @@ class PlacementLegalizer:
             return ComponentPriority.PASSIVE
 
         return ComponentPriority.OTHER
+
+    def _check_overlap(self, ref1: str, ref2: str) -> bool:
+        """
+        Check if two specific components overlap.
+
+        Returns:
+            True if the components overlap, False otherwise
+        """
+        return self._get_overlap_values(ref1, ref2) is not None
+
+    def _get_overlap_values(self, ref1: str, ref2: str) -> Optional[Tuple[float, float]]:
+        """
+        Get current overlap values for two specific components.
+
+        Returns:
+            Tuple of (overlap_x, overlap_y) if overlapping, None if not overlapping
+        """
+        comp1 = self.board.components.get(ref1)
+        comp2 = self.board.components.get(ref2)
+        if not comp1 or not comp2:
+            return None
+
+        half_w1, half_h1 = self._component_sizes.get(ref1, (1.0, 1.0))
+        half_w2, half_h2 = self._component_sizes.get(ref2, (1.0, 1.0))
+
+        # Calculate required separation
+        sep_x = half_w1 + half_w2 + self.config.min_clearance
+        sep_y = half_h1 + half_h2 + self.config.min_clearance
+
+        # Calculate actual separation
+        dx = abs(comp1.x - comp2.x)
+        dy = abs(comp1.y - comp2.y)
+
+        # Calculate overlap amounts
+        overlap_x = sep_x - dx
+        overlap_y = sep_y - dy
+
+        # Check for overlap (both axes must overlap)
+        if overlap_x > 0 and overlap_y > 0:
+            return (overlap_x, overlap_y)
+        return None
 
     def _find_overlaps(self) -> List[Tuple[str, str, float, float]]:
         """

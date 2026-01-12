@@ -480,9 +480,15 @@ def _estimate_unrotated_dimensions(fp, bbox_width: float, bbox_height: float,
 
         if min_x != float('inf'):
             # Add margin for component body beyond pads
-            margin = 0.5  # mm typical component body margin
-            width = (max_x - min_x) + margin
-            height = (max_y - min_y) + margin
+            # Use a proportional margin based on component size rather than fixed 0.5mm
+            # This avoids over-inflating small components while still accounting for
+            # component body extending beyond pad area on larger parts
+            pad_width = max_x - min_x
+            pad_height = max_y - min_y
+            # 10% margin, minimum 0.1mm, maximum 0.5mm per side
+            margin = max(0.1, min(0.5, max(pad_width, pad_height) * 0.1))
+            width = pad_width + margin
+            height = pad_height + margin
             return (width, height)
 
     # Fallback: use bbox dimensions directly (may be slightly inflated for rotated parts)

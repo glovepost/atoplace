@@ -104,7 +104,7 @@ def cmd_place(args):
     from .placement.module_detector import ModuleDetector
     from .nlp.constraint_parser import ConstraintParser
     from .validation.confidence import ConfidenceScorer
-    from .dfm.profiles import get_profile
+    from .dfm.profiles import get_profile, get_profile_for_layers
 
     # Load board with auto-detection
     build_name = getattr(args, 'build', None)
@@ -114,6 +114,7 @@ def cmd_place(args):
         return 1
     print(f"  Components: {len(board.components)}")
     print(f"  Nets: {len(board.nets)}")
+    print(f"  Layers: {board.layer_count}")
 
     # Detect modules
     print("\nDetecting functional modules...")
@@ -159,7 +160,12 @@ def cmd_place(args):
                 print(f"  {module_name}: {len(comp_refs)} components")
 
     # Get DFM profile for spacing rules
-    dfm_profile = get_profile(args.dfm or "jlcpcb_standard")
+    # Auto-select based on layer count if not specified
+    if args.dfm:
+        dfm_profile = get_profile(args.dfm)
+    else:
+        dfm_profile = get_profile_for_layers(board.layer_count)
+        print(f"\nAuto-selected DFM profile: {dfm_profile.name}")
 
     # Configure refinement with DFM-aware spacing
     config = RefinementConfig(
@@ -246,7 +252,7 @@ def cmd_validate(args):
     from .validation.confidence import ConfidenceScorer
     from .validation.pre_route import PreRouteValidator
     from .validation.drc import DRCChecker
-    from .dfm.profiles import get_profile
+    from .dfm.profiles import get_profile, get_profile_for_layers
 
     # Load board with auto-detection
     build_name = getattr(args, 'build', None)
@@ -255,16 +261,21 @@ def cmd_validate(args):
     if board is None:
         return 1
 
+    # Auto-select DFM profile based on layer count if not specified
+    if args.dfm:
+        dfm_profile = get_profile(args.dfm)
+    else:
+        dfm_profile = get_profile_for_layers(board.layer_count)
+        print(f"Auto-selected DFM profile: {dfm_profile.name}")
+
     # Run pre-route validation
     print("\nRunning pre-route validation...")
-    dfm_profile = get_profile(args.dfm or "jlcpcb_standard")
     pre_validator = PreRouteValidator(board, dfm_profile)
     can_proceed, issues = pre_validator.validate()
     print(pre_validator.get_summary())
 
     # Run DRC
     print("\nRunning DRC checks...")
-    dfm_profile = get_profile(args.dfm or "jlcpcb_standard")
     drc = DRCChecker(board, dfm_profile)
     passed, violations = drc.run_checks()
     print(drc.get_summary())
@@ -290,7 +301,7 @@ def cmd_report(args):
     """Generate detailed report for a board."""
     from .placement.module_detector import ModuleDetector
     from .validation.confidence import ConfidenceScorer
-    from .dfm.profiles import get_profile
+    from .dfm.profiles import get_profile, get_profile_for_layers
 
     # Load board with auto-detection
     build_name = getattr(args, 'build', None)
@@ -303,8 +314,12 @@ def cmd_report(args):
     detector = ModuleDetector(board)
     modules = detector.detect()
 
-    # Generate report
-    dfm_profile = get_profile(args.dfm or "jlcpcb_standard")
+    # Auto-select DFM profile based on layer count if not specified
+    if args.dfm:
+        dfm_profile = get_profile(args.dfm)
+    else:
+        dfm_profile = get_profile_for_layers(board.layer_count)
+
     scorer = ConfidenceScorer(dfm_profile)
     report = scorer.assess(board)
 
@@ -320,7 +335,7 @@ def cmd_interactive(args):
     from .nlp.constraint_parser import ConstraintParser, ModificationHandler
     from .placement.force_directed import ForceDirectedRefiner
     from .validation.confidence import ConfidenceScorer
-    from .dfm.profiles import get_profile
+    from .dfm.profiles import get_profile, get_profile_for_layers
 
     # Load board with auto-detection
     build_name = getattr(args, 'build', None)
@@ -331,7 +346,12 @@ def cmd_interactive(args):
 
     parser = ConstraintParser(board)
     modifier = ModificationHandler(board)
-    dfm_profile = get_profile(args.dfm or "jlcpcb_standard")
+
+    # Auto-select DFM profile based on layer count if not specified
+    if args.dfm:
+        dfm_profile = get_profile(args.dfm)
+    else:
+        dfm_profile = get_profile_for_layers(board.layer_count)
 
     print(f"Components: {len(board.components)}")
     print(f"Enter constraints or modifications. Type 'help' for commands, 'quit' to exit.")
