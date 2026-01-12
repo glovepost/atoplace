@@ -750,3 +750,79 @@ These are primarily feature completeness issues rather than bugs.
 ---
 
 *End of session - January 12, 2026 (Session 3)*
+
+---
+
+## Session Summary - January 12, 2026 (Session 4)
+
+### Task: Continue Fixing Open Medium-Priority Issues
+
+Continued working through validation and board abstraction issues.
+
+---
+
+## Issues Fixed This Session
+
+### Net Class and Board Rules (2 fixes)
+
+| Issue | Fix Applied |
+|-------|-------------|
+| Net Class Rules Not Extracted | `_extract_net()` now calls `net_item.GetNetClass()` to populate `net_class`, `trace_width`, and `clearance` fields from KiCad's net class definitions. |
+| Board Design Rules Ignored | `DRCChecker._check_clearance()` now uses max of board's `default_clearance` and DFM `min_spacing`. Reports which rule set (board vs DFM) triggered the violation. |
+
+### Pad-Accurate Overlap Detection (2 fixes)
+
+| Issue | Fix Applied |
+|-------|-------------|
+| Component Overlap Uses Body AABB Only | Added `Component.get_bounding_box_with_pads()` that computes union of body bbox and all pad bboxes. Added `include_pads` parameter to `overlaps()` method. |
+| DRC Clearance Is Component AABB Only | `Board.find_overlaps()` now supports `include_pads=True`. DRC `_check_clearance()` uses pad-inclusive bounding boxes for accurate clearance checking. |
+
+---
+
+## Files Modified
+
+| File | Changes |
+|------|---------|
+| `atoplace/board/kicad_adapter.py` | Net class extraction in `_extract_net()` |
+| `atoplace/board/abstraction.py` | `get_bounding_box_with_pads()`, `include_pads` param |
+| `atoplace/validation/drc.py` | Board design rules, pad-inclusive overlap detection |
+| `ISSUES.md` | Marked 4 issues as resolved |
+
+---
+
+## Commits Made
+
+1. `f601dc6` - Extract net class rules and use board design rules in validation
+2. `74ecab0` - Add pad-inclusive bounding boxes for accurate overlap detection
+
+---
+
+## Remaining Open Issues
+
+Only 4 open medium-priority issues remain:
+
+1. **Legalizer R-Tree** - O(N²) performance optimization (nice-to-have)
+2. **DFM Rules Mostly Unused** - Feature completeness (trace width, via-to-via, etc.)
+3. **KiCad CLI Crash (wxApp Missing)** - KiCad compatibility issue
+4. **KiCad Net Name Type Mismatch** - KiCad wxString compatibility
+
+---
+
+## Session Summary
+
+This session fixed 16+ issues across two sessions:
+
+**Session 3:**
+- 8 CLI improvements (error handling, exit codes, legalization)
+- 2 polygon outline validation fixes
+- 2 documentation accuracy fixes
+
+**Session 4:**
+- 2 net class and board design rule fixes
+- 2 pad-accurate overlap detection fixes
+
+The project is now in excellent shape with comprehensive validation coverage.
+
+---
+
+*End of session - January 12, 2026 (Session 4)*
