@@ -15,9 +15,26 @@ from .abstraction import Board, Component, Net, Pad, Layer, BoardOutline
 
 
 # Try to import pcbnew - may not be available in all environments
+PCBNEW_AVAILABLE = False
+_wx_app = None
+
 try:
     import pcbnew
     PCBNEW_AVAILABLE = True
+
+    # KiCad's Python may require wxApp to be initialized before certain
+    # operations. If wx is available but no app is running, create a minimal one.
+    # This prevents "create wxApp before calling this" errors.
+    try:
+        import wx
+        if not wx.App.Get():
+            # Create a minimal wxApp for headless operation
+            # Use redirect=False to avoid stdout/stderr redirection issues
+            _wx_app = wx.App(redirect=False)
+    except (ImportError, RuntimeError, Exception):
+        # wx not available or already initialized - that's fine
+        pass
+
 except ImportError:
     PCBNEW_AVAILABLE = False
 
@@ -603,10 +620,20 @@ def _pad_to_pad(kicad_pad, fp_pos, fp_rotation: float) -> Pad:
     )
 
 
-def _extract_net(net_name: str, net_item, kicad_board) -> Net:
-    """Extract net information including net class rules."""
+def _extract_net(net_name, net_item, kicad_board) -> Net:
+    """Extract net information including net class rules.
+
+    Args:
+        net_name: Net name (may be str or KiCad wxString)
+        net_item: KiCad net item object
+        kicad_board: KiCad board object
+    """
+    # Convert net_name to Python str to handle KiCad's wxString type
+    # wxString doesn't have .upper() method, so we need to ensure it's a str
+    net_name_str = str(net_name)
+
     net = Net(
-        name=net_name,
+        name=net_name_str,
         code=net_item.GetNetCode(),
     )
 
@@ -616,7 +643,7 @@ def _extract_net(net_name: str, net_item, kicad_board) -> Net:
         # Get the net class for this net
         net_class = net_item.GetNetClass()
         if net_class:
-            net.net_class = net_class.GetName()
+            net.net_class = str(net_class.GetName())
             # Extract trace width and clearance from net class
             net.trace_width = pcbnew.ToMM(net_class.GetTrackWidth())
             net.clearance = pcbnew.ToMM(net_class.GetClearance())
@@ -628,7 +655,7 @@ def _extract_net(net_name: str, net_item, kicad_board) -> Net:
         net.clearance = pcbnew.ToMM(ds.GetSmallestClearanceValue())
 
     # Determine if power/ground net
-    name_upper = net_name.upper()
+    name_upper = net_name_str.upper()
     if any(pwr in name_upper for pwr in ['VCC', 'VDD', 'V3V3', 'V5V', '3V3', '5V', 'VBAT', 'VIN']):
         net.is_power = True
     if any(gnd in name_upper for gnd in ['GND', 'VSS', 'GROUND', 'AGND', 'DGND']):
@@ -638,23 +665,25 @@ def _extract_net(net_name: str, net_item, kicad_board) -> Net:
     # Positive nets
     if name_upper.endswith('+'):
         net.is_differential = True
-        net.diff_pair_net = net_name[:-1] + '-'
+        net.diff_pair_net = net_name_str[:-1] + '-'
     elif name_upper.endswith('_P'):
         net.is_differential = True
-        net.diff_pair_net = net_name[:-2] + '_N'
+        net.diff_pair_net = net_name_str[:-2] + '_N'
     # Negative nets - also mark these as differential
     elif name_upper.endswith('-'):
         net.is_differential = True
-        net.diff_pair_net = net_name[:-1] + '+'
+        net.diff_pair_net = net_name_str[:-1] + '+'
     elif name_upper.endswith('_N'):
         net.is_differential = True
-        net.diff_pair_net = net_name[:-2] + '_P'
+        net.diff_pair_net = net_name_str[:-2] + '_P'
 
     # Find all pads connected to this net
     for fp in kicad_board.GetFootprints():
-        ref = fp.GetReference()
+        ref = str(fp.GetReference())
         for pad in fp.Pads():
-            if pad.GetNetname() == net_name:
+            # Convert pad net name to str for comparison
+            pad_net = str(pad.GetNetname())
+            if pad_net == net_name_str:
                 net.add_connection(ref, pad.GetNumber())
 
     return net

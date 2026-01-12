@@ -5,7 +5,7 @@ Provides design rule checking using KiCad's DRC engine or custom checks.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
 from ..board.abstraction import Board
@@ -43,6 +43,9 @@ class DRCChecker:
         self._check_clearance()
         self._check_minimum_sizes()
         self._check_edge_clearance()
+        self._check_hole_to_hole()
+        self._check_hole_to_edge()
+        self._check_silk_to_pad()
 
         passed = not any(v.severity == "error" for v in self.violations)
         return (passed, self.violations)
@@ -190,6 +193,141 @@ class DRCChecker:
                     location=(comp.x, comp.y),
                     items=[ref],
                 ))
+
+    def _check_hole_to_hole(self):
+        """Check spacing between through-hole pads.
+
+        Ensures minimum hole-to-hole spacing is maintained per DFM profile.
+        Uses spatial indexing for efficiency.
+        """
+        if not self.dfm_profile:
+            return
+
+        min_spacing = self.dfm_profile.min_hole_to_hole
+
+        # Collect all through-hole pads with their positions
+        # (ref, pad_num, abs_x, abs_y, drill_diameter)
+        holes: List[Tuple[str, str, float, float, float]] = []
+
+        for ref, comp in self.board.components.items():
+            if comp.dnp:
+                continue
+            for pad in comp.pads:
+                if pad.drill and pad.drill > 0:
+                    abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
+                    holes.append((ref, pad.number, abs_x, abs_y, pad.drill))
+
+        if len(holes) < 2:
+            return
+
+        # Build spatial index for hole checking
+        grid_size = max(1.0, min_spacing * 2)
+        hole_grid: Dict[Tuple[int, int], List[int]] = {}
+
+        for idx, (_, _, x, y, _) in enumerate(holes):
+            cell_x = int(x / grid_size)
+            cell_y = int(y / grid_size)
+            # Add to current and adjacent cells
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    key = (cell_x + dx, cell_y + dy)
+                    if key not in hole_grid:
+                        hole_grid[key] = []
+                    hole_grid[key].append(idx)
+
+        # Check pairs using spatial index
+        checked: set = set()
+
+        for cell_indices in hole_grid.values():
+            if len(cell_indices) < 2:
+                continue
+
+            for i, idx1 in enumerate(cell_indices):
+                for idx2 in cell_indices[i+1:]:
+                    pair_key = (min(idx1, idx2), max(idx1, idx2))
+                    if pair_key in checked:
+                        continue
+                    checked.add(pair_key)
+
+                    ref1, num1, x1, y1, d1 = holes[idx1]
+                    ref2, num2, x2, y2, d2 = holes[idx2]
+
+                    # Skip pads on the same component
+                    if ref1 == ref2:
+                        continue
+
+                    # Calculate edge-to-edge distance
+                    center_dist = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+                    edge_dist = center_dist - (d1 / 2) - (d2 / 2)
+
+                    if edge_dist < min_spacing:
+                        mid_x = (x1 + x2) / 2
+                        mid_y = (y1 + y2) / 2
+                        self.violations.append(DRCViolation(
+                            rule="hole_to_hole",
+                            severity="warning",
+                            message=f"Hole spacing violation: {ref1}.{num1} to {ref2}.{num2} ({edge_dist:.3f}mm < {min_spacing:.3f}mm)",
+                            location=(mid_x, mid_y),
+                            items=[f"{ref1}.{num1}", f"{ref2}.{num2}"],
+                        ))
+
+    def _check_hole_to_edge(self):
+        """Check through-hole pad distance to board edge.
+
+        Ensures minimum hole-to-edge clearance is maintained per DFM profile.
+        """
+        if not self.dfm_profile:
+            return
+
+        min_clearance = self.dfm_profile.min_hole_to_edge
+        outline = self.board.outline
+
+        for ref, comp in self.board.components.items():
+            if comp.dnp:
+                continue
+            for pad in comp.pads:
+                if pad.drill and pad.drill > 0:
+                    abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
+                    hole_radius = pad.drill / 2
+
+                    # Check if hole edge is too close to board boundary
+                    # We need the hole edge (not center) to be min_clearance from board edge
+                    required_margin = min_clearance + hole_radius
+
+                    if not outline.contains_point(abs_x, abs_y, required_margin):
+                        self.violations.append(DRCViolation(
+                            rule="hole_to_edge",
+                            severity="warning",
+                            message=f"Hole {ref}.{pad.number} too close to board edge (requires {min_clearance:.2f}mm clearance)",
+                            location=(abs_x, abs_y),
+                            items=[f"{ref}.{pad.number}"],
+                        ))
+
+    def _check_silk_to_pad(self):
+        """Check silkscreen clearance to pads.
+
+        Note: Full silkscreen checking would require extracting silkscreen
+        geometry from KiCad. This check validates that component reference
+        designators (typically placed near components) don't overlap pads.
+
+        Currently implemented as a stub - full implementation requires
+        silkscreen geometry extraction which is beyond current scope.
+        """
+        if not self.dfm_profile:
+            return
+
+        # Silkscreen checking requires access to actual silkscreen geometry
+        # from KiCad (text positions, lines, etc.). The Board abstraction
+        # doesn't currently store this data.
+        #
+        # Future implementation would:
+        # 1. Extract silkscreen items from KiCad (F.SilkS, B.SilkS layers)
+        # 2. Check each silkscreen item against pad positions
+        # 3. Flag violations where distance < min_silk_to_pad
+        #
+        # For now, this is a placeholder that can be expanded when
+        # silkscreen geometry is added to the Board abstraction.
+        pass
 
     def run_kicad_drc(self, pcb_path: Path) -> Tuple[bool, List[DRCViolation]]:
         """

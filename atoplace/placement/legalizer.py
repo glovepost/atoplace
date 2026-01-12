@@ -673,37 +673,99 @@ class PlacementLegalizer:
             return (overlap_x, overlap_y)
         return None
 
+    def _build_spatial_index(self) -> Dict[Tuple[int, int], List[str]]:
+        """
+        Build a grid-based spatial index for efficient overlap detection.
+
+        Uses a grid cell size based on the largest component dimension to
+        ensure overlapping components will be in the same or adjacent cells.
+
+        Returns:
+            Dictionary mapping grid cell (x, y) to list of component refs in that cell
+        """
+        # Determine grid cell size based on max component dimension + clearance
+        # This ensures overlapping components are in same or adjacent cells
+        max_dim = 0.0
+        for ref in self.board.components:
+            half_w, half_h = self._component_sizes.get(ref, (1.0, 1.0))
+            max_dim = max(max_dim, half_w * 2, half_h * 2)
+
+        # Cell size should capture components and their clearance zones
+        self._grid_cell_size = max(1.0, max_dim + self.config.min_clearance * 2)
+
+        # Build the index
+        spatial_index: Dict[Tuple[int, int], List[str]] = {}
+
+        for ref, comp in self.board.components.items():
+            half_w, half_h = self._component_sizes.get(ref, (1.0, 1.0))
+
+            # Calculate the grid cells this component occupies
+            min_cell_x = int((comp.x - half_w - self.config.min_clearance) / self._grid_cell_size)
+            max_cell_x = int((comp.x + half_w + self.config.min_clearance) / self._grid_cell_size)
+            min_cell_y = int((comp.y - half_h - self.config.min_clearance) / self._grid_cell_size)
+            max_cell_y = int((comp.y + half_h + self.config.min_clearance) / self._grid_cell_size)
+
+            # Add component to all cells it touches
+            for cx in range(min_cell_x, max_cell_x + 1):
+                for cy in range(min_cell_y, max_cell_y + 1):
+                    key = (cx, cy)
+                    if key not in spatial_index:
+                        spatial_index[key] = []
+                    if ref not in spatial_index[key]:
+                        spatial_index[key].append(ref)
+
+        return spatial_index
+
     def _find_overlaps(self) -> List[Tuple[str, str, float, float]]:
         """
-        Find all overlapping component pairs.
+        Find all overlapping component pairs using spatial indexing.
+
+        Uses a grid-based spatial index to reduce complexity from O(N²)
+        to approximately O(N) for typical PCB layouts where components
+        are distributed across the board area.
 
         Returns list of (ref1, ref2, overlap_x, overlap_y) tuples.
         """
         overlaps = []
-        refs = list(self.board.components.keys())
+        checked_pairs: Set[Tuple[str, str]] = set()
 
-        for i, ref1 in enumerate(refs):
-            comp1 = self.board.components[ref1]
-            half_w1, half_h1 = self._component_sizes.get(ref1, (1.0, 1.0))
+        # Build spatial index
+        spatial_index = self._build_spatial_index()
 
-            for ref2 in refs[i+1:]:
-                comp2 = self.board.components[ref2]
-                half_w2, half_h2 = self._component_sizes.get(ref2, (1.0, 1.0))
+        # Check each cell for overlapping components
+        for cell_refs in spatial_index.values():
+            if len(cell_refs) < 2:
+                continue
 
-                # Calculate required separation
-                sep_x = half_w1 + half_w2 + self.config.min_clearance
-                sep_y = half_h1 + half_h2 + self.config.min_clearance
+            # Check pairs within this cell
+            for i, ref1 in enumerate(cell_refs):
+                comp1 = self.board.components[ref1]
+                half_w1, half_h1 = self._component_sizes.get(ref1, (1.0, 1.0))
 
-                # Calculate actual separation
-                dx = abs(comp1.x - comp2.x)
-                dy = abs(comp1.y - comp2.y)
+                for ref2 in cell_refs[i+1:]:
+                    # Skip if already checked (components can be in multiple cells)
+                    pair_key = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
+                    if pair_key in checked_pairs:
+                        continue
+                    checked_pairs.add(pair_key)
 
-                # Check for overlap
-                overlap_x = sep_x - dx
-                overlap_y = sep_y - dy
+                    comp2 = self.board.components[ref2]
+                    half_w2, half_h2 = self._component_sizes.get(ref2, (1.0, 1.0))
 
-                if overlap_x > 0 and overlap_y > 0:
-                    overlaps.append((ref1, ref2, overlap_x, overlap_y))
+                    # Calculate required separation
+                    sep_x = half_w1 + half_w2 + self.config.min_clearance
+                    sep_y = half_h1 + half_h2 + self.config.min_clearance
+
+                    # Calculate actual separation
+                    dx = abs(comp1.x - comp2.x)
+                    dy = abs(comp1.y - comp2.y)
+
+                    # Check for overlap
+                    overlap_x = sep_x - dx
+                    overlap_y = sep_y - dy
+
+                    if overlap_x > 0 and overlap_y > 0:
+                        overlaps.append((ref1, ref2, overlap_x, overlap_y))
 
         return overlaps
 
