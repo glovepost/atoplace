@@ -1,180 +1,141 @@
 # AtoPlace
 
-AI-Powered PCB Placement and Routing Tool
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python Version">
+  <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status">
+  <img src="https://img.shields.io/badge/KiCad-6.0%2B-blue" alt="KiCad Support">
+</p>
 
-## Overview
+<p align="center">
+  <strong>The AI Pair Designer for Professional PCB Layout</strong>
+</p>
 
-AtoPlace is an intelligent PCB layout tool that uses natural language understanding and physics-based optimization to automate component placement and routing. It integrates with KiCad and atopile to accelerate professional EE workflows.
+---
 
-## Features
+**AtoPlace** is an intelligent orchestration layer for PCB design that bridges the gap between schematic and physical layout. It automates the tedious 80% of design—placement optimization and DFM validation—while strictly adhering to "Manhattan" aesthetics and Signal Integrity (SI) best practices.
 
-- **Natural Language Constraints**: Describe placement requirements in plain English
-  - "Keep C1 close to U1"
-  - "USB connector on left edge"
-  - "Separate analog and digital sections"
+Designed to work seamlessly with **[atopile](https://atopile.io)** and **[KiCad](https://kicad.org)**.
 
-- **Intelligent Placement**: Force-directed algorithm with:
-  - Module detection (power, RF, digital, analog)
-  - Connectivity-aware optimization
-  - Constraint satisfaction
+## 🚀 Why AtoPlace?
 
-- **Confidence Scoring**: Automatic quality assessment
-  - Placement validation
-  - DFM rule checking
-  - Human review flagging
+PCB layout automation has historically been "black box" and "messy"—producing organic, unreadable layouts that professional engineers reject. AtoPlace takes a different approach:
 
-- **Multiple DFM Profiles**: Pre-configured rules for:
-  - JLCPCB Standard/Advanced
-  - OSH Park
-  - PCBWay
+*   **Human-Grade Aesthetics**: We don't just minimize wirelength. We enforce **grids**, **alignment**, and **orthogonal routing** so the result looks like *you* designed it.
+*   **Physics-First**: We model high-degree nets (GND/VCC) correctly to prevent component collapse, and prioritize critical signals (USB, RF) before general routing.
+*   **Transparent & Interactive**: No lock-in. The source of truth is always your `.kicad_pcb` file. You can take over manually at any second.
 
-## Installation
+## ✨ Key Features
+
+- **🧩 Manhattan Legalizer**: Transforms "organic" force-directed placements into professional, grid-snapped, and row-aligned layouts.
+- **🧠 Intelligent Placement**: Force-directed annealing engine with a "Star Model" for stable power/ground net handling.
+- **🔍 Confidence Scoring**: Automated assessment of your board's routability, signal integrity risks, and DFM compliance.
+- **💬 Natural Language Control**: "Move the USB connector to the left edge", "Align these capacitors", "Keep the crystal near the MCU".
+- **🔌 Atopile Native**: First-class support for `atopile` projects with module-aware grouping constraints.
+
+## 🛠️ Installation
 
 ```bash
 pip install atoplace
 ```
 
-**Note:** AtoPlace requires KiCad's Python API (pcbnew). Run with KiCad's Python:
+> **Note:** AtoPlace requires access to KiCad's Python API (`pcbnew`).
+> You typically need to run it using the Python interpreter bundled with KiCad:
 
+**macOS:**
 ```bash
-# macOS
 /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 -m pip install atoplace
-
-# Then run
-/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 -m atoplace place board.kicad_pcb
 ```
 
-## Quick Start
+**Windows:**
+```powershell
+"C:\Program Files\KiCad\8.0\bin\python.exe" -m pip install atoplace
+```
 
-### Command Line
+## ⚡ Quick Start
 
+### 1. Optimize Placement
+Automatically place components with "Manhattan" legalization:
 ```bash
-# Run placement optimization
-atoplace place board.kicad_pcb
-
-# With constraints
-atoplace place board.kicad_pcb --constraints "USB on left edge, antenna in corner"
-
-# Validate existing placement
-atoplace validate board.kicad_pcb --dfm jlcpcb_standard
-
-# Interactive session
-atoplace interactive board.kicad_pcb
+atoplace place board.kicad_pcb --grid 0.5 --constraints "USB on left edge"
 ```
 
-### Python API
+### 2. Validate Layout
+Check your board against DFM rules (JLCPCB, OSH Park, etc.):
+```bash
+atoplace validate board.kicad_pcb --dfm jlcpcb_standard
+```
+
+### 3. Interactive Mode
+Refine your design using natural language:
+```bash
+atoplace interactive board.kicad_pcb
+# > "Rotate U1 45 degrees"
+# > "Move C1 closer to U1"
+# > "Save"
+```
+
+## 🧠 Python API
+
+For deeper integration or custom workflows:
 
 ```python
 from atoplace.board import Board
-from atoplace.placement import ForceDirectedRefiner
-from atoplace.validation import ConfidenceScorer
-from atoplace.nlp import ConstraintParser
+from atoplace.placement import ForceDirectedRefiner, PlacementLegalizer
 
-# Load board
-board = Board.from_kicad("my_board.kicad_pcb")
+# 1. Load Board
+board = Board.from_kicad("board.kicad_pcb")
 
-# Parse natural language constraints
-parser = ConstraintParser(board)
-constraints, summary = parser.parse_interactive(
-    "Keep decoupling caps close to MCU, USB on left edge"
-)
-print(summary)
-
-# Run placement refinement
+# 2. Physics Refinement (Global Optimization)
 refiner = ForceDirectedRefiner(board)
-for constraint in constraints:
-    refiner.add_constraint(constraint)
-result = refiner.refine()
+refiner.refine()
 
-# Validate result
-scorer = ConfidenceScorer()
-report = scorer.assess(board)
-print(report.summary())
+# 3. Legalization (Manhattan Polish)
+legalizer = PlacementLegalizer(board)
+legalizer.legalize()
 
-# Save
-board.to_kicad("my_board_placed.kicad_pcb")
+# 4. Save Result
+board.to_kicad("board_polished.kicad_pcb")
 ```
 
-## Architecture
+## 🗺️ Roadmap
+
+- **Milestone A (Q1 2026): Solid Foundation** ✅
+  - [x] Manhattan Legalizer (Grid snapping & Alignment).
+  - [x] Physics Engine scaling fixes ($O(N)$ Star Model).
+  - [x] Rotated Pad geometry modeling.
+- **Milestone B (Q1-Q2 2026): Routing Assistant** 🚧
+  - [ ] Critical Path Geometric Planner (A* Dual-Grid).
+  - [ ] BGA/QFN Fanout Generator.
+  - [ ] Atopile `ato-lock.yaml` persistence.
+- **Milestone C (Q2 2026): Professional Agent** 🔮
+  - [ ] MCP Server for full conversational design.
+  - [ ] Automated Manufacturing Outputs (Gerbers/BOM/PNP).
+
+## 📂 Architecture
 
 ```
 atoplace/
-├── board/          # Board abstraction layer
-├── placement/      # Placement algorithms
-│   ├── force_directed.py   # Physics-based optimization
-│   ├── module_detector.py  # Functional module detection
-│   └── constraints.py      # Constraint definitions
-├── routing/        # Routing integration (Freerouting)
-├── validation/     # Quality checks
-│   ├── confidence.py       # Confidence scoring
-│   ├── pre_route.py        # Pre-routing validation
-│   └── drc.py              # DRC checking
-├── dfm/            # Design for Manufacturing
-│   └── profiles.py         # Fab-specific rules
-├── nlp/            # Natural language processing
-│   └── constraint_parser.py
-├── output/         # Manufacturing outputs
-└── cli.py          # Command-line interface
+├── board/          # Board abstraction & KiCad/Atopile adapters
+├── placement/      # Force-directed physics & Manhattan Legalizer
+│   ├── force_directed.py   # Physics Engine (Star Model)
+│   ├── legalizer.py        # Manhattan Pipeline (REQ-P-03)
+│   ├── module_detector.py  # Hierarchy Analysis
+│   └── constraints.py      # Placement Constraints
+├── nlp/            # Natural Language & Intent Engine
+├── routing/        # Routing integration (planned: Freerouting)
+├── validation/     # Confidence Scorer & DFM/DRC Checker
+├── dfm/            # Fab-specific design rules
+├── mcp/            # MCP Server for Claude/LLM integration
+└── cli.py          # CLI entry point
 ```
 
-## Constraint Types
+## 📄 License
 
-| Type | Example | Description |
-|------|---------|-------------|
-| Proximity | "Keep C1 close to U1" | Minimize distance between components |
-| Edge | "J1 on left edge" | Place component on board edge |
-| Zone | "Analog section in top-left" | Restrict components to area |
-| Grouping | "Group all capacitors" | Keep components together |
-| Separation | "Separate analog and digital" | Maintain distance between groups |
-| Fixed | "U1 at (50, 30)" | Lock component position |
+MIT License - see [LICENSE](LICENSE) for details.
 
-## DFM Profiles
+## 🙏 Acknowledgments
 
-```python
-from atoplace.dfm import get_profile, list_profiles
-
-# List available profiles
-print(list_profiles())
-# ['jlcpcb_standard', 'jlcpcb_standard_4layer', 'jlcpcb_advanced', ...]
-
-# Get specific profile
-profile = get_profile("jlcpcb_standard")
-print(f"Min trace: {profile.min_trace_width}mm")
-```
-
-## Development
-
-```bash
-# Clone and install dev dependencies
-git clone https://github.com/atoplace/atoplace.git
-cd atoplace
-pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Format code
-black atoplace/
-ruff check atoplace/
-```
-
-## Roadmap
-
-- [x] Force-directed placement refinement
-- [x] Natural language constraint parsing
-- [x] Confidence scoring system
-- [x] DFM profile support
-- [ ] Freerouting integration
-- [ ] OrthoRoute cloud integration
-- [ ] Signal integrity checks
-- [ ] MCP server for Claude integration
-
-## License
-
-MIT License - see LICENSE file for details.
-
-## Acknowledgments
-
-- [atopile](https://atopile.io) - Declarative hardware description
-- [KiCad](https://kicad.org) - Open source EDA suite
-- [Freerouting](https://github.com/freerouting/freerouting) - Open source autorouter
+*   **[atopile](https://github.com/atopile/atopile)**: The declarative language that makes code-driven hardware possible.
+*   **[KiCad](https://kicad.org)**: The open-source EDA standard we build upon.
+*   **[Freerouting](https://github.com/freerouting/freerouting)**: The open-source autorouting engine.
