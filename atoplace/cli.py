@@ -84,10 +84,14 @@ def load_board_from_path(board_arg: str, build: Optional[str] = None):
 
     # Directory without ato.yaml - look for .kicad_pcb files
     if path.is_dir():
-        kicad_files = list(path.glob("*.kicad_pcb"))
+        kicad_files = sorted(path.glob("*.kicad_pcb"))  # Sort for deterministic selection
         if kicad_files:
+            if len(kicad_files) > 1:
+                print(f"Found {len(kicad_files)} KiCad boards - using first alphabetically:")
+                for f in kicad_files:
+                    print(f"  - {f.name}")
             board_path = kicad_files[0]
-            print(f"Found KiCad board: {board_path}")
+            print(f"Loading KiCad board: {board_path}")
             board = load_kicad_board(board_path)
             return board, board_path, False
 
@@ -162,7 +166,13 @@ def cmd_place(args):
     # Get DFM profile for spacing rules
     # Auto-select based on layer count if not specified
     if args.dfm:
-        dfm_profile = get_profile(args.dfm)
+        try:
+            dfm_profile = get_profile(args.dfm)
+        except ValueError as e:
+            print(f"Error: Invalid DFM profile '{args.dfm}'. {e}")
+            from .dfm.profiles import list_profiles
+            print(f"Available profiles: {', '.join(list_profiles())}")
+            return 1
     else:
         dfm_profile = get_profile_for_layers(board.layer_count)
         print(f"\nAuto-selected DFM profile: {dfm_profile.name}")
@@ -174,6 +184,7 @@ def cmd_place(args):
         damping=0.85,
         min_clearance=dfm_profile.min_spacing,
         preferred_clearance=dfm_profile.min_spacing * 2,  # 2x min for comfort
+        lock_placed=True,  # Respect locked components from KiCad
     )
 
     if args.grid:
@@ -264,7 +275,13 @@ def cmd_validate(args):
 
     # Auto-select DFM profile based on layer count if not specified
     if args.dfm:
-        dfm_profile = get_profile(args.dfm)
+        try:
+            dfm_profile = get_profile(args.dfm)
+        except ValueError as e:
+            print(f"Error: Invalid DFM profile '{args.dfm}'. {e}")
+            from .dfm.profiles import list_profiles
+            print(f"Available profiles: {', '.join(list_profiles())}")
+            return 1
     else:
         dfm_profile = get_profile_for_layers(board.layer_count)
         print(f"Auto-selected DFM profile: {dfm_profile.name}")
@@ -289,6 +306,8 @@ def cmd_validate(args):
     if args.output:
         # Save comprehensive markdown report including pre-route and DRC results
         output_path = Path(args.output)
+        # Ensure parent directory exists
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         full_report = _generate_full_validation_report(
             report, pre_validator, drc, can_proceed, passed
         )
@@ -298,7 +317,9 @@ def cmd_validate(args):
         print("\n" + "=" * 60)
         print(report.summary())
 
-    return 0 if passed and can_proceed else 1
+    # Include confidence score in exit code decision (consistent with place command)
+    confidence_ok = report.overall_score >= 0.7
+    return 0 if passed and can_proceed and confidence_ok else 1
 
 
 def _generate_full_validation_report(report, pre_validator, drc, pre_route_passed, drc_passed):
@@ -378,7 +399,13 @@ def cmd_report(args):
 
     # Auto-select DFM profile based on layer count if not specified
     if args.dfm:
-        dfm_profile = get_profile(args.dfm)
+        try:
+            dfm_profile = get_profile(args.dfm)
+        except ValueError as e:
+            print(f"Error: Invalid DFM profile '{args.dfm}'. {e}")
+            from .dfm.profiles import list_profiles
+            print(f"Available profiles: {', '.join(list_profiles())}")
+            return 1
     else:
         dfm_profile = get_profile_for_layers(board.layer_count)
 
@@ -420,20 +447,26 @@ def cmd_report(args):
         if module.components:
             print(f"  {module.module_type.value}: {len(module.components)} components")
 
-    # Full markdown output at the end
+    # Full markdown output at the end (includes all sections)
     print("\n" + "=" * 60)
     print("MARKDOWN REPORT")
     print("=" * 60)
-    print(report.to_markdown())
+    full_report = _generate_full_validation_report(
+        report, pre_validator, drc, can_proceed, drc_passed
+    )
+    print(full_report)
 
-    return 0
+    # Return non-zero exit code on failures for CI integration
+    confidence_ok = report.overall_score >= 0.7
+    return 0 if drc_passed and can_proceed and confidence_ok else 1
 
 
 def cmd_interactive(args):
     """Run interactive constraint session."""
     from .board.kicad_adapter import save_kicad_board
     from .nlp.constraint_parser import ConstraintParser, ModificationHandler
-    from .placement.force_directed import ForceDirectedRefiner
+    from .placement.force_directed import ForceDirectedRefiner, RefinementConfig
+    from .placement.legalizer import PlacementLegalizer, LegalizerConfig
     from .validation.confidence import ConfidenceScorer
     from .dfm.profiles import get_profile, get_profile_for_layers
 
@@ -449,7 +482,13 @@ def cmd_interactive(args):
 
     # Auto-select DFM profile based on layer count if not specified
     if args.dfm:
-        dfm_profile = get_profile(args.dfm)
+        try:
+            dfm_profile = get_profile(args.dfm)
+        except ValueError as e:
+            print(f"Error: Invalid DFM profile '{args.dfm}'. {e}")
+            from .dfm.profiles import list_profiles
+            print(f"Available profiles: {', '.join(list_profiles())}")
+            return 1
     else:
         dfm_profile = get_profile_for_layers(board.layer_count)
 
@@ -517,7 +556,6 @@ Modification examples:
 
             print("Applying constraints...")
             # Use DFM-aware config with lock support
-            from .placement.force_directed import RefinementConfig
             config = RefinementConfig(
                 min_clearance=dfm_profile.min_spacing,
                 preferred_clearance=dfm_profile.min_spacing * 2,
@@ -528,6 +566,21 @@ Modification examples:
                 refiner.add_constraint(c)
             result = refiner.refine()
             print(f"Refinement complete ({result.iteration} iterations)")
+
+            # Run legalization pass (consistent with place command)
+            print("Running legalization...")
+            legalize_config = LegalizerConfig(
+                primary_grid=0.5,
+                snap_rotation=True,
+                align_passives_only=True,
+                min_clearance=dfm_profile.min_spacing,
+                row_spacing=dfm_profile.min_spacing * 1.5,
+            )
+            legalizer = PlacementLegalizer(board, legalize_config, constraints=constraints)
+            legal_result = legalizer.legalize()
+            print(f"  Grid snapped: {legal_result.grid_snapped}, Aligned: {legal_result.components_aligned}")
+            if legal_result.final_overlaps > 0:
+                print(f"  Warning: {legal_result.final_overlaps} overlaps remaining")
 
             scorer = ConfidenceScorer(dfm_profile)
             report = scorer.assess(board)

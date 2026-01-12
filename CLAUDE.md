@@ -7,7 +7,6 @@ This is the AtoPlace project - an AI-powered PCB placement and routing tool.
 At the start of every session:
 
 1. **Review key documents:**
-   - `docs/PRODUCT_REQUIREMENTS.md` - Functional requirements, system architecture, integration specs
    - `docs/PRODUCT_PLAN.md` - Current development roadmap and priorities
    - `ISSUES.md` - Active bugs, code review findings, and fix history
 
