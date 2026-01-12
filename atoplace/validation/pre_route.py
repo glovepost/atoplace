@@ -51,6 +51,8 @@ class PreRouteValidator:
     def _check_unconnected_pads(self):
         """Check for pads with no net assigned."""
         for ref, comp in self.board.components.items():
+            if comp.dnp:  # Skip Do Not Populate components
+                continue
             for pad in comp.pads:
                 if not pad.net:
                     # Some pads (like mounting holes) are expected to be unconnected
@@ -77,6 +79,8 @@ class PreRouteValidator:
     def _check_missing_footprints(self):
         """Check for components without valid footprints."""
         for ref, comp in self.board.components.items():
+            if comp.dnp:  # Skip Do Not Populate components
+                continue
             if not comp.footprint:
                 self.issues.append(PreRouteIssue(
                     severity="error",
@@ -114,6 +118,8 @@ class PreRouteValidator:
         # This ensures fine-pitch components (0.5mm, 0.4mm pitch) are not missed
         min_pad_dim = float('inf')
         for ref, comp in self.board.components.items():
+            if comp.dnp:  # Skip Do Not Populate components
+                continue
             for pad in comp.pads:
                 min_pad_dim = min(min_pad_dim, pad.width, pad.height)
 
@@ -130,6 +136,8 @@ class PreRouteValidator:
         pad_info: Dict[Tuple[int, int], List[Tuple[str, str, float, float, float, float]]] = {}
 
         for ref, comp in self.board.components.items():
+            if comp.dnp:  # Skip Do Not Populate components
+                continue
             for pad in comp.pads:
                 # Get pad bounding box which accounts for pad rotation
                 bbox = pad.get_bounding_box(comp.x, comp.y, comp.rotation)
@@ -204,6 +212,8 @@ class PreRouteValidator:
         # Check that ICs have power connections
         ics = self.board.get_components_by_prefix('U')
         for ic in ics:
+            if ic.dnp:  # Skip Do Not Populate components
+                continue
             ic_nets = ic.get_connected_nets()
 
             has_power = any(n in [net.name for net in power_nets] for n in ic_nets)

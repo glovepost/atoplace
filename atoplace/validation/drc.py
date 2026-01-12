@@ -59,7 +59,8 @@ class DRCChecker:
             c1 = self.board.get_component(ref1)
             c2 = self.board.get_component(ref2)
 
-            if c1 and c2:
+            # Skip if either component is DNP
+            if c1 and c2 and not c1.dnp and not c2.dnp:
                 mid_x = (c1.x + c2.x) / 2
                 mid_y = (c1.y + c2.y) / 2
 
@@ -90,6 +91,8 @@ class DRCChecker:
         min_smd_pad = self.dfm_profile.min_spacing
 
         for ref, comp in self.board.components.items():
+            if comp.dnp:  # Skip Do Not Populate components
+                continue
             for pad in comp.pads:
                 abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
 
@@ -136,6 +139,8 @@ class DRCChecker:
         outline = self.board.outline
 
         for ref, comp in self.board.components.items():
+            if comp.dnp:  # Skip Do Not Populate components
+                continue
             bbox = comp.get_bounding_box()
 
             violations_found = []
@@ -167,7 +172,14 @@ class DRCChecker:
         try:
             import pcbnew
         except ImportError:
-            return (True, [])  # Can't run, assume passing
+            # Return warning that native DRC was skipped
+            return (True, [DRCViolation(
+                rule="KICAD_DRC_UNAVAILABLE",
+                severity="warning",
+                message="KiCad DRC skipped: pcbnew module not available",
+                location=(0.0, 0.0),
+                items=[]
+            )])
 
         board = pcbnew.LoadBoard(str(pcb_path))
 

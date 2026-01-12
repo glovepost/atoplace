@@ -278,6 +278,11 @@ class ConfidenceScorer:
         # Check for overlapping components
         overlaps = board.find_overlaps(self.dfm_profile.min_spacing)
         for ref1, ref2, dist in overlaps:
+            # Skip if either component is DNP
+            c1 = board.get_component(ref1)
+            c2 = board.get_component(ref2)
+            if (c1 and c1.dnp) or (c2 and c2.dnp):
+                continue
             flags.append(DesignFlag(
                 severity=Severity.CRITICAL,
                 category=FlagCategory.PLACEMENT,
@@ -338,6 +343,8 @@ class ConfidenceScorer:
         ics = board.get_components_by_prefix('U')
 
         for ic in ics:
+            if ic.dnp:  # Skip Do Not Populate components
+                continue
             # Determine IC speed class and appropriate distance limits
             ic_value = ic.value.upper() if ic.value else ""
             ic_footprint = ic.footprint.upper() if ic.footprint else ""
@@ -421,6 +428,8 @@ class ConfidenceScorer:
         outline = board.outline
 
         for ref, comp in board.components.items():
+            if comp.dnp:  # Skip Do Not Populate components
+                continue
             bbox = comp.get_bounding_box()
 
             outside = False
@@ -457,6 +466,8 @@ class ConfidenceScorer:
         component_area = 0.0
 
         for comp in board.components.values():
+            if comp.dnp:  # Skip Do Not Populate components
+                continue
             component_area += comp.width * comp.height
 
         utilization = component_area / board_area if board_area > 0 else 0
@@ -575,19 +586,41 @@ class ConfidenceScorer:
         return flags, score
 
     def _identify_high_speed_nets(self, board: Board) -> List[str]:
-        """Identify high-speed signal nets."""
+        """Identify high-speed signal nets.
+
+        Uses specific patterns to avoid false positives. For differential pairs,
+        requires suffix matching (_P/_N at end of name) rather than substring
+        matching to avoid flagging nets like TEMP, EN_P, etc.
+        """
         hs_nets = []
 
+        # Patterns that can match anywhere in net name
         hs_patterns = [
             'USB', 'HDMI', 'LVDS', 'PCIE', 'ETH', 'SDIO', 'QSPI',
-            '_D+', '_D-', '_P', '_N', 'CLK', 'MCLK', 'SCLK',
+            '_D+', '_D-', 'CLK', 'MCLK', 'SCLK',
         ]
+
+        # Differential pair suffixes (must be at end of net name)
+        diff_pair_suffixes = ['_P', '_N', '+', '-', 'P', 'N']
 
         for net_name in board.nets:
             name_upper = net_name.upper()
+
+            # Check standard high-speed patterns
             for pattern in hs_patterns:
                 if pattern in name_upper:
                     hs_nets.append(net_name)
                     break
+            else:
+                # Check for differential pair suffixes at end of name
+                # Only flag if there's a base signal name (at least 2 chars)
+                if len(name_upper) >= 3:
+                    for suffix in diff_pair_suffixes:
+                        if name_upper.endswith(suffix) and len(suffix) < len(name_upper):
+                            # Additional check: avoid single-char base names
+                            base = name_upper[:-len(suffix)]
+                            if len(base) >= 2 and base[-1] != '_':
+                                hs_nets.append(net_name)
+                                break
 
         return hs_nets
