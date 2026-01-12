@@ -131,9 +131,9 @@ class PreRouteValidator:
             grid_size = max(0.2, min(1.0, min_pad_dim * 2))
 
         # Build spatial index of all pads
-        # Store: (ref, pad_num, abs_x, abs_y, half_width, half_height) where half-dimensions
-        # account for pad rotation
-        pad_info: Dict[Tuple[int, int], List[Tuple[str, str, float, float, float, float]]] = {}
+        # Store: (ref, pad_num, abs_x, abs_y, half_width, half_height, layer, is_through_hole)
+        # where half-dimensions account for pad rotation
+        pad_info: Dict[Tuple[int, int], List[Tuple[str, str, float, float, float, float, str, bool]]] = {}
 
         for ref, comp in self.board.components.items():
             if comp.dnp:  # Skip Do Not Populate components
@@ -146,10 +146,14 @@ class PreRouteValidator:
                 half_w = (bbox[2] - bbox[0]) / 2  # Half-width of AABB
                 half_h = (bbox[3] - bbox[1]) / 2  # Half-height of AABB
 
+                # Determine layer and through-hole status
+                is_through_hole = pad.drill is not None and pad.drill > 0
+                pad_layer = pad.layer.value if pad.layer else "F.Cu"
+
                 grid_x = int(abs_x / grid_size)
                 grid_y = int(abs_y / grid_size)
 
-                info = (ref, pad.number, abs_x, abs_y, half_w, half_h)
+                info = (ref, pad.number, abs_x, abs_y, half_w, half_h, pad_layer, is_through_hole)
 
                 # Add to current and neighboring cells for broad-phase collision
                 for dx in [-1, 0, 1]:
@@ -167,9 +171,9 @@ class PreRouteValidator:
                 continue
 
             for i, pad1 in enumerate(cell_pads):
-                ref1, num1, x1, y1, hw1, hh1 = pad1
+                ref1, num1, x1, y1, hw1, hh1, layer1, th1 = pad1
                 for pad2 in cell_pads[i+1:]:
-                    ref2, num2, x2, y2, hw2, hh2 = pad2
+                    ref2, num2, x2, y2, hw2, hh2, layer2, th2 = pad2
 
                     # Skip same component - pads within a component can be close
                     if ref1 == ref2:
@@ -180,6 +184,15 @@ class PreRouteValidator:
                     if pair_key in checked_pairs:
                         continue
                     checked_pairs.add(pair_key)
+
+                    # Layer-aware collision detection:
+                    # - Through-hole pads conflict with everything (both layers)
+                    # - SMD pads only conflict with pads on the same layer
+                    if not th1 and not th2:
+                        # Both are SMD - check if they're on the same layer
+                        if layer1 != layer2:
+                            # Different layers, no collision possible
+                            continue
 
                     # Check clearance using axis-aligned bounding box
                     dx = abs(x1 - x2)
@@ -236,7 +249,7 @@ class PreRouteValidator:
                 ))
 
     def get_summary(self) -> str:
-        """Get a summary of validation results."""
+        """Get a summary of validation results including category and location context."""
         if not self.issues:
             return "Pre-route validation passed with no issues."
 
@@ -251,6 +264,9 @@ class PreRouteValidator:
 
         for issue in self.issues:
             prefix = {"error": "[ERROR]", "warning": "[WARN]", "info": "[INFO]"}
-            lines.append(f"{prefix[issue.severity]} {issue.message}")
+            # Include category and location for actionable output
+            lines.append(f"{prefix[issue.severity]} [{issue.category}] {issue.message}")
+            if issue.location:
+                lines.append(f"    Location: {issue.location}")
 
         return "\n".join(lines)

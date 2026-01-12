@@ -378,7 +378,10 @@ class ConfidenceScorer:
             if not power_nets:
                 continue
 
-            # Find closest decoupling cap
+            # Find closest decoupling cap (must be connected to power AND ground)
+            # Get ground net names for verification
+            ground_net_names = {n.name for n in board.get_ground_nets()}
+
             min_cap_distance = float('inf')
             closest_cap = None
 
@@ -391,6 +394,16 @@ class ConfidenceScorer:
                     if ref.startswith('C'):
                         cap = board.get_component(ref)
                         if cap:
+                            # Verify this is a decoupling cap (connected to ground)
+                            # True decoupling caps are connected to both power and ground
+                            cap_nets = cap.get_connected_nets()
+                            is_decoupling = any(n in ground_net_names for n in cap_nets)
+
+                            if not is_decoupling:
+                                # Skip - this capacitor is not connected to ground
+                                # (e.g., bulk caps, filter caps, coupling caps)
+                                continue
+
                             dist = ic.distance_to(cap)
                             if dist < min_cap_distance:
                                 min_cap_distance = dist
@@ -461,8 +474,8 @@ class ConfidenceScorer:
         """Check for problematic component density."""
         flags = []
 
-        # Calculate board utilization
-        board_area = board.outline.width * board.outline.height
+        # Calculate board utilization using proper area (handles polygon outlines)
+        board_area = board._calculate_board_area()
         component_area = 0.0
 
         for comp in board.components.values():

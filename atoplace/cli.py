@@ -286,9 +286,12 @@ def cmd_validate(args):
     report = scorer.assess(board)
 
     if args.output:
-        # Save markdown report
+        # Save comprehensive markdown report including pre-route and DRC results
         output_path = Path(args.output)
-        output_path.write_text(report.to_markdown())
+        full_report = _generate_full_validation_report(
+            report, pre_validator, drc, can_proceed, passed
+        )
+        output_path.write_text(full_report)
         print(f"\nReport saved to: {output_path}")
     else:
         print("\n" + "=" * 60)
@@ -297,10 +300,68 @@ def cmd_validate(args):
     return 0 if passed and can_proceed else 1
 
 
+def _generate_full_validation_report(report, pre_validator, drc, pre_route_passed, drc_passed):
+    """Generate comprehensive validation report including all checks."""
+    lines = [
+        "# Validation Report",
+        "",
+        "## Pre-Route Validation",
+        "",
+        f"**Status:** {'PASSED' if pre_route_passed else 'FAILED'}",
+        "",
+    ]
+
+    # Pre-route issues
+    if pre_validator.issues:
+        lines.append("### Issues")
+        lines.append("")
+        for issue in pre_validator.issues:
+            severity_emoji = {"error": "X", "warning": "!", "info": "i"}
+            lines.append(f"- [{severity_emoji.get(issue.severity, '?')}] [{issue.category}] {issue.message}")
+            if issue.location:
+                lines.append(f"  - Location: {issue.location}")
+        lines.append("")
+    else:
+        lines.append("No pre-route issues found.")
+        lines.append("")
+
+    # DRC section
+    lines.extend([
+        "## DRC Checks",
+        "",
+        f"**Status:** {'PASSED' if drc_passed else 'FAILED'}",
+        "",
+    ])
+
+    violations = drc.violations if hasattr(drc, 'violations') else []
+    if violations:
+        lines.append("### Violations")
+        lines.append("")
+        for violation in violations:
+            lines.append(f"- [{violation.rule}] {violation.message}")
+            if violation.location:
+                lines.append(f"  - Location: {violation.location}")
+        lines.append("")
+    else:
+        lines.append("No DRC violations found.")
+        lines.append("")
+
+    # Confidence report (reuse existing markdown)
+    lines.extend([
+        "---",
+        "",
+        report.to_markdown(),
+    ])
+
+    return "\n".join(lines)
+
+
 def cmd_report(args):
-    """Generate detailed report for a board."""
+    """Generate detailed report for a board including all validation results."""
     from .placement.module_detector import ModuleDetector
     from .validation.confidence import ConfidenceScorer
+    from .validation.pre_route import PreRouteValidator
+    from .validation.drc import DRCChecker
     from .dfm.profiles import get_profile, get_profile_for_layers
 
     # Load board with auto-detection
@@ -320,10 +381,48 @@ def cmd_report(args):
     else:
         dfm_profile = get_profile_for_layers(board.layer_count)
 
+    # Run all validation checks for detailed report
+    print("=" * 60)
+    print("DETAILED BOARD REPORT")
+    print("=" * 60)
+    print(f"\nDFM Profile: {dfm_profile.name}\n")
+
+    # Pre-route validation
+    print("-" * 60)
+    print("PRE-ROUTE VALIDATION")
+    print("-" * 60)
+    pre_validator = PreRouteValidator(board, dfm_profile)
+    can_proceed, pre_issues = pre_validator.validate()
+    print(pre_validator.get_summary())
+
+    # DRC checks
+    print("\n" + "-" * 60)
+    print("DRC CHECKS")
+    print("-" * 60)
+    drc = DRCChecker(board, dfm_profile)
+    drc_passed, violations = drc.run_checks()
+    print(drc.get_summary())
+
+    # Confidence scoring
+    print("\n" + "-" * 60)
+    print("CONFIDENCE ASSESSMENT")
+    print("-" * 60)
     scorer = ConfidenceScorer(dfm_profile)
     report = scorer.assess(board)
+    print(report.summary())
 
-    # Print report
+    # Module summary
+    print("\n" + "-" * 60)
+    print("DETECTED MODULES")
+    print("-" * 60)
+    for module in modules:
+        if module.components:
+            print(f"  {module.module_type.value}: {len(module.components)} components")
+
+    # Full markdown output at the end
+    print("\n" + "=" * 60)
+    print("MARKDOWN REPORT")
+    print("=" * 60)
     print(report.to_markdown())
 
     return 0
