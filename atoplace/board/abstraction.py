@@ -45,16 +45,48 @@ class Pad:
     layer: Layer = Layer.TOP_COPPER
     net: Optional[str] = None
     drill: Optional[float] = None  # For through-hole pads
+    rotation: float = 0.0  # Pad rotation relative to component (degrees)
 
     def absolute_position(self, comp_x: float, comp_y: float,
-                          rotation: float = 0) -> Tuple[float, float]:
+                          comp_rotation: float = 0) -> Tuple[float, float]:
         """Get absolute pad position given component position and rotation."""
-        # Apply rotation
-        rad = math.radians(rotation)
+        # Apply component rotation to pad position
+        rad = math.radians(comp_rotation)
         cos_r, sin_r = math.cos(rad), math.sin(rad)
         rx = self.x * cos_r - self.y * sin_r
         ry = self.x * sin_r + self.y * cos_r
         return (comp_x + rx, comp_y + ry)
+
+    def absolute_rotation(self, comp_rotation: float = 0) -> float:
+        """Get absolute pad rotation considering component rotation."""
+        return (self.rotation + comp_rotation) % 360
+
+    def get_bounding_box(self, comp_x: float, comp_y: float,
+                         comp_rotation: float = 0) -> Tuple[float, float, float, float]:
+        """Get axis-aligned bounding box for this pad in absolute coordinates.
+
+        Returns:
+            (min_x, min_y, max_x, max_y) accounting for pad and component rotation
+        """
+        # Get absolute position
+        abs_x, abs_y = self.absolute_position(comp_x, comp_y, comp_rotation)
+
+        # For circular pads, rotation doesn't matter
+        if self.shape == "circle":
+            r = max(self.width, self.height) / 2
+            return (abs_x - r, abs_y - r, abs_x + r, abs_y + r)
+
+        # For rectangular/oval pads, calculate rotated bounding box
+        total_rotation = self.absolute_rotation(comp_rotation)
+        rad = math.radians(total_rotation)
+        cos_r = abs(math.cos(rad))
+        sin_r = abs(math.sin(rad))
+
+        # AABB half-dimensions of rotated rectangle
+        half_w = (self.width / 2) * cos_r + (self.height / 2) * sin_r
+        half_h = (self.width / 2) * sin_r + (self.height / 2) * cos_r
+
+        return (abs_x - half_w, abs_y - half_h, abs_x + half_w, abs_y + half_h)
 
 
 @dataclass

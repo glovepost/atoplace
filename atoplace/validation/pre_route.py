@@ -5,8 +5,9 @@ Validates board state before attempting autorouting to catch issues early.
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Set, FrozenSet
+from typing import List, Tuple, Dict, Set, FrozenSet, Optional
 from ..board.abstraction import Board, Component
+from ..dfm.profiles import DFMProfile
 
 
 @dataclass
@@ -21,8 +22,9 @@ class PreRouteIssue:
 class PreRouteValidator:
     """Validates board before routing."""
 
-    def __init__(self, board: Board):
+    def __init__(self, board: Board, dfm_profile: Optional[DFMProfile] = None):
         self.board = board
+        self.dfm_profile = dfm_profile
         self.issues: List[PreRouteIssue] = []
 
     def validate(self) -> Tuple[bool, List[PreRouteIssue]]:
@@ -94,29 +96,54 @@ class PreRouteValidator:
     def _check_overlapping_pads(self):
         """Check for pads that overlap between different components.
 
-        Uses a coarse grid for candidate finding, then verifies with
-        actual pad geometry to avoid false positives.
+        Uses a spatial grid for candidate finding, then verifies with
+        actual pad geometry. Grid size is based on minimum pad dimensions
+        to ensure fine-pitch components are properly checked.
+
+        Uses DFM profile's min_spacing for clearance if available.
         """
         import math
 
-        # Build spatial index of all pads (coarse grid for candidate pairs)
-        # Use larger grid size and check neighboring cells too
-        grid_size = 1.0  # mm (coarser grid, then verify precisely)
+        # Determine minimum clearance from DFM profile or use sensible default
+        if self.dfm_profile:
+            min_clearance = self.dfm_profile.min_spacing
+        else:
+            min_clearance = 0.1  # Default 0.1mm clearance
+
+        # Calculate grid size based on the smallest pad dimension in the design
+        # This ensures fine-pitch components (0.5mm, 0.4mm pitch) are not missed
+        min_pad_dim = float('inf')
+        for ref, comp in self.board.components.items():
+            for pad in comp.pads:
+                min_pad_dim = min(min_pad_dim, pad.width, pad.height)
+
+        # Grid size should be at least 2x the minimum pad dimension
+        # but not too small to avoid performance issues
+        if min_pad_dim == float('inf'):
+            grid_size = 0.5  # Default if no pads found
+        else:
+            grid_size = max(0.2, min(1.0, min_pad_dim * 2))
+
+        # Build spatial index of all pads
+        # Store: (ref, pad_num, abs_x, abs_y, half_width, half_height) where half-dimensions
+        # account for pad rotation
         pad_info: Dict[Tuple[int, int], List[Tuple[str, str, float, float, float, float]]] = {}
-        # Store: (ref, pad_num, abs_x, abs_y, half_width, half_height)
 
         for ref, comp in self.board.components.items():
             for pad in comp.pads:
-                abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
+                # Get pad bounding box which accounts for pad rotation
+                bbox = pad.get_bounding_box(comp.x, comp.y, comp.rotation)
+                abs_x = (bbox[0] + bbox[2]) / 2  # Center X
+                abs_y = (bbox[1] + bbox[3]) / 2  # Center Y
+                half_w = (bbox[2] - bbox[0]) / 2  # Half-width of AABB
+                half_h = (bbox[3] - bbox[1]) / 2  # Half-height of AABB
+
                 grid_x = int(abs_x / grid_size)
                 grid_y = int(abs_y / grid_size)
 
-                # Store pad info with dimensions
-                half_w = pad.width / 2
-                half_h = pad.height / 2
                 info = (ref, pad.number, abs_x, abs_y, half_w, half_h)
 
-                # Add to current and neighboring cells for broad-phase
+                # Add to current and neighboring cells for broad-phase collision
                 for dx in [-1, 0, 1]:
                     for dy in [-1, 0, 1]:
                         key = (grid_x + dx, grid_y + dy)
@@ -125,7 +152,7 @@ class PreRouteValidator:
                         pad_info[key].append(info)
 
         # Check for actual overlaps with precise geometry
-        checked_pairs: Set[Tuple[str, str, str, str]] = set()
+        checked_pairs: Set[FrozenSet[Tuple[str, str]]] = set()
 
         for cell_pads in pad_info.values():
             if len(cell_pads) < 2:
@@ -136,33 +163,36 @@ class PreRouteValidator:
                 for pad2 in cell_pads[i+1:]:
                     ref2, num2, x2, y2, hw2, hh2 = pad2
 
-                    # Skip same component
+                    # Skip same component - pads within a component can be close
                     if ref1 == ref2:
                         continue
 
                     # Skip if already checked this pair
-                    pair_key = tuple(sorted([(ref1, num1), (ref2, num2)]))
+                    pair_key = frozenset([(ref1, num1), (ref2, num2)])
                     if pair_key in checked_pairs:
                         continue
                     checked_pairs.add(pair_key)
 
-                    # Check actual overlap using axis-aligned bounding box
-                    # Add small clearance (0.05mm) to avoid false positives
-                    clearance = 0.05
+                    # Check clearance using axis-aligned bounding box
                     dx = abs(x1 - x2)
                     dy = abs(y1 - y2)
 
-                    # For circular pads, use radius
-                    # For rectangular, use half-dimensions
-                    # Use simplified check: if centers are closer than sum of half-sizes
-                    min_dx = hw1 + hw2 - clearance
-                    min_dy = hh1 + hh2 - clearance
+                    # Required separation: sum of half-widths plus clearance
+                    required_dx = hw1 + hw2 + min_clearance
+                    required_dy = hh1 + hh2 + min_clearance
 
-                    if dx < min_dx and dy < min_dy:
+                    # Pads overlap if both axes are within required separation
+                    if dx < required_dx and dy < required_dy:
+                        # Calculate actual overlap/clearance violation
+                        overlap_x = required_dx - dx
+                        overlap_y = required_dy - dy
+                        overlap = min(overlap_x, overlap_y)
+
                         self.issues.append(PreRouteIssue(
                             severity="error",
                             category="placement",
-                            message=f"Overlapping pads: {ref1}.{num1} and {ref2}.{num2}",
+                            message=f"Pad clearance violation: {ref1}.{num1} and {ref2}.{num2} "
+                                    f"(clearance: {max(0, min(dx - hw1 - hw2, dy - hh1 - hh2)):.3f}mm < {min_clearance:.3f}mm)",
                             location=f"({(x1+x2)/2:.2f}, {(y1+y2)/2:.2f})",
                         ))
 

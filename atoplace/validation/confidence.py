@@ -307,14 +307,62 @@ class ConfidenceScorer:
         return flags, max(score, 0.0)
 
     def _check_decoupling(self, board: Board) -> Tuple[List[DesignFlag], float]:
-        """Check decoupling capacitor placement."""
+        """Check decoupling capacitor placement.
+
+        Uses adaptive distance limits based on IC type:
+        - High-speed ICs (USB, Ethernet, RF, high-freq clocks): <2mm recommended
+        - Standard digital ICs: <5mm recommended
+        - Low-speed ICs: <10mm acceptable
+
+        The distance requirements are based on inductance considerations:
+        - 1mm of trace ≈ 1nH inductance
+        - At high frequencies, even small inductance can cause significant voltage droop
+        """
         flags = []
         score = 1.0
+
+        # High-speed IC patterns (require closer decoupling)
+        high_speed_patterns = [
+            'USB', 'ETH', 'ENET', 'PHY', 'HDMI', 'LVDS', 'PCIE',
+            'DDR', 'SDRAM', 'FPGA', 'CPLD', 'RF', 'WIFI', 'BLE', 'BT',
+            'GHZ', 'MHZ',  # Frequency indicators
+        ]
+
+        # Medium-speed digital patterns
+        medium_speed_patterns = [
+            'STM32', 'ESP32', 'NRF', 'ATMEGA', 'PIC', 'RP2040',  # MCUs
+            'SPI', 'QSPI', 'I2C', 'UART',  # Communication interfaces
+        ]
 
         # Find ICs (U* components)
         ics = board.get_components_by_prefix('U')
 
         for ic in ics:
+            # Determine IC speed class and appropriate distance limits
+            ic_value = ic.value.upper() if ic.value else ""
+            ic_footprint = ic.footprint.upper() if ic.footprint else ""
+            ic_str = ic_value + " " + ic_footprint
+
+            is_high_speed = any(p in ic_str for p in high_speed_patterns)
+            is_medium_speed = any(p in ic_str for p in medium_speed_patterns)
+
+            # Set distance thresholds based on IC type
+            if is_high_speed:
+                critical_distance = 2.0   # mm - high-speed needs very close decoupling
+                warning_distance = 3.0
+                info_distance = 5.0
+                speed_class = "high-speed"
+            elif is_medium_speed:
+                critical_distance = 5.0   # mm - standard digital
+                warning_distance = 7.0
+                info_distance = 10.0
+                speed_class = "digital"
+            else:
+                critical_distance = 10.0  # mm - low-speed/unknown
+                warning_distance = 15.0
+                info_distance = 20.0
+                speed_class = "standard"
+
             # Find connected capacitors
             ic_nets = ic.get_connected_nets()
             power_nets = [n for n in ic_nets if board.nets.get(n) and
@@ -342,25 +390,26 @@ class ConfidenceScorer:
                                 closest_cap = cap
 
             if closest_cap:
-                if min_cap_distance > 5.0:  # More than 5mm is too far
+                if min_cap_distance > critical_distance:
+                    severity = Severity.WARNING if is_high_speed else Severity.INFO
                     flags.append(DesignFlag(
-                        severity=Severity.WARNING,
+                        severity=severity,
                         category=FlagCategory.PLACEMENT,
                         location=ic.reference,
-                        message=f"Decoupling cap {closest_cap.reference} is {min_cap_distance:.1f}mm from {ic.reference} (should be <5mm)",
+                        message=f"Decoupling cap {closest_cap.reference} is {min_cap_distance:.1f}mm from {speed_class} IC {ic.reference} (recommended <{critical_distance}mm)",
                         suggested_action=f"Move {closest_cap.reference} closer to {ic.reference} power pins",
-                        confidence=0.9,
+                        confidence=0.9 if is_high_speed else 0.7,
                         rule_source="layout_rules: PDN/Decoupling Capacitors",
                     ))
-                    score *= 0.95
-                elif min_cap_distance > 3.0:
+                    score *= 0.95 if is_high_speed else 0.98
+                elif min_cap_distance > warning_distance:
                     flags.append(DesignFlag(
                         severity=Severity.INFO,
                         category=FlagCategory.PLACEMENT,
                         location=ic.reference,
                         message=f"Decoupling cap {closest_cap.reference} could be closer to {ic.reference} ({min_cap_distance:.1f}mm)",
                         suggested_action="Consider moving closer for better high-frequency decoupling",
-                        confidence=0.7,
+                        confidence=0.6,
                         rule_source="layout_rules: PDN/Decoupling Capacitors",
                     ))
 

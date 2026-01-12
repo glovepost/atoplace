@@ -528,6 +528,9 @@ def _pad_to_pad(kicad_pad, fp_pos, fp_rotation: float) -> Pad:
     Note: KiCad returns pad positions in board coordinates (already rotated).
           We need to reverse-rotate to get local footprint coordinates, since
           Pad.absolute_position() will re-apply the rotation.
+
+          Pad rotation is also stored relative to the footprint, so we subtract
+          the footprint rotation from the absolute pad rotation.
     """
     import math
 
@@ -544,6 +547,19 @@ def _pad_to_pad(kicad_pad, fp_pos, fp_rotation: float) -> Pad:
     cos_r, sin_r = math.cos(rad), math.sin(rad)
     rel_x = board_rel_x * cos_r - board_rel_y * sin_r
     rel_y = board_rel_x * sin_r + board_rel_y * cos_r
+
+    # Get pad rotation relative to footprint
+    # KiCad returns pad rotation in board coordinates, so subtract footprint rotation
+    try:
+        pad_abs_rotation = kicad_pad.GetOrientationDegrees()
+    except AttributeError:
+        # Older KiCad versions may use different method
+        try:
+            pad_abs_rotation = kicad_pad.GetOrientation() / 10.0  # Was in decidegrees
+        except:
+            pad_abs_rotation = 0.0
+
+    pad_local_rotation = (pad_abs_rotation - fp_rotation) % 360
 
     # Determine shape
     shape_map = {
@@ -577,6 +593,7 @@ def _pad_to_pad(kicad_pad, fp_pos, fp_rotation: float) -> Pad:
         layer=layer,
         net=net,
         drill=drill,
+        rotation=pad_local_rotation,
     )
 
 

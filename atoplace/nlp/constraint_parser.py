@@ -513,7 +513,11 @@ class ModificationHandler:
     """Handle modification requests for existing placements."""
 
     MODIFICATION_PATTERNS = [
-        (r"move\s+(\w+)\s+(closer\s+to|away\s+from|left|right|up|down)",
+        # Move with target: "move C1 closer to U1" or "move C1 away from U1"
+        (r"move\s+(\w+)\s+(closer\s+to|away\s+from)\s+(\w+)",
+         "move_relative"),
+        # Move directional: "move C1 left/right/up/down"
+        (r"move\s+(\w+)\s+(left|right|up|down)",
          "move"),
         (r"rotate\s+(\w+)\s+(\d+)\s*(?:degrees?)?",
          "rotate"),
@@ -541,10 +545,20 @@ class ModificationHandler:
                                full_text: str) -> Dict:
         """Extract modification details from match."""
         if mod_type == "move":
+            # Simple directional move: left/right/up/down
             return {
                 "type": "move",
                 "component": match.group(1).upper(),
                 "direction": match.group(2),
+            }
+        elif mod_type == "move_relative":
+            # Move relative to another component: closer to / away from
+            direction = match.group(2).lower()
+            return {
+                "type": "move",
+                "component": match.group(1).upper(),
+                "direction": "closer" if "closer" in direction else "away",
+                "target": match.group(3).upper(),
             }
         elif mod_type == "rotate":
             return {
@@ -601,38 +615,41 @@ class ModificationHandler:
                 return False
 
             direction = mod.get("direction", "")
+            target_ref = mod.get("target")  # Target component for relative moves
             move_amount = 5.0  # Default move amount in mm
 
-            if "left" in direction:
+            if direction == "left":
                 comp.x -= move_amount
-            elif "right" in direction:
+            elif direction == "right":
                 comp.x += move_amount
-            elif "up" in direction:
+            elif direction == "up":
                 comp.y -= move_amount  # Y decreases going up in KiCad
-            elif "down" in direction:
+            elif direction == "down":
                 comp.y += move_amount
-            elif "closer" in direction:
-                # Find target component from direction text
-                target_match = direction.replace("closer to", "").strip()
-                target = self.board.get_component(target_match.upper())
+            elif direction == "closer" and target_ref:
+                # Move closer to target component
+                target = self.board.get_component(target_ref)
                 if target:
                     # Move 20% closer to target
                     dx = target.x - comp.x
                     dy = target.y - comp.y
                     comp.x += dx * 0.2
                     comp.y += dy * 0.2
-            elif "away" in direction:
-                # Find target component from direction text
-                target_match = direction.replace("away from", "").strip()
-                target = self.board.get_component(target_match.upper())
+                else:
+                    return False
+            elif direction == "away" and target_ref:
+                # Move away from target component
+                target = self.board.get_component(target_ref)
                 if target:
-                    # Move 20% away from target
+                    # Move 20% of move_amount away from target
                     dx = comp.x - target.x
                     dy = comp.y - target.y
                     dist = (dx*dx + dy*dy) ** 0.5
                     if dist > 0.1:
                         comp.x += (dx / dist) * move_amount
                         comp.y += (dy / dist) * move_amount
+                else:
+                    return False
             return True
 
         return False
