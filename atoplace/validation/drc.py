@@ -68,9 +68,10 @@ class DRCChecker:
         min_clearance = max(dfm_clearance, board_clearance)
         clearance_source = "board" if board_clearance > dfm_clearance else "DFM"
 
-        # Use layer-aware overlap detection to avoid false positives
-        # for components on opposite sides of the board
-        overlaps = self.board.find_overlaps(min_clearance, check_layers=True)
+        # Use layer-aware overlap detection with pad extents for accuracy
+        # - check_layers: avoid false positives for components on opposite sides
+        # - include_pads: catch overlaps where pads protrude beyond body
+        overlaps = self.board.find_overlaps(min_clearance, check_layers=True, include_pads=True)
 
         for ref1, ref2, dist in overlaps:
             c1 = self.board.get_component(ref1)

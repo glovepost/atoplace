@@ -477,3 +477,276 @@ The Product Plan marks several features as "Planned" that are actually **fully i
 ---
 
 *End of session - January 12, 2026*
+
+---
+
+## Session Summary - January 12, 2026 (Continued)
+
+### Task: Fix Open Issues + Implement Legalization Phase
+
+---
+
+## 1. Issues Fixed
+
+Three medium-priority bugs from `ISSUES.md` were resolved:
+
+### Issue 1: CLI Atopile Grouping (TypeError)
+- **File**: `atoplace/cli.py:152-155`
+- **Problem**: `GroupingConstraint` was called with wrong args (`component_refs`, `strength`)
+- **Fix**: Changed to correct args (`components`, `max_spread=15.0`)
+
+### Issue 2: Stale AABB After Rotation
+- **File**: `atoplace/placement/force_directed.py`
+- **Problem**: `_component_sizes` computed at init, never updated when rotation changes
+- **Fix**: Added `_update_component_sizes(state)` method called from `_apply_rotation_constraints()` when rotations change
+
+### Issue 3: Locked Components Still Rotate
+- **File**: `atoplace/placement/force_directed.py:566, 590`
+- **Problem**: `lock_placed` prevented position updates but rotation constraints still rotated locked components
+- **Fix**: Added `_is_component_locked(ref)` checks in `_apply_rotation_constraints()`
+
+---
+
+## 2. Legalization Phase Implemented
+
+Created new module `atoplace/placement/legalizer.py` (~700 lines) implementing the 3-phase pipeline from `research/manhattan_placement_strategy.md`:
+
+### Phase 1: Quantizer (Grid Snapping)
+- **Primary Grid** (0.5mm) for standard components
+- **Secondary Grid** (0.1mm) for fine-pitch passives (0201, 0402)
+- **Rotation Grid** (90°) snaps all rotations to orthogonal angles
+- Fine-pitch detection via footprint patterns
+
+### Phase 2: Beautifier (Row Alignment)
+- **PCA-based axis detection**: Calculates covariance matrix to determine if cluster forms row vs column
+- **Median projection**: Uses median (not mean) for robustness against outliers
+- **BFS clustering**: Groups nearby same-size passives within configurable radius (10mm default)
+- **Even distribution**: Ensures proper spacing along alignment axis
+
+### Phase 3: Shove (Overlap Removal)
+- **Priority-based resolution**: `Locked > Large ICs > Connectors > Small ICs > Passives`
+- **Minimum Translation Vector (MTV)**: Efficient separation using axis with minimum overlap
+- **Manhattan-constrained**: Displacement restricted to X or Y axis only to preserve alignment
+
+---
+
+## 3. New Classes Added
+
+### `PlacementLegalizer`
+Main class for legalization. Runs 3-phase pipeline.
+
+### `LegalizerConfig`
+Configuration dataclass:
+- `primary_grid: float = 0.5` - Standard grid (mm)
+- `secondary_grid: float = 0.1` - Fine-pitch grid (mm)
+- `rotation_grid: float = 90.0` - Rotation snap (degrees)
+- `cluster_radius: float = 10.0` - Max distance for clustering (mm)
+- `min_row_components: int = 2` - Minimum for row formation
+- `manhattan_shove: bool = True` - Constrain displacement to axes
+
+### `LegalizationResult`
+Result dataclass with statistics:
+- `grid_snapped: int` - Components moved to grid
+- `rows_formed: int` - Alignment rows created
+- `components_aligned: int` - Components aligned
+- `overlaps_resolved: int` - Collisions fixed
+- `final_overlaps: int` - Remaining overlaps
+
+### `ComponentPriority` Enum
+Priority levels for overlap resolution:
+- LOCKED = 100
+- LARGE_IC = 80
+- CONNECTOR = 60
+- SMALL_IC = 40
+- PASSIVE = 20
+- OTHER = 10
+
+### `PassiveSize` Enum
+Standard passive sizes for detection:
+- 0201, 0402, 0603, 0805, 1206, 1210, 2010, 2512
+
+---
+
+## 4. CLI Integration
+
+### Updated `cmd_place()` in `cli.py`
+- Added import for `PlacementLegalizer`, `LegalizerConfig`
+- Legalization runs automatically after force-directed refinement
+- Prints statistics: grid snapped, rows formed, overlaps resolved
+
+### New CLI Flag
+- `--skip-legalization`: Skip the legalization pass (keep organic layout)
+
+### Updated Help Text
+```bash
+atoplace place board.kicad_pcb              # Includes legalization
+atoplace place board.kicad_pcb --grid 1.0   # Custom grid size
+atoplace place board.kicad_pcb --skip-legalization  # Skip legalization
+```
+
+---
+
+## 5. Files Modified/Created
+
+| File | Change |
+|------|--------|
+| `atoplace/placement/legalizer.py` | **NEW** - ~700 lines |
+| `atoplace/placement/__init__.py` | Added exports for Legalizer classes |
+| `atoplace/placement/force_directed.py` | Added `_update_component_sizes()`, fixed rotation lock |
+| `atoplace/cli.py` | Fixed GroupingConstraint args, integrated Legalizer, added flag |
+| `ISSUES.md` | Marked 3 issues as RESOLVED |
+| `docs/PRODUCT_PLAN.md` | Updated Phase 1 status, Milestone A+ |
+
+---
+
+## 6. Algorithm Details
+
+### PCA for Axis Detection
+```python
+# Covariance matrix components
+cov_xx = sum((x - mean_x) ** 2 for x in xs) / n
+cov_yy = sum((y - mean_y) ** 2 for y in ys) / n
+cov_xy = sum((x - mean_x) * (y - mean_y) for x, y in positions) / n
+
+# Principal direction angle
+angle = 0.5 * atan2(2 * cov_xy, cov_xx - cov_yy)
+is_horizontal = abs(degrees(angle)) < 45
+```
+
+### MTV Calculation
+```python
+if overlap_x <= overlap_y:
+    # MTV along X axis (smaller displacement)
+    mtv_x = overlap_x + 0.01
+    mtv_y = 0.0
+else:
+    # MTV along Y axis
+    mtv_x = 0.0
+    mtv_y = overlap_y + 0.01
+```
+
+---
+
+## 7. Current Project Status
+
+| Phase | Status |
+|-------|--------|
+| 1: Placement Foundation | ✅ **Complete** |
+| 1+: Legalization | ✅ **Complete** |
+| 2A: Basic Atopile | ✅ Complete |
+| 2B: Enhanced Metadata | ✅ Complete |
+| 2C: Workflow Integration | ⏳ Not started |
+| 3: Routing | ⏳ Stub only |
+| 4: Production | ⏳ Stub only |
+
+---
+
+## 8. Next Steps
+
+1. **Phase 3A: Freerouting Integration**
+   - Create `FreeroutingRunner` class
+   - Implement DSN export via pcbnew API
+   - Implement SES import back to KiCad
+   - Add CLI command `atoplace route`
+
+2. **Phase 3B: Smart Routing**
+   - `NetClassAssigner` for automatic net classification
+   - Differential pair detection improvements
+   - Pre-route net class assignment
+
+---
+
+*End of session - January 12, 2026 (Continued)*
+
+---
+
+## Session Summary - January 12, 2026 (Session 3)
+
+### Task: Fix Open Medium-Priority Issues
+
+Continued working through open issues in `ISSUES.md`.
+
+---
+
+## Issues Fixed This Session
+
+### Batch 1: CLI Issues (8 fixes)
+
+| Issue | Fix Applied |
+|-------|-------------|
+| CLI DFM Profile Errors Unhandled | Added try/except around `get_profile()` calls in all 4 commands (place, validate, report, interactive). Shows available profiles on error. |
+| Validate Output Path Not Created | Added `output_path.parent.mkdir(parents=True, exist_ok=True)` before writing report. |
+| Directory Board Selection Is Arbitrary | Changed to `sorted(path.glob("*.kicad_pcb"))` and displays list when multiple boards found. |
+| Report Exit Code Always Success | Returns non-zero when DRC fails, pre-route fails, or confidence < 70%. |
+| Place Ignores Locked Components | Added `lock_placed=True` to `RefinementConfig` in `cmd_place`. |
+| Validate Exit Code Ignores Confidence | Added `confidence_ok = report.overall_score >= 0.7` to exit code logic. |
+| Interactive Apply Skips Legalization | Added full legalization pass after refinement in interactive `apply` command. |
+| Report Markdown Missing Sections | Changed to use `_generate_full_validation_report()` for complete output. |
+
+### Batch 2: Polygon Outline Validation (2 fixes)
+
+| Issue | Fix Applied |
+|-------|-------------|
+| ConfidenceScorer uses rectangular boundary checks | `_check_boundaries()` now checks all 4 corners of component bbox against `BoardOutline.contains_point()` with DFM margin. |
+| DRCChecker uses rectangular edge clearance | `_check_edge_clearance()` similarly updated to use polygon-aware checking with proper cutout/hole support. |
+
+### Batch 3: Documentation Accuracy (2 fixes)
+
+| Issue | Fix Applied |
+|-------|-------------|
+| Output Package Is Stub-Only | Marked as NOT AN ISSUE - already uses correct `__getattr__` lazy import pattern. |
+| README Overstates Routing | Removed "non-critical routing" claim. Changed atopile description to "module-aware grouping". Updated architecture to show routing as "planned". |
+
+---
+
+## Files Modified
+
+| File | Changes |
+|------|---------|
+| `atoplace/cli.py` | DFM error handling, locked components, legalization in interactive, exit codes |
+| `atoplace/validation/confidence.py` | Polygon-aware `_check_boundaries()` |
+| `atoplace/validation/drc.py` | Polygon-aware `_check_edge_clearance()` |
+| `README.md` | Accurate capability descriptions |
+| `ISSUES.md` | Marked 12 issues as resolved |
+| `CLAUDE.md` | Removed PRODUCT_REQUIREMENTS from session checklist |
+
+---
+
+## Commits Made
+
+1. `593057c` - Fix 8 CLI issues: DFM errors, exit codes, legalization, locked components
+2. `10208b5` - Fix polygon outline validation in boundary and edge clearance checks
+3. `2ed706d` - Fix README to accurately describe current capabilities
+
+---
+
+## Remaining Open Issues
+
+After this session, the following medium-priority issues remain open:
+
+1. **Legalizer R-Tree** - O(N²) overlap detection performance
+2. **DRC Clearance Is Component AABB Only** - Not pad-accurate
+3. **Component Overlap Uses Body AABB Only** - Ignores pad extents
+4. **DFM Rules Mostly Unused** - Most DFM rules not enforced
+5. **Net Class Rules Not Extracted** - Per-net constraints ignored
+6. **Board Design Rules Ignored in Validation** - Uses DFM minimums only
+
+These are primarily feature completeness issues rather than bugs.
+
+---
+
+## Current Project Status
+
+| Phase | Status |
+|-------|--------|
+| 1: Placement Foundation | ✅ Complete |
+| 1+: Legalization | ✅ Complete |
+| 2A: Basic Atopile | ✅ Complete |
+| 2B: Enhanced Metadata | ✅ Complete |
+| 2C: Workflow Integration | ⏳ Not started |
+| 3: Routing | ⏳ Stub only |
+| 4: Production | ⏳ Stub only |
+
+---
+
+*End of session - January 12, 2026 (Session 3)*

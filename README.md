@@ -1,4 +1,6 @@
-# AtoPlace
+<p align="center">
+  <img src="images/atoplace.jpg" alt="AtoPlace">
+</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
@@ -37,6 +39,13 @@ PCB layout automation has historically been "black box" and "messy"—producing 
 
 ```bash
 pip install atoplace
+```
+
+Alternative (no install): run from a local clone:
+```bash
+git clone https://github.com/glovepost/atoplace
+cd atoplace
+/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 -m atoplace.cli --help
 ```
 
 > **Note:** AtoPlace requires access to KiCad's Python API (`pcbnew`).

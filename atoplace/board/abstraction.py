@@ -114,10 +114,13 @@ class Component:
 
     def get_bounding_box(self) -> Tuple[float, float, float, float]:
         """
-        Get axis-aligned bounding box considering rotation.
+        Get axis-aligned bounding box of component body considering rotation.
 
         Returns:
             (min_x, min_y, max_x, max_y) in absolute coordinates
+
+        Note: This uses the component width/height (body dimensions). For a
+        bounding box that includes pad extents, use get_bounding_box_with_pads().
         """
         # Calculate corners
         hw, hh = self.width / 2, self.height / 2
@@ -138,10 +141,48 @@ class Component:
 
         return (min(xs), min(ys), max(xs), max(ys))
 
-    def overlaps(self, other: 'Component', clearance: float = 0.0) -> bool:
-        """Check if this component overlaps with another."""
-        bb1 = self.get_bounding_box()
-        bb2 = other.get_bounding_box()
+    def get_bounding_box_with_pads(self) -> Tuple[float, float, float, float]:
+        """
+        Get axis-aligned bounding box including all pad extents.
+
+        This method computes the union of the component body bounding box
+        and all pad bounding boxes, accounting for pads that may protrude
+        beyond the component body (e.g., edge-mounted connectors, irregular
+        footprints).
+
+        Returns:
+            (min_x, min_y, max_x, max_y) in absolute coordinates
+        """
+        # Start with body bounding box
+        body_bbox = self.get_bounding_box()
+        min_x, min_y, max_x, max_y = body_bbox
+
+        # Expand to include all pads
+        for pad in self.pads:
+            pad_bbox = pad.get_bounding_box(self.x, self.y, self.rotation)
+            min_x = min(min_x, pad_bbox[0])
+            min_y = min(min_y, pad_bbox[1])
+            max_x = max(max_x, pad_bbox[2])
+            max_y = max(max_y, pad_bbox[3])
+
+        return (min_x, min_y, max_x, max_y)
+
+    def overlaps(self, other: 'Component', clearance: float = 0.0,
+                 include_pads: bool = False) -> bool:
+        """Check if this component overlaps with another.
+
+        Args:
+            other: Another component to check against
+            clearance: Minimum clearance to enforce (mm)
+            include_pads: If True, use bounding boxes that include pad extents.
+                         This catches overlaps where pads protrude beyond body.
+        """
+        if include_pads:
+            bb1 = self.get_bounding_box_with_pads()
+            bb2 = other.get_bounding_box_with_pads()
+        else:
+            bb1 = self.get_bounding_box()
+            bb2 = other.get_bounding_box()
 
         # Add clearance
         bb1 = (bb1[0] - clearance, bb1[1] - clearance,
@@ -482,7 +523,8 @@ class Board:
     # --- Placement Utilities ---
 
     def find_overlaps(self, clearance: float = 0.25,
-                       check_layers: bool = False) -> List[Tuple[str, str, float]]:
+                       check_layers: bool = False,
+                       include_pads: bool = False) -> List[Tuple[str, str, float]]:
         """
         Find all overlapping component pairs.
 
@@ -491,6 +533,8 @@ class Board:
             check_layers: If True, only report overlaps between components on
                          the same layer (top vs bottom). Components on opposite
                          sides of the board are allowed to overlap.
+            include_pads: If True, use bounding boxes that include pad extents.
+                         This catches overlaps where pads protrude beyond body.
 
         Returns:
             List of (ref1, ref2, penetration_depth) tuples where penetration_depth
@@ -502,7 +546,10 @@ class Board:
 
         for i, ref1 in enumerate(refs):
             c1 = self.components[ref1]
-            bb1 = c1.get_bounding_box()
+            if include_pads:
+                bb1 = c1.get_bounding_box_with_pads()
+            else:
+                bb1 = c1.get_bounding_box()
             # Expand by clearance
             bb1 = (bb1[0] - clearance, bb1[1] - clearance,
                    bb1[2] + clearance, bb1[3] + clearance)
@@ -521,7 +568,10 @@ class Board:
                     if layer1_is_top != layer2_is_top:
                         continue  # Components on opposite sides, skip
 
-                bb2 = c2.get_bounding_box()
+                if include_pads:
+                    bb2 = c2.get_bounding_box_with_pads()
+                else:
+                    bb2 = c2.get_bounding_box()
 
                 # Calculate overlap on each axis
                 overlap_x = min(bb1[2], bb2[2]) - max(bb1[0], bb2[0])

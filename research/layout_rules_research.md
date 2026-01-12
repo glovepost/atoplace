@@ -334,6 +334,12 @@ rule into automation.
 - Rationale: Prevents yield loss and cost overruns.
 - Source: IPC-2226 (Sectional Design Standard for High Density Interconnect Printed Boards).
 
+### 15.4 BGA Fanout Strategy
+- Rule: Use Dogbone fanout for BGA pitch >= 0.5 mm; Use Via-in-Pad (VIP) for pitch < 0.5 mm.
+- Applies to: BGA components.
+- Rationale: Physical clearance constraints for dogbone traces fail below 0.5mm pitch.
+- Source: IPC-7351B / Fab Capabilities (Common Standard).
+
 ## 16. ESD and EMC Entry Design
 
 ### 16.1 ESD Protection Placement
