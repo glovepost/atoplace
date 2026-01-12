@@ -52,11 +52,22 @@ class DRCChecker:
 
         Only checks clearance between components on the same layer (top vs bottom).
         Components on opposite sides of the board are allowed to overlap.
+
+        Uses the effective clearance which is the maximum of:
+        - Board's design rule default clearance (if available)
+        - DFM profile minimum spacing
         """
         if not self.dfm_profile:
             return
 
-        min_clearance = self.dfm_profile.min_spacing
+        # Determine effective minimum clearance
+        # Board's design rules take precedence if they're stricter
+        dfm_clearance = self.dfm_profile.min_spacing
+        board_clearance = self.board.default_clearance or 0.0
+
+        min_clearance = max(dfm_clearance, board_clearance)
+        clearance_source = "board" if board_clearance > dfm_clearance else "DFM"
+
         # Use layer-aware overlap detection to avoid false positives
         # for components on opposite sides of the board
         overlaps = self.board.find_overlaps(min_clearance, check_layers=True)
@@ -73,7 +84,7 @@ class DRCChecker:
                 self.violations.append(DRCViolation(
                     rule="component_clearance",
                     severity="error",
-                    message=f"Clearance violation: {ref1} and {ref2} ({dist:.2f}mm < {min_clearance}mm)",
+                    message=f"Clearance violation: {ref1} and {ref2} ({dist:.2f}mm < {min_clearance}mm [{clearance_source}])",
                     location=(mid_x, mid_y),
                     items=[ref1, ref2],
                 ))

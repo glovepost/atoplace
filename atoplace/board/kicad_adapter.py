@@ -604,11 +604,28 @@ def _pad_to_pad(kicad_pad, fp_pos, fp_rotation: float) -> Pad:
 
 
 def _extract_net(net_name: str, net_item, kicad_board) -> Net:
-    """Extract net information."""
+    """Extract net information including net class rules."""
     net = Net(
         name=net_name,
         code=net_item.GetNetCode(),
     )
+
+    # Extract net class information from KiCad design settings
+    ds = kicad_board.GetDesignSettings()
+    try:
+        # Get the net class for this net
+        net_class = net_item.GetNetClass()
+        if net_class:
+            net.net_class = net_class.GetName()
+            # Extract trace width and clearance from net class
+            net.trace_width = pcbnew.ToMM(net_class.GetTrackWidth())
+            net.clearance = pcbnew.ToMM(net_class.GetClearance())
+    except (AttributeError, RuntimeError):
+        # Fallback for older KiCad versions or if net class not available
+        # Use design settings defaults
+        net.net_class = "Default"
+        net.trace_width = pcbnew.ToMM(ds.GetCurrentTrackWidth())
+        net.clearance = pcbnew.ToMM(ds.GetSmallestClearanceValue())
 
     # Determine if power/ground net
     name_upper = net_name.upper()
