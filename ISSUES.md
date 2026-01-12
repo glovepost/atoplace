@@ -25,7 +25,13 @@ This file tracks code review findings and risks discovered during development.
 
 ### Medium - OPEN
 
-(none)
+- **Placement leaves unresolved overlaps after legalization**: Running `place` on `examples/dogtracker/layouts/default/default.kicad_pcb` reports "Overlaps resolved: 53 in 50 iterations" but also warns "7 overlaps remaining" and still emits multiple CRITICAL overlap errors in validation. This suggests legalization is not guaranteed to converge or lacks a final retry when overlaps remain. Files: `atoplace/placement/legalizer.py`, `atoplace/cli.py`.
+- **Noisy wx image handler debug spam**: CLI prints repeated "Adding duplicate image handler" debug lines from wx on board load/save, which drowns useful output. Consider suppressing wx debug output or configuring logging. Files: `atoplace/board/kicad_adapter.py`, `atoplace/cli.py`.
+- **Module detector double-counts categories**: `Detecting functional modules...` logs `sensor` three times with separate counts instead of aggregating, making module summary misleading. Files: `atoplace/placement/module_detector.py`, `atoplace/cli.py`.
+
+### Medium - RESOLVED (2026-01-12 Session 5 - KiCad Plugin)
+
+- ~~**CLI: KiCad Python GUI requirement blocks headless runs (macOS)**: Running the CLI via KiCad's bundled Python from a non-GUI context fails with `This program needs access to the screen... logged in on the main display of your Mac.` This blocks CI/headless usage and makes it unclear how to run in terminal-only environments. Recommend documenting the requirement and/or providing a KiCad Action Plugin path. Files: `atoplace/cli.py`, `atoplace/board/kicad.py`.~~ **FIXED**: Created KiCad Action Plugin in `kicad_plugin/` directory. Provides three actions (Optimize Placement, Validate Placement, Generate Report) accessible from Tools -> External Plugins menu within KiCad's PCB Editor. Plugin runs in KiCad's GUI environment, bypassing the headless Python limitation. See `kicad_plugin/README.md` for installation instructions.
 
 ### Medium - RESOLVED (2026-01-12 Session 5)
 

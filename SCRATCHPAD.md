@@ -954,3 +954,95 @@ All tracked issues in `ISSUES.md` are now resolved.
 ---
 
 *End of session - January 12, 2026 (Session 5)*
+
+---
+
+## Session Summary - January 12, 2026 (Session 5 continued - KiCad Plugin)
+
+### Task: Create KiCad Action Plugin
+
+Created a KiCad Action Plugin to solve the headless Python GUI requirement issue on macOS.
+
+---
+
+## Problem Addressed
+
+Running `python -m atoplace place` with KiCad's bundled Python fails on macOS with:
+```
+This program needs access to the screen... logged in on the main display of your Mac.
+```
+
+This blocks CI/headless usage. The solution is to provide a KiCad Action Plugin that runs within KiCad's GUI environment.
+
+---
+
+## Implementation
+
+### Plugin Structure
+
+```
+kicad_plugin/
+├── __init__.py           # Plugin registration
+├── atoplace_action.py    # Action plugin classes
+├── icon.png              # Plugin icon (24x24)
+└── README.md             # Installation instructions
+```
+
+### Action Plugins Created
+
+| Plugin | Menu Entry | Description |
+|--------|------------|-------------|
+| `AtoPlacePlaceAction` | AtoPlace: Optimize Placement | Runs force-directed refinement + legalization |
+| `AtoPlaceValidateAction` | AtoPlace: Validate Placement | Pre-route validation + DRC checks |
+| `AtoPlaceReportAction` | AtoPlace: Generate Report | Full markdown report with modules |
+
+### Key Classes
+
+**`AtoPlaceBaseAction`** - Base class with shared functionality:
+- `get_board_wrapper()` - Wraps current KiCad board in atoplace's Board abstraction
+- `get_dfm_profile()` - Auto-selects DFM profile based on layer count
+- `ensure_atoplace_available()` - Verifies atoplace package is importable
+
+**Plugin Registration** - Uses KiCad's `pcbnew.ActionPlugin` pattern:
+```python
+class AtoPlacePlaceAction(AtoPlaceBaseAction):
+    def defaults(self):
+        self.name = "AtoPlace: Optimize Placement"
+        self.category = "Placement"
+        self.description = "Run force-directed placement optimization"
+        self.show_toolbar_button = False
+
+    def Run(self):
+        # Main plugin logic with wxPython progress dialogs
+```
+
+### Installation
+
+Users symlink or copy `kicad_plugin/` to KiCad's plugins directory:
+- **macOS**: `~/Library/Application Support/kicad/8.0/scripting/plugins/atoplace`
+- **Linux**: `~/.local/share/kicad/8.0/scripting/plugins/atoplace`
+- **Windows**: `%APPDATA%\kicad\8.0\scripting\plugins\atoplace`
+
+---
+
+## Files Created
+
+| File | Description |
+|------|-------------|
+| `kicad_plugin/__init__.py` | Plugin registration and error handling |
+| `kicad_plugin/atoplace_action.py` | Three ActionPlugin classes (~350 lines) |
+| `kicad_plugin/README.md` | Installation and usage documentation |
+| `kicad_plugin/icon.png` | Plugin icon (copied from images/) |
+
+---
+
+## Current Open Issues
+
+3 medium-priority issues remain:
+1. **Placement leaves unresolved overlaps** - Legalization doesn't always converge
+2. **Noisy wx debug spam** - "Adding duplicate image handler" messages
+3. **Module detector double-counts** - Sensor category logged multiple times
+
+---
+
+*End of session - January 12, 2026 (Session 5 continued - KiCad Plugin)*
