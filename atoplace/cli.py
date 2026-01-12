@@ -25,23 +25,92 @@ def check_pcbnew():
         return False
 
 
+def load_board_from_path(board_arg: str, build: Optional[str] = None):
+    """
+    Load a board from a path, auto-detecting atopile projects.
+
+    Args:
+        board_arg: Path to .kicad_pcb file or atopile project directory
+        build: Optional build name for atopile projects
+
+    Returns:
+        Tuple of (board, source_path, is_atopile)
+    """
+    from .board.atopile_adapter import (
+        AtopileProjectLoader,
+        detect_board_source,
+    )
+    from .board.kicad_adapter import load_kicad_board
+
+    path = Path(board_arg)
+
+    # Check if this is an atopile project
+    if path.is_dir() and (path / "ato.yaml").exists():
+        print(f"Detected atopile project: {path}")
+        loader = AtopileProjectLoader(path)
+        build_name = build or "default"
+
+        try:
+            board_path = loader.get_board_path(build_name)
+            print(f"  Build: {build_name}")
+            print(f"  Board: {board_path}")
+
+            if not board_path.exists():
+                print(f"Error: Board file not found: {board_path}")
+                print("Run 'ato build' first to generate the board.")
+                return None, None, True
+
+            board = loader.load_board(build_name)
+            return board, board_path, True
+
+        except ValueError as e:
+            print(f"Error: {e}")
+            return None, None, True
+
+    # Check for project root if path doesn't exist directly
+    if not path.exists():
+        project_root = AtopileProjectLoader.find_project_root(path)
+        if project_root:
+            return load_board_from_path(str(project_root), build)
+
+        print(f"Error: Path not found: {path}")
+        return None, None, False
+
+    # Direct .kicad_pcb file
+    if path.suffix == ".kicad_pcb":
+        print(f"Loading KiCad board: {path}")
+        board = load_kicad_board(path)
+        return board, path, False
+
+    # Directory without ato.yaml - look for .kicad_pcb files
+    if path.is_dir():
+        kicad_files = list(path.glob("*.kicad_pcb"))
+        if kicad_files:
+            board_path = kicad_files[0]
+            print(f"Found KiCad board: {board_path}")
+            board = load_kicad_board(board_path)
+            return board, board_path, False
+
+    print(f"Error: Cannot load board from: {path}")
+    return None, None, False
+
+
 def cmd_place(args):
     """Run placement optimization."""
     from .board.abstraction import Board
-    from .board.kicad_adapter import load_kicad_board, save_kicad_board
+    from .board.kicad_adapter import save_kicad_board
     from .placement.force_directed import ForceDirectedRefiner, RefinementConfig
     from .placement.module_detector import ModuleDetector
     from .nlp.constraint_parser import ConstraintParser
     from .validation.confidence import ConfidenceScorer
     from .dfm.profiles import get_profile
 
-    pcb_path = Path(args.board)
-    if not pcb_path.exists():
-        print(f"Error: Board file not found: {pcb_path}")
-        return 1
+    # Load board with auto-detection
+    build_name = getattr(args, 'build', None)
+    board, pcb_path, is_atopile = load_board_from_path(args.board, build_name)
 
-    print(f"Loading board: {pcb_path}")
-    board = load_kicad_board(pcb_path)
+    if board is None:
+        return 1
     print(f"  Components: {len(board.components)}")
     print(f"  Nets: {len(board.nets)}")
 
@@ -118,19 +187,17 @@ def cmd_place(args):
 
 def cmd_validate(args):
     """Validate board placement."""
-    from .board.kicad_adapter import load_kicad_board
     from .validation.confidence import ConfidenceScorer
     from .validation.pre_route import PreRouteValidator
     from .validation.drc import DRCChecker
     from .dfm.profiles import get_profile
 
-    pcb_path = Path(args.board)
-    if not pcb_path.exists():
-        print(f"Error: Board file not found: {pcb_path}")
-        return 1
+    # Load board with auto-detection
+    build_name = getattr(args, 'build', None)
+    board, pcb_path, is_atopile = load_board_from_path(args.board, build_name)
 
-    print(f"Loading board: {pcb_path}")
-    board = load_kicad_board(pcb_path)
+    if board is None:
+        return 1
 
     # Run pre-route validation
     print("\nRunning pre-route validation...")
@@ -164,17 +231,16 @@ def cmd_validate(args):
 
 def cmd_report(args):
     """Generate detailed report for a board."""
-    from .board.kicad_adapter import load_kicad_board
     from .placement.module_detector import ModuleDetector
     from .validation.confidence import ConfidenceScorer
     from .dfm.profiles import get_profile
 
-    pcb_path = Path(args.board)
-    if not pcb_path.exists():
-        print(f"Error: Board file not found: {pcb_path}")
-        return 1
+    # Load board with auto-detection
+    build_name = getattr(args, 'build', None)
+    board, pcb_path, is_atopile = load_board_from_path(args.board, build_name)
 
-    board = load_kicad_board(pcb_path)
+    if board is None:
+        return 1
 
     # Detect modules
     detector = ModuleDetector(board)
@@ -193,23 +259,23 @@ def cmd_report(args):
 
 def cmd_interactive(args):
     """Run interactive constraint session."""
-    from .board.kicad_adapter import load_kicad_board, save_kicad_board
+    from .board.kicad_adapter import save_kicad_board
     from .nlp.constraint_parser import ConstraintParser, ModificationHandler
     from .placement.force_directed import ForceDirectedRefiner
     from .validation.confidence import ConfidenceScorer
     from .dfm.profiles import get_profile
 
-    pcb_path = Path(args.board)
-    if not pcb_path.exists():
-        print(f"Error: Board file not found: {pcb_path}")
+    # Load board with auto-detection
+    build_name = getattr(args, 'build', None)
+    board, pcb_path, is_atopile = load_board_from_path(args.board, build_name)
+
+    if board is None:
         return 1
 
-    board = load_kicad_board(pcb_path)
     parser = ConstraintParser(board)
     modifier = ModificationHandler(board)
     dfm_profile = get_profile(args.dfm or "jlcpcb_standard")
 
-    print(f"Loaded: {pcb_path}")
     print(f"Components: {len(board.components)}")
     print(f"Enter constraints or modifications. Type 'help' for commands, 'quit' to exit.")
     print()
@@ -327,10 +393,18 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # KiCad board files
   atoplace place board.kicad_pcb
   atoplace place board.kicad_pcb --constraints "USB on left edge"
+
+  # Atopile projects (auto-detected)
+  atoplace place .                              # Uses default build
+  atoplace place ~/projects/my-sensor --build custom
+  atoplace place . --use-ato-modules            # Use atopile hierarchy
+
+  # Validation and reports
   atoplace validate board.kicad_pcb --dfm jlcpcb_standard
-  atoplace interactive board.kicad_pcb
+  atoplace interactive .
         """,
     )
 
@@ -340,31 +414,37 @@ Examples:
 
     # Place command
     place_parser = subparsers.add_parser('place', help='Run placement optimization')
-    place_parser.add_argument('board', help='Path to KiCad PCB file')
+    place_parser.add_argument('board', help='Path to KiCad PCB file or atopile project directory')
     place_parser.add_argument('-o', '--output', help='Output file path')
     place_parser.add_argument('-c', '--constraints', help='Natural language constraints')
     place_parser.add_argument('--dfm', help='DFM profile (default: jlcpcb_standard)')
+    place_parser.add_argument('--build', help='Build name for atopile projects (default: default)')
     place_parser.add_argument('--iterations', type=int, help='Max iterations (default: 500)')
     place_parser.add_argument('--grid', type=float, help='Grid size for snapping (mm)')
     place_parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
     place_parser.add_argument('--dry-run', action='store_true', help="Don't save changes")
+    place_parser.add_argument('--use-ato-modules', action='store_true',
+                              help='Use atopile module hierarchy for grouping constraints')
 
     # Validate command
     validate_parser = subparsers.add_parser('validate', help='Validate board placement')
-    validate_parser.add_argument('board', help='Path to KiCad PCB file')
+    validate_parser.add_argument('board', help='Path to KiCad PCB file or atopile project directory')
     validate_parser.add_argument('--dfm', help='DFM profile (default: jlcpcb_standard)')
+    validate_parser.add_argument('--build', help='Build name for atopile projects (default: default)')
     validate_parser.add_argument('-o', '--output', help='Save report to file')
 
     # Report command
     report_parser = subparsers.add_parser('report', help='Generate detailed report')
-    report_parser.add_argument('board', help='Path to KiCad PCB file')
+    report_parser.add_argument('board', help='Path to KiCad PCB file or atopile project directory')
     report_parser.add_argument('--dfm', help='DFM profile (default: jlcpcb_standard)')
+    report_parser.add_argument('--build', help='Build name for atopile projects (default: default)')
 
     # Interactive command
     interactive_parser = subparsers.add_parser('interactive',
                                                 help='Interactive constraint session')
-    interactive_parser.add_argument('board', help='Path to KiCad PCB file')
+    interactive_parser.add_argument('board', help='Path to KiCad PCB file or atopile project directory')
     interactive_parser.add_argument('--dfm', help='DFM profile (default: jlcpcb_standard)')
+    interactive_parser.add_argument('--build', help='Build name for atopile projects (default: default)')
 
     args = parser.parse_args()
 

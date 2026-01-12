@@ -132,6 +132,9 @@ class ForceDirectedRefiner:
             # Update velocities and positions
             max_movement = self._apply_forces(state, forces)
 
+            # Apply rotation constraints
+            self._apply_rotation_constraints(state)
+
             # Calculate total system energy
             state.total_energy = self._calculate_energy(state, forces)
 
@@ -166,6 +169,13 @@ class ForceDirectedRefiner:
             velocities=velocities,
         )
 
+    def _is_component_locked(self, ref: str) -> bool:
+        """Check if a component should be treated as locked."""
+        if not self.config.lock_placed:
+            return False
+        comp = self.board.components.get(ref)
+        return comp.locked if comp else False
+
     def _calculate_all_forces(self, state: PlacementState
                               ) -> Dict[str, List[Force]]:
         """Calculate all forces on each component."""
@@ -191,8 +201,15 @@ class ForceDirectedRefiner:
 
     def _add_repulsion_forces(self, state: PlacementState,
                               forces: Dict[str, List[Force]]):
-        """Add repulsion forces between components."""
+        """Add repulsion forces between components.
+
+        Uses preferred_clearance to add spacing force between components
+        that are between min_clearance and preferred_clearance distance.
+        Also adds cutoff distance to avoid long-range forces dominating.
+        """
         refs = list(state.positions.keys())
+        # Cutoff distance beyond which repulsion is negligible (reduces noise)
+        cutoff_distance = 50.0  # mm
 
         for i, ref1 in enumerate(refs):
             x1, y1 = state.positions[ref1]
@@ -207,11 +224,17 @@ class ForceDirectedRefiner:
                 dy = y1 - y2
                 distance = max(math.sqrt(dx*dx + dy*dy), 0.01)
 
+                # Skip if beyond cutoff (avoids long-range force accumulation)
+                if distance > cutoff_distance:
+                    continue
+
                 # Minimum distance to avoid overlap
                 min_dist = (size1 + size2) / 2 + self.config.min_clearance
+                # Preferred distance for comfortable spacing
+                preferred_dist = (size1 + size2) / 2 + self.config.preferred_clearance
 
                 if distance < min_dist:
-                    # Strong repulsion when overlapping
+                    # Strong repulsion when overlapping or below min clearance
                     overlap = min_dist - distance
                     force_mag = self.config.repulsion_strength * overlap
 
@@ -223,9 +246,26 @@ class ForceDirectedRefiner:
                                               f"repel_{ref2}"))
                     forces[ref2].append(Force(-fx, -fy, ForceType.REPULSION,
                                               f"repel_{ref1}"))
+                elif distance < preferred_dist:
+                    # Medium repulsion when between min and preferred clearance
+                    # Linear falloff as distance approaches preferred
+                    shortfall = preferred_dist - distance
+                    max_shortfall = preferred_dist - min_dist
+                    ratio = shortfall / max_shortfall if max_shortfall > 0 else 0
+                    force_mag = self.config.repulsion_strength * 0.3 * ratio
+
+                    fx = force_mag * dx / distance
+                    fy = force_mag * dy / distance
+
+                    forces[ref1].append(Force(fx, fy, ForceType.REPULSION,
+                                              f"space_{ref2}"))
+                    forces[ref2].append(Force(-fx, -fy, ForceType.REPULSION,
+                                              f"space_{ref1}"))
                 else:
-                    # Weak inverse-square repulsion for non-overlapping
-                    force_mag = self.config.repulsion_strength / (distance * distance)
+                    # Weak inverse-distance (not inverse-square) for distant components
+                    # Using inverse distance instead of inverse-square reduces
+                    # oscillation in dense boards
+                    force_mag = self.config.repulsion_strength * 0.1 / distance
 
                     fx = force_mag * dx / distance
                     fy = force_mag * dy / distance
@@ -316,13 +356,24 @@ class ForceDirectedRefiner:
                                forces: Dict[str, List[Force]]):
         """Add forces for user-defined constraints."""
         for constraint in self.constraints:
-            constraint_forces = constraint.calculate_forces(
-                state, self.board, self.config.constraint_strength)
-
-            for ref, (fx, fy) in constraint_forces.items():
-                if ref in forces:
-                    forces[ref].append(Force(fx, fy, ForceType.CONSTRAINT,
-                                             constraint.description))
+            # Support both interfaces:
+            # - calculate_forces(state, board, strength) - force_directed.py constraints
+            # - calculate_force(board, ref, strength) - constraints.py constraints
+            if hasattr(constraint, 'calculate_forces'):
+                constraint_forces = constraint.calculate_forces(
+                    state, self.board, self.config.constraint_strength)
+                for ref, (fx, fy) in constraint_forces.items():
+                    if ref in forces:
+                        forces[ref].append(Force(fx, fy, ForceType.CONSTRAINT,
+                                                 getattr(constraint, 'description', '')))
+            elif hasattr(constraint, 'calculate_force'):
+                # Iterate over all components for constraints.py style
+                for ref in state.positions:
+                    fx, fy = constraint.calculate_force(
+                        self.board, ref, self.config.constraint_strength)
+                    if fx != 0 or fy != 0:
+                        forces[ref].append(Force(fx, fy, ForceType.CONSTRAINT,
+                                                 getattr(constraint, 'description', '')))
 
     def _add_alignment_forces(self, state: PlacementState,
                               forces: Dict[str, List[Force]]):
@@ -344,10 +395,18 @@ class ForceDirectedRefiner:
 
     def _apply_forces(self, state: PlacementState,
                       forces: Dict[str, List[Force]]) -> float:
-        """Apply forces to update velocities and positions."""
+        """Apply forces to update velocities and positions.
+
+        Respects lock_placed config: locked components don't move.
+        """
         max_movement = 0.0
 
         for ref in state.positions:
+            # Skip locked components
+            if self._is_component_locked(ref):
+                state.velocities[ref] = (0.0, 0.0)
+                continue
+
             # Sum all forces
             total_fx = sum(f.fx for f in forces[ref])
             total_fy = sum(f.fy for f in forces[ref])
@@ -393,6 +452,43 @@ class ForceDirectedRefiner:
                 total_energy += f.magnitude
 
         return total_energy
+
+    def _apply_rotation_constraints(self, state: PlacementState):
+        """Apply rotation constraints to component rotations."""
+        for constraint in self.constraints:
+            # Check for FixedConstraint with rotation (from constraints.py)
+            if hasattr(constraint, 'get_target_rotation'):
+                target_rot = constraint.get_target_rotation()
+                if target_rot is not None:
+                    ref = getattr(constraint, 'component_ref', None)
+                    if ref and ref in state.rotations:
+                        # Gradually rotate toward target
+                        current = state.rotations[ref]
+                        diff = target_rot - current
+
+                        # Handle wraparound
+                        if diff > 180:
+                            diff -= 360
+                        elif diff < -180:
+                            diff += 360
+
+                        # Apply rotation with damping
+                        state.rotations[ref] = (current + diff * 0.3) % 360
+
+            # Also handle rotation field directly for force_directed.py constraints
+            elif hasattr(constraint, 'rotation') and constraint.rotation is not None:
+                ref = getattr(constraint, 'component_ref', None)
+                if ref and ref in state.rotations:
+                    target_rot = constraint.rotation
+                    current = state.rotations[ref]
+                    diff = target_rot - current
+
+                    if diff > 180:
+                        diff -= 360
+                    elif diff < -180:
+                        diff += 360
+
+                    state.rotations[ref] = (current + diff * 0.3) % 360
 
     def _apply_to_board(self, state: PlacementState):
         """Apply final positions to the board."""

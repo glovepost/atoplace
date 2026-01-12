@@ -96,12 +96,23 @@ def save_kicad_board(board: Board, path: Path):
         path: Path to .kicad_pcb file
     """
     check_pcbnew()
+    import shutil
 
     path = Path(path)
+
+    # If output path differs from source, copy source first to preserve all elements
+    if board.source_file and board.source_file != path:
+        if board.source_file.exists():
+            # Copy source to destination to preserve traces, zones, etc.
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(board.source_file, path)
 
     # Load existing board if it exists
     if path.exists():
         kicad_board = pcbnew.LoadBoard(str(path))
+    elif board.source_file and board.source_file.exists():
+        # Load from source file if output doesn't exist but source does
+        kicad_board = pcbnew.LoadBoard(str(board.source_file))
     else:
         # Create new board (basic setup)
         kicad_board = pcbnew.BOARD()
@@ -155,12 +166,28 @@ def _extract_outline(kicad_board) -> BoardOutline:
 
 
 def _footprint_to_component(fp) -> Component:
-    """Convert KiCad footprint to Component."""
+    """Convert KiCad footprint to Component.
+
+    Note: KiCad's GetBoundingBox() returns the axis-aligned bounding box in
+          board coordinates (already accounting for rotation). We need to
+          estimate the original unrotated dimensions so that
+          Component.get_bounding_box() can properly calculate the rotated box.
+    """
+    import math
+
     ref = fp.GetReference()
     pos = fp.GetPosition()
+    rotation = fp.GetOrientationDegrees()
 
-    # Get bounding box for dimensions
+    # Get bounding box for dimensions (axis-aligned in board coords)
     bbox = fp.GetBoundingBox()
+    bbox_width = pcbnew.ToMM(bbox.GetWidth())
+    bbox_height = pcbnew.ToMM(bbox.GetHeight())
+
+    # Estimate original (unrotated) dimensions by reverse-calculating
+    # For rotated rectangles, the axis-aligned bbox expands
+    # We use the pad extents as a more reliable measure when available
+    width, height = _estimate_unrotated_dimensions(fp, bbox_width, bbox_height, rotation)
 
     # Determine layer
     layer = Layer.TOP_COPPER if fp.GetLayer() == pcbnew.F_Cu else Layer.BOTTOM_COPPER
@@ -171,29 +198,125 @@ def _footprint_to_component(fp) -> Component:
         value=fp.GetValue(),
         x=pcbnew.ToMM(pos.x),
         y=pcbnew.ToMM(pos.y),
-        rotation=fp.GetOrientationDegrees(),
+        rotation=rotation,
         layer=layer,
-        width=pcbnew.ToMM(bbox.GetWidth()),
-        height=pcbnew.ToMM(bbox.GetHeight()),
+        width=width,
+        height=height,
         locked=fp.IsLocked(),
     )
 
-    # Extract pads
+    # Extract pads (pass rotation for coordinate transformation)
     for kicad_pad in fp.Pads():
-        pad = _pad_to_pad(kicad_pad, pos)
+        pad = _pad_to_pad(kicad_pad, pos, rotation)
         component.pads.append(pad)
 
     return component
 
 
-def _pad_to_pad(kicad_pad, fp_pos) -> Pad:
-    """Convert KiCad pad to Pad."""
+def _estimate_unrotated_dimensions(fp, bbox_width: float, bbox_height: float,
+                                   rotation: float) -> tuple:
+    """Estimate unrotated component dimensions.
+
+    Uses pad extents when available, otherwise reverse-calculates from
+    the axis-aligned bounding box.
+    """
+    import math
+
+    # Try to get dimensions from pad extents (more reliable)
+    pads = list(fp.Pads())
+    if pads:
+        # Calculate pad extents in local coordinates
+        min_x = min_y = float('inf')
+        max_x = max_y = float('-inf')
+
+        fp_pos = fp.GetPosition()
+        rad = math.radians(-rotation)
+        cos_r, sin_r = math.cos(rad), math.sin(rad)
+
+        for pad in pads:
+            pad_pos = pad.GetPosition()
+            # Get position relative to footprint center
+            rel_x = pcbnew.ToMM(pad_pos.x - fp_pos.x)
+            rel_y = pcbnew.ToMM(pad_pos.y - fp_pos.y)
+            # Reverse-rotate to get local coordinates
+            local_x = rel_x * cos_r - rel_y * sin_r
+            local_y = rel_x * sin_r + rel_y * cos_r
+
+            pad_size = pad.GetSize()
+            pad_w = pcbnew.ToMM(pad_size.x) / 2
+            pad_h = pcbnew.ToMM(pad_size.y) / 2
+
+            min_x = min(min_x, local_x - pad_w)
+            max_x = max(max_x, local_x + pad_w)
+            min_y = min(min_y, local_y - pad_h)
+            max_y = max(max_y, local_y + pad_h)
+
+        if min_x != float('inf'):
+            # Add margin for component body beyond pads
+            margin = 0.5  # mm typical component body margin
+            width = (max_x - min_x) + margin
+            height = (max_y - min_y) + margin
+            return (width, height)
+
+    # Fallback: use bbox dimensions directly (may be slightly inflated for rotated parts)
+    # For 0/90/180/270 rotations, swap if needed
+    rot_normalized = rotation % 180
+    if 45 < rot_normalized < 135:
+        # Rotated ~90 degrees, swap width and height
+        return (bbox_height, bbox_width)
+
+    return (bbox_width, bbox_height)
+
+
+def _map_pad_layer(kicad_pad) -> Layer:
+    """Map KiCad pad layers to our Layer enum.
+
+    Determines the primary layer for the pad based on its layer set.
+    """
+    # Check if pad is on bottom copper
+    layer_set = kicad_pad.GetLayerSet()
+
+    # Check for through-hole (has drill and on both copper layers)
+    if kicad_pad.GetDrillSize().x > 0:
+        # Through-hole pads - could be on both layers
+        # Return TOP_COPPER as primary but the drill info indicates through-hole
+        return Layer.TOP_COPPER
+
+    # Check specific copper layers
+    if layer_set.Contains(pcbnew.B_Cu) and not layer_set.Contains(pcbnew.F_Cu):
+        return Layer.BOTTOM_COPPER
+
+    # Default to top copper for SMD pads and most cases
+    return Layer.TOP_COPPER
+
+
+def _pad_to_pad(kicad_pad, fp_pos, fp_rotation: float) -> Pad:
+    """Convert KiCad pad to Pad.
+
+    Args:
+        kicad_pad: KiCad pad object
+        fp_pos: Footprint position in board coordinates
+        fp_rotation: Footprint rotation in degrees
+
+    Note: KiCad returns pad positions in board coordinates (already rotated).
+          We need to reverse-rotate to get local footprint coordinates, since
+          Pad.absolute_position() will re-apply the rotation.
+    """
+    import math
+
     pad_pos = kicad_pad.GetPosition()
     size = kicad_pad.GetSize()
 
-    # Calculate relative position
-    rel_x = pcbnew.ToMM(pad_pos.x - fp_pos.x)
-    rel_y = pcbnew.ToMM(pad_pos.y - fp_pos.y)
+    # Calculate position relative to footprint center (board coordinates)
+    board_rel_x = pcbnew.ToMM(pad_pos.x - fp_pos.x)
+    board_rel_y = pcbnew.ToMM(pad_pos.y - fp_pos.y)
+
+    # Reverse-rotate to get local footprint coordinates
+    # This undoes the footprint rotation so Pad.absolute_position() can re-apply it
+    rad = math.radians(-fp_rotation)  # Negative to reverse the rotation
+    cos_r, sin_r = math.cos(rad), math.sin(rad)
+    rel_x = board_rel_x * cos_r - board_rel_y * sin_r
+    rel_y = board_rel_x * sin_r + board_rel_y * cos_r
 
     # Determine shape
     shape_map = {
@@ -214,6 +337,9 @@ def _pad_to_pad(kicad_pad, fp_pos) -> Pad:
     if kicad_pad.GetDrillSize().x > 0:
         drill = pcbnew.ToMM(kicad_pad.GetDrillSize().x)
 
+    # Map pad layer from KiCad
+    layer = _map_pad_layer(kicad_pad)
+
     return Pad(
         number=kicad_pad.GetNumber(),
         x=rel_x,
@@ -221,6 +347,7 @@ def _pad_to_pad(kicad_pad, fp_pos) -> Pad:
         width=pcbnew.ToMM(size.x),
         height=pcbnew.ToMM(size.y),
         shape=shape,
+        layer=layer,
         net=net,
         drill=drill,
     )

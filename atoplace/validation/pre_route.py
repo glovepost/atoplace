@@ -5,7 +5,7 @@ Validates board state before attempting autorouting to catch issues early.
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Set
+from typing import List, Tuple, Dict, Set, FrozenSet
 from ..board.abstraction import Board, Component
 
 
@@ -92,10 +92,18 @@ class PreRouteValidator:
                 ))
 
     def _check_overlapping_pads(self):
-        """Check for pads that overlap between different components."""
-        # Build spatial index of all pads
-        pad_locations: Dict[Tuple[int, int], List[Tuple[str, str]]] = {}
-        grid_size = 0.1  # mm
+        """Check for pads that overlap between different components.
+
+        Uses a coarse grid for candidate finding, then verifies with
+        actual pad geometry to avoid false positives.
+        """
+        import math
+
+        # Build spatial index of all pads (coarse grid for candidate pairs)
+        # Use larger grid size and check neighboring cells too
+        grid_size = 1.0  # mm (coarser grid, then verify precisely)
+        pad_info: Dict[Tuple[int, int], List[Tuple[str, str, float, float, float, float]]] = {}
+        # Store: (ref, pad_num, abs_x, abs_y, half_width, half_height)
 
         for ref, comp in self.board.components.items():
             for pad in comp.pads:
@@ -103,24 +111,60 @@ class PreRouteValidator:
                 grid_x = int(abs_x / grid_size)
                 grid_y = int(abs_y / grid_size)
 
-                key = (grid_x, grid_y)
-                if key not in pad_locations:
-                    pad_locations[key] = []
-                pad_locations[key].append((ref, pad.number))
+                # Store pad info with dimensions
+                half_w = pad.width / 2
+                half_h = pad.height / 2
+                info = (ref, pad.number, abs_x, abs_y, half_w, half_h)
 
-        # Check for multiple pads in same grid cell
-        for (gx, gy), pads in pad_locations.items():
-            if len(pads) > 1:
-                # Check if from different components
-                refs = set(p[0] for p in pads)
-                if len(refs) > 1:
-                    pad_str = ", ".join(f"{r}.{p}" for r, p in pads)
-                    self.issues.append(PreRouteIssue(
-                        severity="error",
-                        category="placement",
-                        message=f"Overlapping pads detected: {pad_str}",
-                        location=f"({gx * grid_size:.1f}, {gy * grid_size:.1f})",
-                    ))
+                # Add to current and neighboring cells for broad-phase
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        key = (grid_x + dx, grid_y + dy)
+                        if key not in pad_info:
+                            pad_info[key] = []
+                        pad_info[key].append(info)
+
+        # Check for actual overlaps with precise geometry
+        checked_pairs: Set[Tuple[str, str, str, str]] = set()
+
+        for cell_pads in pad_info.values():
+            if len(cell_pads) < 2:
+                continue
+
+            for i, pad1 in enumerate(cell_pads):
+                ref1, num1, x1, y1, hw1, hh1 = pad1
+                for pad2 in cell_pads[i+1:]:
+                    ref2, num2, x2, y2, hw2, hh2 = pad2
+
+                    # Skip same component
+                    if ref1 == ref2:
+                        continue
+
+                    # Skip if already checked this pair
+                    pair_key = tuple(sorted([(ref1, num1), (ref2, num2)]))
+                    if pair_key in checked_pairs:
+                        continue
+                    checked_pairs.add(pair_key)
+
+                    # Check actual overlap using axis-aligned bounding box
+                    # Add small clearance (0.05mm) to avoid false positives
+                    clearance = 0.05
+                    dx = abs(x1 - x2)
+                    dy = abs(y1 - y2)
+
+                    # For circular pads, use radius
+                    # For rectangular, use half-dimensions
+                    # Use simplified check: if centers are closer than sum of half-sizes
+                    min_dx = hw1 + hw2 - clearance
+                    min_dy = hh1 + hh2 - clearance
+
+                    if dx < min_dx and dy < min_dy:
+                        self.issues.append(PreRouteIssue(
+                            severity="error",
+                            category="placement",
+                            message=f"Overlapping pads: {ref1}.{num1} and {ref2}.{num2}",
+                            location=f"({(x1+x2)/2:.2f}, {(y1+y2)/2:.2f})",
+                        ))
 
     def _check_power_connections(self):
         """Verify power and ground net connectivity."""

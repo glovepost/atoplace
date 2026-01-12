@@ -30,7 +30,7 @@ class ConstraintType(Enum):
 @dataclass
 class PlacementConstraint:
     """Base class for all placement constraints."""
-    constraint_type: ConstraintType
+    constraint_type: ConstraintType = ConstraintType.PROXIMITY  # Default, overridden by subclasses
     priority: str = "preferred"  # "required", "preferred", "optional"
     description: str = ""
     source_text: str = ""  # Original natural language if applicable
@@ -322,10 +322,8 @@ class SeparationConstraint(PlacementConstraint):
         # Determine which group this component belongs to
         if ref in self.group_a:
             other_group = self.group_b
-            direction = 1.0
         elif ref in self.group_b:
             other_group = self.group_a
-            direction = -1.0
         else:
             return (0.0, 0.0)
 
@@ -342,8 +340,9 @@ class SeparationConstraint(PlacementConstraint):
         if distance >= self.min_separation or distance < 0.1:
             return (0.0, 0.0)
 
+        # Force points from centroid toward component (pushes away)
         force_mag = strength * (self.min_separation - distance) / distance
-        return (force_mag * dx * direction, force_mag * dy * direction)
+        return (force_mag * dx, force_mag * dy)
 
     def _get_centroid(self, board: Board, refs: List[str]) -> Tuple[float, float]:
         """Calculate centroid of components."""
@@ -365,24 +364,44 @@ class SeparationConstraint(PlacementConstraint):
 
 @dataclass
 class FixedConstraint(PlacementConstraint):
-    """Lock a component at a specific position."""
+    """Lock a component at a specific position and/or rotation."""
     component_ref: str = ""
-    x: float = 0.0
-    y: float = 0.0
-    rotation: Optional[float] = None
+    x: Optional[float] = None  # None means don't constrain position
+    y: Optional[float] = None
+    rotation: Optional[float] = None  # Target rotation in degrees
+    position_only: bool = False  # If True, only constrain position
+    rotation_only: bool = False  # If True, only constrain rotation
 
     def __post_init__(self):
         self.constraint_type = ConstraintType.FIXED
         if not self.description:
-            self.description = f"Fix {self.component_ref} at ({self.x}, {self.y})"
+            parts = []
+            if self.x is not None and self.y is not None:
+                parts.append(f"at ({self.x}, {self.y})")
+            if self.rotation is not None:
+                parts.append(f"rotated {self.rotation}°")
+            self.description = f"Fix {self.component_ref} " + " ".join(parts)
 
     def is_satisfied(self, board: Board) -> Tuple[bool, float]:
         comp = board.get_component(self.component_ref)
         if not comp:
             return (False, float('inf'))
 
-        dist = math.sqrt((comp.x - self.x)**2 + (comp.y - self.y)**2)
-        return (dist < 0.01, dist)
+        violation = 0.0
+
+        # Check position if specified
+        if self.x is not None and self.y is not None and not self.rotation_only:
+            dist = math.sqrt((comp.x - self.x)**2 + (comp.y - self.y)**2)
+            violation += dist
+
+        # Check rotation if specified
+        if self.rotation is not None and not self.position_only:
+            rot_diff = abs(comp.rotation - self.rotation)
+            # Handle wraparound (e.g., 350° vs 10° should be 20° difference)
+            rot_diff = min(rot_diff, 360 - rot_diff)
+            violation += rot_diff / 10  # Scale rotation violation
+
+        return (violation < 0.1, violation)
 
     def calculate_force(self, board: Board, ref: str,
                         strength: float) -> Tuple[float, float]:
@@ -393,9 +412,19 @@ class FixedConstraint(PlacementConstraint):
         if not comp:
             return (0.0, 0.0)
 
+        # Only apply position force if position is constrained
+        if self.x is None or self.y is None or self.rotation_only:
+            return (0.0, 0.0)
+
         # Very strong force to fixed position
         return (strength * 10 * (self.x - comp.x),
                 strength * 10 * (self.y - comp.y))
+
+    def get_target_rotation(self) -> Optional[float]:
+        """Get the target rotation if this is a rotation constraint."""
+        if self.rotation is not None and not self.position_only:
+            return self.rotation
+        return None
 
 
 class ConstraintSolver:

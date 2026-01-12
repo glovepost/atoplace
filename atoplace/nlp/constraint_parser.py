@@ -177,8 +177,19 @@ class ConstraintParser:
         for pattern, ctype, extractor in self.PATTERNS:
             for match in re.finditer(pattern, text, re.IGNORECASE):
                 # Skip if this span overlaps with already processed text
+                # Check all overlap cases:
+                # 1. start inside existing span: s <= start < e
+                # 2. end inside existing span: s < end <= e
+                # 3. new match fully contains existing: start <= s and e <= end
+                # 4. new match fully contained by existing: s <= start and end <= e
                 start, end = match.span()
-                if any(s <= start < e or s < end <= e for s, e in processed_spans):
+                if any(
+                    (s <= start < e) or  # start inside existing
+                    (s < end <= e) or    # end inside existing
+                    (start <= s and e <= end) or  # new contains existing
+                    (s <= start and end <= e)     # existing contains new
+                    for s, e in processed_spans
+                ):
                     continue
 
                 try:
@@ -313,15 +324,15 @@ class ConstraintParser:
         )
 
     def _extract_rotation(self, match: re.Match) -> Optional[PlacementConstraint]:
-        """Extract rotation constraint (as fixed constraint with rotation)."""
+        """Extract rotation constraint (as fixed constraint with rotation only)."""
         component = match.group(1).upper()
         angle = float(match.group(2))
 
-        # For now, return as info - rotation is handled separately
         return FixedConstraint(
             component_ref=component,
             rotation=angle,
-            description=f"Rotate {component} {angle} degrees",
+            rotation_only=True,  # Only constrain rotation, not position
+            description=f"Rotate {component} to {angle}°",
             source_text=match.group(0),
         )
 
@@ -394,12 +405,11 @@ class ConstraintParser:
                 # Decoupling caps are typically small value caps near ICs
                 components = [c.reference for c in self.board.get_components_by_prefix('C')]
 
-        # Handle "analog" / "digital" zones
+        # Handle "analog" / "digital" zones - resolve to actual components
         elif "analog" in text.lower():
-            # This would need more context - return placeholder
-            components = ["ANALOG_ZONE"]
+            components = self._get_analog_components()
         elif "digital" in text.lower():
-            components = ["DIGITAL_ZONE"]
+            components = self._get_digital_components()
 
         # Handle explicit list like "C1, C2, C3" or "C1 and C2"
         else:
@@ -408,6 +418,64 @@ class ConstraintParser:
             components = refs
 
         return components
+
+    def _get_analog_components(self) -> List[str]:
+        """Get components that are likely analog (op-amps, analog sensors, etc.)."""
+        if not self.board:
+            return []
+
+        analog_refs = []
+        analog_patterns = [
+            r'OPA', r'LM358', r'TL08', r'AD8', r'MCP6',  # Op-amps
+            r'ADC', r'DAC',  # Converters
+            r'REF', r'VREF',  # Voltage references
+        ]
+
+        for ref, comp in self.board.components.items():
+            fp = comp.footprint.upper()
+            value = comp.value.upper()
+
+            # Check for analog patterns
+            for pattern in analog_patterns:
+                if re.search(pattern, value) or re.search(pattern, fp):
+                    analog_refs.append(ref)
+                    break
+
+        # If no specific analog components found, return components near analog ICs
+        if not analog_refs:
+            # Fall back to all 'U' components that might be analog
+            analog_refs = [ref for ref in self.board.components if ref.startswith('U')]
+
+        return analog_refs
+
+    def _get_digital_components(self) -> List[str]:
+        """Get components that are likely digital (MCUs, logic ICs, etc.)."""
+        if not self.board:
+            return []
+
+        digital_refs = []
+        digital_patterns = [
+            r'STM32', r'ESP32', r'ATMEGA', r'PIC', r'NRF5', r'RP2040',  # MCUs
+            r'74HC', r'74LS', r'74LVC',  # Logic ICs
+            r'FPGA', r'CPLD',  # Programmable logic
+            r'FLASH', r'EEPROM', r'SRAM',  # Memory
+        ]
+
+        for ref, comp in self.board.components.items():
+            fp = comp.footprint.upper()
+            value = comp.value.upper()
+
+            # Check for digital patterns
+            for pattern in digital_patterns:
+                if re.search(pattern, value) or re.search(pattern, fp):
+                    digital_refs.append(ref)
+                    break
+
+        # If no specific digital components found, fall back
+        if not digital_refs:
+            digital_refs = [ref for ref in self.board.components if ref.startswith('U')]
+
+        return digital_refs
 
     def _validate_constraint(self, constraint: PlacementConstraint
                               ) -> Tuple[bool, Optional[str]]:
@@ -432,9 +500,6 @@ class ConstraintParser:
         # Check each reference
         missing = []
         for ref in refs_to_check:
-            # Skip zone placeholders
-            if ref.endswith("_ZONE"):
-                continue
             if ref not in self.board.components:
                 missing.append(ref)
 
@@ -529,5 +594,45 @@ class ModificationHandler:
                 else:
                     comp.layer = Layer.TOP_COPPER
                 return True
+
+        elif mod_type == "move":
+            comp = self.board.get_component(mod["component"])
+            if not comp:
+                return False
+
+            direction = mod.get("direction", "")
+            move_amount = 5.0  # Default move amount in mm
+
+            if "left" in direction:
+                comp.x -= move_amount
+            elif "right" in direction:
+                comp.x += move_amount
+            elif "up" in direction:
+                comp.y -= move_amount  # Y decreases going up in KiCad
+            elif "down" in direction:
+                comp.y += move_amount
+            elif "closer" in direction:
+                # Find target component from direction text
+                target_match = direction.replace("closer to", "").strip()
+                target = self.board.get_component(target_match.upper())
+                if target:
+                    # Move 20% closer to target
+                    dx = target.x - comp.x
+                    dy = target.y - comp.y
+                    comp.x += dx * 0.2
+                    comp.y += dy * 0.2
+            elif "away" in direction:
+                # Find target component from direction text
+                target_match = direction.replace("away from", "").strip()
+                target = self.board.get_component(target_match.upper())
+                if target:
+                    # Move 20% away from target
+                    dx = comp.x - target.x
+                    dy = comp.y - target.y
+                    dist = (dx*dx + dy*dy) ** 0.5
+                    if dist > 0.1:
+                        comp.x += (dx / dist) * move_amount
+                        comp.y += (dy / dist) * move_amount
+            return True
 
         return False

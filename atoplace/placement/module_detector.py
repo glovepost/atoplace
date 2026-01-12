@@ -89,6 +89,18 @@ class ModuleDetector:
         ],
     }
 
+    # Mapping from pattern keys to ModuleType enum values
+    PATTERN_TO_MODULE_TYPE = {
+        'microcontroller': ModuleType.MICROCONTROLLER,
+        'rf': ModuleType.RF_FRONTEND,
+        'power_regulator': ModuleType.POWER_REGULATOR,
+        'sensor': ModuleType.SENSOR,
+        'esd': ModuleType.ESD_PROTECTION,
+        'opamp': ModuleType.ANALOG_SIGNAL,
+        'connector': ModuleType.CONNECTOR,
+        'crystal': ModuleType.CRYSTAL_OSCILLATOR,
+    }
+
     def __init__(self, board: Board):
         self.board = board
         self.modules: List[FunctionalModule] = []
@@ -148,7 +160,7 @@ class ModuleDetector:
             for mtype, patterns in self.COMPONENT_PATTERNS.items():
                 for pattern in patterns:
                     if re.search(pattern, value) or re.search(pattern, fp):
-                        module_type = ModuleType[mtype.upper()]
+                        module_type = self.PATTERN_TO_MODULE_TYPE.get(mtype, ModuleType.UNKNOWN)
                         break
                 if module_type != ModuleType.UNKNOWN:
                     break
