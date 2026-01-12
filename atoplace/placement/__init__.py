@@ -3,10 +3,20 @@
 from .force_directed import ForceDirectedRefiner
 from .module_detector import ModuleDetector
 from .constraints import PlacementConstraint, ConstraintSolver
+from .legalizer import (
+    PlacementLegalizer,
+    LegalizerConfig,
+    LegalizationResult,
+    legalize_placement,
+)
 
 __all__ = [
     "ForceDirectedRefiner",
     "ModuleDetector",
     "PlacementConstraint",
     "ConstraintSolver",
+    "PlacementLegalizer",
+    "LegalizerConfig",
+    "LegalizationResult",
+    "legalize_placement",
 ]

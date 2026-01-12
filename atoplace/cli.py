@@ -158,11 +158,16 @@ def cmd_place(args):
                 constraints.append(constraint)
                 print(f"  {module_name}: {len(comp_refs)} components")
 
-    # Configure refinement
+    # Get DFM profile for spacing rules
+    dfm_profile = get_profile(args.dfm or "jlcpcb_standard")
+
+    # Configure refinement with DFM-aware spacing
     config = RefinementConfig(
         max_iterations=args.iterations or 500,
         min_movement=0.01,
         damping=0.85,
+        min_clearance=dfm_profile.min_spacing,
+        preferred_clearance=dfm_profile.min_spacing * 2,  # 2x min for comfort
     )
 
     if args.grid:
@@ -194,6 +199,9 @@ def cmd_place(args):
             primary_grid=args.grid if args.grid else 0.5,
             snap_rotation=True,
             align_passives_only=True,
+            # Use DFM profile spacing to avoid reintroducing violations
+            min_clearance=dfm_profile.min_spacing,
+            row_spacing=dfm_profile.min_spacing * 1.5,  # Comfortable row spacing
         )
         legalizer = PlacementLegalizer(board, legalize_config)
         legal_result = legalizer.legalize()
@@ -203,10 +211,15 @@ def cmd_place(args):
         print(f"  Overlaps resolved: {legal_result.overlaps_resolved} in {legal_result.iterations_used} iterations")
         if legal_result.final_overlaps > 0:
             print(f"  Warning: {legal_result.final_overlaps} overlaps remaining")
+        if legal_result.locked_conflicts:
+            print(f"  Warning: {len(legal_result.locked_conflicts)} locked component conflicts (cannot resolve):")
+            for ref1, ref2 in legal_result.locked_conflicts[:5]:  # Show first 5
+                print(f"    - {ref1} overlaps {ref2}")
+            if len(legal_result.locked_conflicts) > 5:
+                print(f"    - ... and {len(legal_result.locked_conflicts) - 5} more")
 
     # Validate result
     print("\nValidating placement...")
-    dfm_profile = get_profile(args.dfm or "jlcpcb_standard")
     scorer = ConfidenceScorer(dfm_profile)
     report = scorer.assess(board)
 

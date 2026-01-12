@@ -308,6 +308,12 @@ class SeparationConstraint(PlacementConstraint):
             self.description = f"Keep groups separated by {self.min_separation}mm"
 
     def is_satisfied(self, board: Board) -> Tuple[bool, float]:
+        # If either group is empty, constraint is trivially satisfied
+        group_a_valid = [r for r in self.group_a if board.get_component(r)]
+        group_b_valid = [r for r in self.group_b if board.get_component(r)]
+        if not group_a_valid or not group_b_valid:
+            return (True, 0.0)
+
         cx_a, cy_a = self._get_centroid(board, self.group_a)
         cx_b, cy_b = self._get_centroid(board, self.group_b)
 
@@ -329,6 +335,10 @@ class SeparationConstraint(PlacementConstraint):
 
         comp = board.get_component(ref)
         if not comp:
+            return (0.0, 0.0)
+
+        # Check if other group has any valid components - avoid pushing toward origin
+        if not other_group or not any(board.get_component(r) for r in other_group):
             return (0.0, 0.0)
 
         # Push away from other group's centroid

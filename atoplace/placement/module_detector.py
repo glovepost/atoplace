@@ -268,8 +268,8 @@ class ModuleDetector:
                     if net.is_ground:
                         has_ground = True
 
-                    # Find connected IC
-                    for conn_ref in net.get_component_refs():
+                    # Find connected IC (sorted for deterministic ordering)
+                    for conn_ref in sorted(net.get_component_refs()):
                         if conn_ref.startswith('U') and conn_ref in self._component_to_module:
                             ic_ref = conn_ref
                             break

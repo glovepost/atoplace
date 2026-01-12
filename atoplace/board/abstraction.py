@@ -223,7 +223,7 @@ class BoardOutline:
         """Check if a point is within the board outline.
 
         Uses Ray Casting algorithm (even-odd rule) for polygon containment.
-        Returns False if point is in a hole.
+        Returns False if point is in a hole or too close to hole/boundary edges.
         """
         if self.polygon:
             # Offset the polygon inward by margin for boundary checking
@@ -239,6 +239,9 @@ class BoardOutline:
             # Check if point is in any hole
             for hole in self.holes:
                 if self._point_in_polygon(x, y, hole):
+                    return False
+                # Also check margin distance from hole edges (cutout clearance)
+                if margin > 0 and not self._point_outside_hole_margin(x, y, hole, margin):
                     return False
 
             return True
@@ -287,6 +290,30 @@ class BoardOutline:
             x2, y2 = polygon[j]
 
             # Calculate distance from point to line segment
+            dist = self._point_to_segment_distance(x, y, x1, y1, x2, y2)
+            if dist < margin:
+                return False
+
+        return True
+
+    def _point_outside_hole_margin(self, x: float, y: float,
+                                   hole: List[Tuple[float, float]],
+                                   margin: float) -> bool:
+        """Check if point is at least margin distance from all hole edges.
+
+        This enforces cutout clearance - components must maintain distance
+        from board cutouts/holes, not just stay outside them.
+        """
+        n = len(hole)
+        if n < 2:
+            return True
+
+        for i in range(n):
+            j = (i + 1) % n
+            x1, y1 = hole[i]
+            x2, y2 = hole[j]
+
+            # Calculate distance from point to hole edge
             dist = self._point_to_segment_distance(x, y, x1, y1, x2, y2)
             if dist < margin:
                 return False

@@ -77,6 +77,8 @@ class RefinementConfig:
     # Spacing parameters
     min_clearance: float = 0.25  # mm between components
     preferred_clearance: float = 0.5  # mm preferred spacing
+    max_attraction_distance: float = 50.0  # mm - cap attraction beyond this
+    repulsion_cutoff: float = 50.0  # mm - no repulsion beyond this distance
 
     # Grid alignment
     grid_size: float = 0.0  # 0 = no grid snapping
@@ -171,20 +173,26 @@ class ForceDirectedRefiner:
             if len(energy_history) >= self.config.energy_window:
                 energy_variance = self._calculate_variance(energy_history)
                 avg_energy = sum(energy_history) / len(energy_history)
+                num_components = len(state.positions)
 
                 # Normalize variance by average energy to make threshold meaningful
                 normalized_variance = energy_variance / (avg_energy + 1e-6)
                 low_variance = normalized_variance < self.config.energy_variance_threshold
 
-                # Also check if energy is low (system is settled, not just oscillating)
-                low_energy = avg_energy < self.config.min_movement * 10
+                # Scale energy threshold by component count for board-size independence
+                # More components = higher baseline energy, so scale accordingly
+                energy_threshold = self.config.min_movement * 10 * max(1, num_components / 10)
+                low_energy = avg_energy < energy_threshold
 
                 # Converge when movement is low AND (variance is low OR energy is low)
                 # This prevents false convergence when high forces exist but movement is damped
                 converged = low_movement and (low_variance or low_energy)
             else:
                 # Before we have energy history, use movement + very low energy as fallback
-                converged = low_movement and state.total_energy < self.config.min_movement
+                # Scale by component count for consistency
+                num_components = len(state.positions)
+                energy_threshold = self.config.min_movement * max(1, num_components / 10)
+                converged = low_movement and state.total_energy < energy_threshold
 
             if converged:
                 state.converged = True
@@ -256,18 +264,27 @@ class ForceDirectedRefiner:
         Uses AABB overlap detection for more accurate collision detection
         with rectangular components. Also uses preferred_clearance for spacing
         and cutoff distance to avoid long-range force accumulation.
+
+        When one component is locked, the non-locked component receives double
+        the repulsion force to fully resolve the overlap.
         """
         refs = list(state.positions.keys())
         # Cutoff distance beyond which repulsion is negligible (reduces noise)
-        cutoff_distance = 50.0  # mm
+        cutoff_distance = self.config.repulsion_cutoff
 
         for i, ref1 in enumerate(refs):
             x1, y1 = state.positions[ref1]
             half_w1, half_h1 = self._component_sizes[ref1]
+            locked1 = self._is_component_locked(ref1)
 
             for ref2 in refs[i+1:]:
                 x2, y2 = state.positions[ref2]
                 half_w2, half_h2 = self._component_sizes[ref2]
+                locked2 = self._is_component_locked(ref2)
+
+                # Skip if both locked (neither can move)
+                if locked1 and locked2:
+                    continue
 
                 # Calculate center-to-center distance and direction
                 dx = x1 - x2
@@ -299,29 +316,40 @@ class ForceDirectedRefiner:
                         fx = 0.0
                         fy = force_mag * (1.0 if dy >= 0 else -1.0)
 
-                    forces[ref1].append(Force(fx, fy, ForceType.REPULSION,
-                                              f"repel_{ref2}"))
-                    forces[ref2].append(Force(-fx, -fy, ForceType.REPULSION,
-                                              f"repel_{ref1}"))
+                    # Double force for non-locked component when other is locked
+                    mult1 = 2.0 if locked2 else 1.0
+                    mult2 = 2.0 if locked1 else 1.0
+                    if not locked1:
+                        forces[ref1].append(Force(fx * mult1, fy * mult1, ForceType.REPULSION,
+                                                  f"repel_{ref2}"))
+                    if not locked2:
+                        forces[ref2].append(Force(-fx * mult2, -fy * mult2, ForceType.REPULSION,
+                                                  f"repel_{ref1}"))
 
                 elif abs(dx) < preferred_sep_x and abs(dy) < preferred_sep_y:
                     # Between min and preferred clearance - medium repulsion
+                    # Use max shortfall to ensure proper spacing on the tighter axis
                     shortfall_x = preferred_sep_x - abs(dx)
                     shortfall_y = preferred_sep_y - abs(dy)
                     max_shortfall = self.config.preferred_clearance - self.config.min_clearance
 
                     if max_shortfall > 0:
-                        ratio = min(shortfall_x, shortfall_y) / max_shortfall
+                        # Use max to respond to worst-case axis (prevents under-repulsion)
+                        ratio = max(shortfall_x, shortfall_y) / max_shortfall
                         ratio = min(ratio, 1.0)
                         force_mag = self.config.repulsion_strength * 0.3 * ratio
 
                         fx = force_mag * dx / distance
                         fy = force_mag * dy / distance
 
-                        forces[ref1].append(Force(fx, fy, ForceType.REPULSION,
-                                                  f"space_{ref2}"))
-                        forces[ref2].append(Force(-fx, -fy, ForceType.REPULSION,
-                                                  f"space_{ref1}"))
+                        mult1 = 2.0 if locked2 else 1.0
+                        mult2 = 2.0 if locked1 else 1.0
+                        if not locked1:
+                            forces[ref1].append(Force(fx * mult1, fy * mult1, ForceType.REPULSION,
+                                                      f"space_{ref2}"))
+                        if not locked2:
+                            forces[ref2].append(Force(-fx * mult2, -fy * mult2, ForceType.REPULSION,
+                                                      f"space_{ref1}"))
                 else:
                     # Weak inverse-distance for distant components
                     force_mag = self.config.repulsion_strength * 0.1 / distance
@@ -329,10 +357,14 @@ class ForceDirectedRefiner:
                     fx = force_mag * dx / distance
                     fy = force_mag * dy / distance
 
-                    forces[ref1].append(Force(fx, fy, ForceType.REPULSION,
-                                              f"space_{ref2}"))
-                    forces[ref2].append(Force(-fx, -fy, ForceType.REPULSION,
-                                              f"space_{ref1}"))
+                    mult1 = 2.0 if locked2 else 1.0
+                    mult2 = 2.0 if locked1 else 1.0
+                    if not locked1:
+                        forces[ref1].append(Force(fx * mult1, fy * mult1, ForceType.REPULSION,
+                                                  f"space_{ref2}"))
+                    if not locked2:
+                        forces[ref2].append(Force(-fx * mult2, -fy * mult2, ForceType.REPULSION,
+                                                  f"space_{ref1}"))
 
     def _add_attraction_forces(self, state: PlacementState,
                                forces: Dict[str, List[Force]]):
@@ -361,6 +393,9 @@ class ForceDirectedRefiner:
             if net.is_power or net.is_ground:
                 base_strength *= 2.0
 
+            # Cap effective distance to prevent unbounded attraction on long nets
+            max_dist = self.config.max_attraction_distance
+
             if num_refs <= 3:
                 # Small nets: use pairwise attraction (original behavior)
                 for i, ref1 in enumerate(refs):
@@ -376,7 +411,9 @@ class ForceDirectedRefiner:
                         if distance < 0.1:
                             continue
 
-                        force_mag = base_strength * distance
+                        # Cap effective distance to limit attraction force
+                        effective_dist = min(distance, max_dist)
+                        force_mag = base_strength * effective_dist
 
                         fx = force_mag * dx / distance
                         fy = force_mag * dy / distance
@@ -404,7 +441,9 @@ class ForceDirectedRefiner:
                     if distance < 0.1:
                         continue
 
-                    force_mag = scaled_strength * distance
+                    # Cap effective distance to limit attraction force
+                    effective_dist = min(distance, max_dist)
+                    force_mag = scaled_strength * effective_dist
 
                     fx = force_mag * dx / distance
                     fy = force_mag * dy / distance
@@ -517,10 +556,16 @@ class ForceDirectedRefiner:
             total_fx = sum(f.fx for f in forces[ref])
             total_fy = sum(f.fy for f in forces[ref])
 
-            # Update velocity with damping
+            # Compute mass based on component area (larger = heavier = moves less)
+            # Normalized so a 1mm x 1mm component has mass ~1
+            half_w, half_h = self._component_sizes[ref]
+            area = 4 * half_w * half_h  # Full component area
+            mass = max(1.0, area)  # Minimum mass of 1 to avoid division issues
+
+            # Update velocity with damping and mass scaling (F = ma -> a = F/m)
             vx, vy = state.velocities[ref]
-            vx = (vx + total_fx * self.config.time_step) * self.config.damping
-            vy = (vy + total_fy * self.config.time_step) * self.config.damping
+            vx = (vx + (total_fx / mass) * self.config.time_step) * self.config.damping
+            vy = (vy + (total_fy / mass) * self.config.time_step) * self.config.damping
 
             # Clamp velocity
             speed = math.sqrt(vx*vx + vy*vy)

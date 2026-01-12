@@ -108,6 +108,7 @@ class LegalizationResult:
     overlaps_resolved: int = 0  # overlap violations fixed
     iterations_used: int = 0  # iterations for overlap removal
     final_overlaps: int = 0  # remaining overlaps (if any)
+    locked_conflicts: List[Tuple[str, str]] = field(default_factory=list)  # unresolvable overlaps with locked components
 
 
 class PlacementLegalizer:
@@ -150,6 +151,7 @@ class PlacementLegalizer:
         result.overlaps_resolved = overlap_result[0]
         result.iterations_used = overlap_result[1]
         result.final_overlaps = overlap_result[2]
+        result.locked_conflicts = overlap_result[3]
 
         return result
 
@@ -455,7 +457,7 @@ class PlacementLegalizer:
                     # Snap to grid
                     curr_comp.y = round(curr_comp.y / grid) * grid
 
-    def _remove_overlaps(self) -> Tuple[int, int, int]:
+    def _remove_overlaps(self) -> Tuple[int, int, int, List[Tuple[str, str]]]:
         """
         Phase 3: Shove - Remove overlaps using priority-based displacement.
 
@@ -465,10 +467,11 @@ class PlacementLegalizer:
         Priority order: Locked > Large ICs > Connectors > Small ICs > Passives
 
         Returns:
-            (overlaps_resolved, iterations_used, final_overlaps)
+            (overlaps_resolved, iterations_used, final_overlaps, locked_conflicts)
         """
         overlaps_resolved = 0
         iterations = 0
+        locked_conflicts: List[Tuple[str, str]] = []
 
         # Compute priorities once
         priorities = {ref: self._get_component_priority(ref)
@@ -488,16 +491,23 @@ class PlacementLegalizer:
 
             # Resolve each overlap
             for ref1, ref2, overlap_x, overlap_y in overlaps:
-                if self._resolve_overlap_priority(
+                resolved = self._resolve_overlap_priority(
                     ref1, ref2, overlap_x, overlap_y,
                     priorities[ref1], priorities[ref2]
-                ):
+                )
+                if resolved:
                     overlaps_resolved += 1
+                elif (priorities[ref1] == ComponentPriority.LOCKED and
+                      priorities[ref2] == ComponentPriority.LOCKED):
+                    # Both components locked - record unresolvable conflict
+                    conflict = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
+                    if conflict not in locked_conflicts:
+                        locked_conflicts.append(conflict)
 
         # Count remaining overlaps
         final_overlaps = len(self._find_overlaps())
 
-        return (overlaps_resolved, iterations, final_overlaps)
+        return (overlaps_resolved, iterations, final_overlaps, locked_conflicts)
 
     def _get_component_priority(self, ref: str) -> ComponentPriority:
         """Determine component priority for overlap resolution."""
@@ -609,43 +619,104 @@ class PlacementLegalizer:
             mtv_y = mtv_mag * dy / dist if dist > 0 else 0
 
         # Apply direction (MTV points from comp1 toward comp2)
+        # When dx or dy is zero, use deterministic tiebreaker based on ref names
+        # to avoid consistent +X/+Y drift bias
         if dx < 0:
             mtv_x = -abs(mtv_x)
-        else:
+        elif dx > 0:
             mtv_x = abs(mtv_x)
+        else:
+            # dx == 0: use lexicographic comparison for deterministic direction
+            mtv_x = abs(mtv_x) if ref2 > ref1 else -abs(mtv_x)
 
         if dy < 0:
             mtv_y = -abs(mtv_y)
-        else:
+        elif dy > 0:
             mtv_y = abs(mtv_y)
+        else:
+            # dy == 0: use lexicographic comparison for deterministic direction
+            mtv_y = abs(mtv_y) if ref2 > ref1 else -abs(mtv_y)
 
-        grid = self.config.secondary_grid  # Use fine grid for overlap resolution
+        # Choose appropriate grid for each component:
+        # Fine-pitch passives use secondary_grid, others use primary_grid
+        def get_grid_for_ref(ref: str) -> float:
+            if self._is_passive(ref):
+                comp = self.board.components.get(ref)
+                if comp:
+                    size = self._detect_passive_size(comp)
+                    if size in FINE_PITCH_SIZES:
+                        return self.config.secondary_grid
+            return self.config.primary_grid
+
+        grid1 = get_grid_for_ref(ref1)
+        grid2 = get_grid_for_ref(ref2)
 
         # Determine who moves based on priority
         if priority1.value > priority2.value:
             # comp1 has higher priority - move comp2 away
             comp2.x += mtv_x
             comp2.y += mtv_y
-            comp2.x = round(comp2.x / grid) * grid
-            comp2.y = round(comp2.y / grid) * grid
+            comp2.x = round(comp2.x / grid2) * grid2
+            comp2.y = round(comp2.y / grid2) * grid2
         elif priority2.value > priority1.value:
             # comp2 has higher priority - move comp1 away
             comp1.x -= mtv_x
             comp1.y -= mtv_y
-            comp1.x = round(comp1.x / grid) * grid
-            comp1.y = round(comp1.y / grid) * grid
+            comp1.x = round(comp1.x / grid1) * grid1
+            comp1.y = round(comp1.y / grid1) * grid1
         else:
             # Equal priority - move both by half MTV
             comp1.x -= mtv_x / 2
             comp1.y -= mtv_y / 2
             comp2.x += mtv_x / 2
             comp2.y += mtv_y / 2
-            comp1.x = round(comp1.x / grid) * grid
-            comp1.y = round(comp1.y / grid) * grid
-            comp2.x = round(comp2.x / grid) * grid
-            comp2.y = round(comp2.y / grid) * grid
+            comp1.x = round(comp1.x / grid1) * grid1
+            comp1.y = round(comp1.y / grid1) * grid1
+            comp2.x = round(comp2.x / grid2) * grid2
+            comp2.y = round(comp2.y / grid2) * grid2
+
+        # Ensure components stay within board boundaries after displacement
+        self._clamp_to_bounds(ref1, grid1)
+        self._clamp_to_bounds(ref2, grid2)
 
         return True
+
+    def _clamp_to_bounds(self, ref: str, grid: float):
+        """Clamp component position to stay within board boundaries."""
+        comp = self.board.components.get(ref)
+        if not comp:
+            return
+
+        outline = self.board.outline
+        half_w, half_h = self._component_sizes.get(ref, (comp.width / 2, comp.height / 2))
+        margin = self.config.min_clearance
+
+        # Calculate bounds
+        min_x = outline.origin_x + half_w + margin
+        max_x = outline.origin_x + outline.width - half_w - margin
+        min_y = outline.origin_y + half_h + margin
+        max_y = outline.origin_y + outline.height - half_h - margin
+
+        # Clamp position
+        clamped = False
+        if comp.x < min_x:
+            comp.x = min_x
+            clamped = True
+        elif comp.x > max_x:
+            comp.x = max_x
+            clamped = True
+
+        if comp.y < min_y:
+            comp.y = min_y
+            clamped = True
+        elif comp.y > max_y:
+            comp.y = max_y
+            clamped = True
+
+        # Re-snap to grid if clamped
+        if clamped:
+            comp.x = round(comp.x / grid) * grid
+            comp.y = round(comp.y / grid) * grid
 
     def _is_passive(self, ref: str) -> bool:
         """Check if a component reference indicates a passive (R, C, L)."""
