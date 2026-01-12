@@ -209,7 +209,8 @@ def cmd_place(args):
             min_clearance=dfm_profile.min_spacing,
             row_spacing=dfm_profile.min_spacing * 1.5,  # Comfortable row spacing
         )
-        legalizer = PlacementLegalizer(board, legalize_config)
+        # Pass constraints to legalizer so it respects FixedConstraints
+        legalizer = PlacementLegalizer(board, legalize_config, constraints=constraints)
         legal_result = legalizer.legalize()
 
         print(f"  Grid snapped: {legal_result.grid_snapped} components")
@@ -515,7 +516,14 @@ Modification examples:
                 continue
 
             print("Applying constraints...")
-            refiner = ForceDirectedRefiner(board)
+            # Use DFM-aware config with lock support
+            from .placement.force_directed import RefinementConfig
+            config = RefinementConfig(
+                min_clearance=dfm_profile.min_spacing,
+                preferred_clearance=dfm_profile.min_spacing * 2,
+                lock_placed=True,  # Respect locked components in interactive mode
+            )
+            refiner = ForceDirectedRefiner(board, config)
             for c in constraints:
                 refiner.add_constraint(c)
             result = refiner.refine()

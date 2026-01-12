@@ -123,20 +123,26 @@ class EdgeConstraint(PlacementConstraint):
 
         tolerance = 1.0  # mm
 
-        if self.edge == "left":
-            target = board.outline.origin_x + self.offset
-            violation = abs(comp.x - target)
-        elif self.edge == "right":
-            target = board.outline.origin_x + board.outline.width - self.offset
-            violation = abs(comp.x - target)
-        elif self.edge == "top":
-            target = board.outline.origin_y + self.offset
-            violation = abs(comp.y - target)
-        elif self.edge == "bottom":
-            target = board.outline.origin_y + board.outline.height - self.offset
-            violation = abs(comp.y - target)
-        else:
+        # Use get_edge() which properly handles polygon outlines
+        try:
+            edge_coord = board.outline.get_edge(self.edge)
+        except ValueError:
             return (False, float('inf'))
+
+        if self.edge in ("left", "right"):
+            # For left/right edges, target is edge +/- offset
+            if self.edge == "left":
+                target = edge_coord + self.offset
+            else:
+                target = edge_coord - self.offset
+            violation = abs(comp.x - target)
+        else:
+            # For top/bottom edges
+            if self.edge == "top":
+                target = edge_coord + self.offset
+            else:
+                target = edge_coord - self.offset
+            violation = abs(comp.y - target)
 
         return (violation <= tolerance, max(0, violation - tolerance))
 
@@ -149,19 +155,25 @@ class EdgeConstraint(PlacementConstraint):
         if not comp:
             return (0.0, 0.0)
 
+        # Use get_edge() which properly handles polygon outlines
+        try:
+            edge_coord = board.outline.get_edge(self.edge)
+        except ValueError:
+            return (0.0, 0.0)
+
         fx, fy = 0.0, 0.0
 
         if self.edge == "left":
-            target = board.outline.origin_x + self.offset
+            target = edge_coord + self.offset
             fx = strength * (target - comp.x)
         elif self.edge == "right":
-            target = board.outline.origin_x + board.outline.width - self.offset
+            target = edge_coord - self.offset
             fx = strength * (target - comp.x)
         elif self.edge == "top":
-            target = board.outline.origin_y + self.offset
+            target = edge_coord + self.offset
             fy = strength * (target - comp.y)
         elif self.edge == "bottom":
-            target = board.outline.origin_y + board.outline.height - self.offset
+            target = edge_coord - self.offset
             fy = strength * (target - comp.y)
 
         return (fx, fy)

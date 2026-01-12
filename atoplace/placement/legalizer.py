@@ -119,15 +119,62 @@ class PlacementLegalizer:
     1. Snapping components to a regular grid
     2. Aligning same-size passives into neat rows/columns
     3. Resolving any overlaps created by snapping/alignment
+
+    Respects placement constraints:
+    - FixedConstraints: Components are treated as locked and not moved
+    - ProximityConstraints: Moves that would violate proximity are avoided
     """
 
-    def __init__(self, board: Board, config: Optional[LegalizerConfig] = None):
+    def __init__(self, board: Board, config: Optional[LegalizerConfig] = None,
+                 constraints: Optional[List] = None):
+        """
+        Initialize the legalizer.
+
+        Args:
+            board: The board to legalize
+            config: Legalization configuration
+            constraints: Optional list of placement constraints to respect.
+                        FixedConstraints will prevent component movement.
+        """
         self.board = board
         self.config = config or LegalizerConfig()
+        self.constraints = constraints or []
+
+        # Extract fixed components from constraints to treat as locked
+        self._fixed_components: Set[str] = self._extract_fixed_components()
 
         # Cache component sizes for overlap detection
         self._component_sizes: Dict[str, Tuple[float, float]] = {}
         self._compute_component_sizes()
+
+    def _extract_fixed_components(self) -> Set[str]:
+        """Extract component refs from FixedConstraints to treat as locked."""
+        fixed_refs = set()
+
+        for constraint in self.constraints:
+            # Check if it's a FixedConstraint by looking for component_ref attribute
+            # and constraint_type (avoid import cycles by using duck typing)
+            if hasattr(constraint, 'constraint_type') and hasattr(constraint, 'component_ref'):
+                constraint_type = getattr(constraint.constraint_type, 'value', str(constraint.constraint_type))
+                if constraint_type == 'fixed':
+                    ref = constraint.component_ref
+                    if ref:
+                        fixed_refs.add(ref)
+
+        return fixed_refs
+
+    def _is_component_fixed(self, ref: str) -> bool:
+        """Check if a component should be treated as fixed (not moved)."""
+        # Check explicit locked flag
+        comp = self.board.components.get(ref)
+        if comp and comp.locked:
+            return True
+
+        # Check if in our fixed constraints set
+        if ref in self._fixed_components:
+            return True
+
+        return False
 
     def legalize(self) -> LegalizationResult:
         """
@@ -170,7 +217,8 @@ class PlacementLegalizer:
         snapped = 0
 
         for ref, comp in self.board.components.items():
-            if self.config.skip_locked and comp.locked:
+            # Skip locked or fixed-constraint components
+            if self.config.skip_locked and self._is_component_fixed(ref):
                 continue
 
             modified = False
@@ -238,7 +286,8 @@ class PlacementLegalizer:
         passives_by_size: Dict[PassiveSize, List[str]] = {}
 
         for ref, comp in self.board.components.items():
-            if self.config.skip_locked and comp.locked:
+            # Skip locked or fixed-constraint components
+            if self.config.skip_locked and self._is_component_fixed(ref):
                 continue
 
             # Check if this is a passive (R, C, L)
@@ -561,8 +610,8 @@ class PlacementLegalizer:
         if not comp:
             return ComponentPriority.OTHER
 
-        # Locked components have highest priority
-        if comp.locked:
+        # Locked or fixed-constraint components have highest priority
+        if self._is_component_fixed(ref):
             return ComponentPriority.LOCKED
 
         # Check component type from reference designator

@@ -48,12 +48,18 @@ class DRCChecker:
         return (passed, self.violations)
 
     def _check_clearance(self):
-        """Check component-to-component clearance."""
+        """Check component-to-component clearance.
+
+        Only checks clearance between components on the same layer (top vs bottom).
+        Components on opposite sides of the board are allowed to overlap.
+        """
         if not self.dfm_profile:
             return
 
         min_clearance = self.dfm_profile.min_spacing
-        overlaps = self.board.find_overlaps(min_clearance)
+        # Use layer-aware overlap detection to avoid false positives
+        # for components on opposite sides of the board
+        overlaps = self.board.find_overlaps(min_clearance, check_layers=True)
 
         for ref1, ref2, dist in overlaps:
             c1 = self.board.get_component(ref1)
@@ -85,10 +91,12 @@ class DRCChecker:
         min_th_drill = self.dfm_profile.min_hole_diameter
         min_th_annular = self.dfm_profile.min_via_annular
 
-        # SMD pads: use a sensible minimum based on spacing rules
-        # Most fabs can handle pads as small as 0.15mm for 0201 components
-        # Use min_spacing as a lower bound (typically 0.1-0.15mm)
-        min_smd_pad = self.dfm_profile.min_spacing
+        # SMD pads: use an absolute minimum for truly unrealistic pads
+        # Most fabs can handle 0201 pads (~0.15mm x 0.3mm), so we use 0.05mm
+        # as the floor to catch only obviously erroneous geometry.
+        # Note: This is intentionally NOT tied to min_spacing, as spacing rules
+        # govern clearance between features, not minimum pad dimensions.
+        min_smd_pad = 0.05  # 50 microns - below any realistic SMD pad
 
         for ref, comp in self.board.components.items():
             if comp.dnp:  # Skip Do Not Populate components

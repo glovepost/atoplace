@@ -481,9 +481,16 @@ class Board:
 
     # --- Placement Utilities ---
 
-    def find_overlaps(self, clearance: float = 0.25) -> List[Tuple[str, str, float]]:
+    def find_overlaps(self, clearance: float = 0.25,
+                       check_layers: bool = False) -> List[Tuple[str, str, float]]:
         """
         Find all overlapping component pairs.
+
+        Args:
+            clearance: Minimum clearance between components (mm)
+            check_layers: If True, only report overlaps between components on
+                         the same layer (top vs bottom). Components on opposite
+                         sides of the board are allowed to overlap.
 
         Returns:
             List of (ref1, ref2, penetration_depth) tuples where penetration_depth
@@ -502,6 +509,18 @@ class Board:
 
             for ref2 in refs[i+1:]:
                 c2 = self.components[ref2]
+
+                # Skip if on opposite layers (top vs bottom)
+                if check_layers:
+                    layer1_is_top = c1.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
+                                                  Layer.TOP_MASK, Layer.TOP_PASTE,
+                                                  Layer.TOP_COURTYARD)
+                    layer2_is_top = c2.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
+                                                  Layer.TOP_MASK, Layer.TOP_PASTE,
+                                                  Layer.TOP_COURTYARD)
+                    if layer1_is_top != layer2_is_top:
+                        continue  # Components on opposite sides, skip
+
                 bb2 = c2.get_bounding_box()
 
                 # Calculate overlap on each axis

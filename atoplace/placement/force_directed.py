@@ -376,13 +376,23 @@ class ForceDirectedRefiner:
 
         The star model reduces O(N²) to O(N) for high-degree nets (GND, VCC)
         and scales attraction by 1/k (where k is pin count) to prevent collapse.
+
+        Multi-pin weighting: Components with multiple pins on the same net
+        receive proportionally stronger attraction. An IC with 4 GND pins
+        gets 4x the attraction force of a resistor with 1 GND pin.
         """
         for net_name, net in self.board.nets.items():
             if len(net.connections) < 2:
                 continue
 
-            # Get component references for this net (filter to valid positions)
-            refs = [ref for ref in net.get_component_refs() if ref in state.positions]
+            # Count pins per component for proper weighting
+            # Components with multiple pins on a net should have stronger attraction
+            pin_counts: Dict[str, int] = {}
+            for ref, _ in net.connections:
+                if ref in state.positions:
+                    pin_counts[ref] = pin_counts.get(ref, 0) + 1
+
+            refs = list(pin_counts.keys())
             num_refs = len(refs)
 
             if num_refs < 2:
@@ -397,12 +407,14 @@ class ForceDirectedRefiner:
             max_dist = self.config.max_attraction_distance
 
             if num_refs <= 3:
-                # Small nets: use pairwise attraction (original behavior)
+                # Small nets: use pairwise attraction with pin-count weighting
                 for i, ref1 in enumerate(refs):
                     x1, y1 = state.positions[ref1]
+                    weight1 = pin_counts[ref1]
 
                     for ref2 in refs[i+1:]:
                         x2, y2 = state.positions[ref2]
+                        weight2 = pin_counts[ref2]
 
                         dx = x2 - x1
                         dy = y2 - y1
@@ -413,7 +425,10 @@ class ForceDirectedRefiner:
 
                         # Cap effective distance to limit attraction force
                         effective_dist = min(distance, max_dist)
-                        force_mag = base_strength * effective_dist
+
+                        # Weight by pin counts: more pins = stronger connection
+                        pair_weight = (weight1 + weight2) / 2.0
+                        force_mag = base_strength * effective_dist * pair_weight
 
                         fx = force_mag * dx / distance
                         fy = force_mag * dy / distance
@@ -424,15 +439,19 @@ class ForceDirectedRefiner:
                                                   f"net_{net_name}"))
             else:
                 # Large nets: use Star Model with virtual centroid
-                # Calculate centroid of all connected components
-                centroid_x = sum(state.positions[ref][0] for ref in refs) / num_refs
-                centroid_y = sum(state.positions[ref][1] for ref in refs) / num_refs
+                # Use pin-weighted centroid so multi-pin ICs pull centroid toward them
+                total_pins = sum(pin_counts.values())
+                centroid_x = sum(state.positions[ref][0] * pin_counts[ref]
+                                 for ref in refs) / total_pins
+                centroid_y = sum(state.positions[ref][1] * pin_counts[ref]
+                                 for ref in refs) / total_pins
 
-                # Scale strength by 1/k to prevent collapse on large nets
-                scaled_strength = base_strength / num_refs
+                # Scale strength by 1/total_pins to prevent collapse on large nets
+                scaled_strength = base_strength / total_pins
 
                 for ref in refs:
                     x, y = state.positions[ref]
+                    weight = pin_counts[ref]
 
                     dx = centroid_x - x
                     dy = centroid_y - y
@@ -443,7 +462,9 @@ class ForceDirectedRefiner:
 
                     # Cap effective distance to limit attraction force
                     effective_dist = min(distance, max_dist)
-                    force_mag = scaled_strength * effective_dist
+
+                    # Scale by pin count: multi-pin components get stronger pull
+                    force_mag = scaled_strength * effective_dist * weight
 
                     fx = force_mag * dx / distance
                     fy = force_mag * dy / distance
