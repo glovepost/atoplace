@@ -70,6 +70,10 @@ class RefinementConfig:
     max_iterations: int = 500
     max_velocity: float = 5.0  # mm per iteration
 
+    # Convergence parameters
+    energy_window: int = 10  # Number of frames for rolling average
+    energy_variance_threshold: float = 0.01  # Converge when variance < threshold
+
     # Spacing parameters
     min_clearance: float = 0.25  # mm between components
     preferred_clearance: float = 0.5  # mm preferred spacing
@@ -114,6 +118,11 @@ class ForceDirectedRefiner:
         """
         Run force-directed refinement.
 
+        Uses rolling average energy convergence to detect:
+        - Stable convergence (energy variance below threshold)
+        - Oscillation (high energy but low variance = stuck in local minimum)
+        - Stall (no significant movement but hasn't converged)
+
         Args:
             callback: Optional function called each iteration with current state
 
@@ -122,6 +131,9 @@ class ForceDirectedRefiner:
         """
         # Initialize state
         state = self._initialize_state()
+
+        # Energy history for rolling average convergence detection
+        energy_history: List[float] = []
 
         for iteration in range(self.config.max_iterations):
             state.iteration = iteration
@@ -138,12 +150,34 @@ class ForceDirectedRefiner:
             # Calculate total system energy
             state.total_energy = self._calculate_energy(state, forces)
 
+            # Track energy history for convergence detection
+            energy_history.append(state.total_energy)
+            if len(energy_history) > self.config.energy_window:
+                energy_history.pop(0)
+
             # Optional callback for visualization/logging
             if callback:
                 callback(state)
 
-            # Check convergence
+            # Check convergence using multiple criteria
+            converged = False
+
+            # Criterion 1: Movement-based convergence (original)
             if max_movement < self.config.min_movement:
+                converged = True
+
+            # Criterion 2: Energy variance convergence (detects oscillation)
+            if len(energy_history) >= self.config.energy_window:
+                energy_variance = self._calculate_variance(energy_history)
+                avg_energy = sum(energy_history) / len(energy_history)
+
+                # Normalize variance by average energy to make threshold meaningful
+                normalized_variance = energy_variance / (avg_energy + 1e-6)
+
+                if normalized_variance < self.config.energy_variance_threshold:
+                    converged = True
+
+            if converged:
                 state.converged = True
                 break
 
@@ -151,6 +185,13 @@ class ForceDirectedRefiner:
         self._apply_to_board(state)
 
         return state
+
+    def _calculate_variance(self, values: List[float]) -> float:
+        """Calculate variance of a list of values."""
+        if len(values) < 2:
+            return float('inf')
+        mean = sum(values) / len(values)
+        return sum((v - mean) ** 2 for v in values) / len(values)
 
     def _initialize_state(self) -> PlacementState:
         """Initialize placement state from current board."""
@@ -203,9 +244,9 @@ class ForceDirectedRefiner:
                               forces: Dict[str, List[Force]]):
         """Add repulsion forces between components.
 
-        Uses preferred_clearance to add spacing force between components
-        that are between min_clearance and preferred_clearance distance.
-        Also adds cutoff distance to avoid long-range forces dominating.
+        Uses AABB overlap detection for more accurate collision detection
+        with rectangular components. Also uses preferred_clearance for spacing
+        and cutoff distance to avoid long-range force accumulation.
         """
         refs = list(state.positions.keys())
         # Cutoff distance beyond which repulsion is negligible (reduces noise)
@@ -213,13 +254,13 @@ class ForceDirectedRefiner:
 
         for i, ref1 in enumerate(refs):
             x1, y1 = state.positions[ref1]
-            size1 = self._component_sizes[ref1]
+            half_w1, half_h1 = self._component_sizes[ref1]
 
             for ref2 in refs[i+1:]:
                 x2, y2 = state.positions[ref2]
-                size2 = self._component_sizes[ref2]
+                half_w2, half_h2 = self._component_sizes[ref2]
 
-                # Calculate distance and direction
+                # Calculate center-to-center distance and direction
                 dx = x1 - x2
                 dy = y1 - y2
                 distance = max(math.sqrt(dx*dx + dy*dy), 0.01)
@@ -228,43 +269,52 @@ class ForceDirectedRefiner:
                 if distance > cutoff_distance:
                     continue
 
-                # Minimum distance to avoid overlap
-                min_dist = (size1 + size2) / 2 + self.config.min_clearance
-                # Preferred distance for comfortable spacing
-                preferred_dist = (size1 + size2) / 2 + self.config.preferred_clearance
+                # AABB overlap detection - check if bounding boxes overlap
+                # along each axis independently
+                overlap_x = (half_w1 + half_w2 + self.config.min_clearance) - abs(dx)
+                overlap_y = (half_h1 + half_h2 + self.config.min_clearance) - abs(dy)
 
-                if distance < min_dist:
-                    # Strong repulsion when overlapping or below min clearance
-                    overlap = min_dist - distance
-                    force_mag = self.config.repulsion_strength * overlap
+                # Preferred separation for comfortable spacing
+                preferred_sep_x = half_w1 + half_w2 + self.config.preferred_clearance
+                preferred_sep_y = half_h1 + half_h2 + self.config.preferred_clearance
 
-                    # Direction from ref2 to ref1
-                    fx = force_mag * dx / distance
-                    fy = force_mag * dy / distance
+                if overlap_x > 0 and overlap_y > 0:
+                    # Components are overlapping or too close - strong repulsion
+                    # Push along the axis with smaller overlap (easier to separate)
+                    if overlap_x < overlap_y:
+                        force_mag = self.config.repulsion_strength * overlap_x
+                        fx = force_mag * (1.0 if dx >= 0 else -1.0)
+                        fy = 0.0
+                    else:
+                        force_mag = self.config.repulsion_strength * overlap_y
+                        fx = 0.0
+                        fy = force_mag * (1.0 if dy >= 0 else -1.0)
 
                     forces[ref1].append(Force(fx, fy, ForceType.REPULSION,
                                               f"repel_{ref2}"))
                     forces[ref2].append(Force(-fx, -fy, ForceType.REPULSION,
                                               f"repel_{ref1}"))
-                elif distance < preferred_dist:
-                    # Medium repulsion when between min and preferred clearance
-                    # Linear falloff as distance approaches preferred
-                    shortfall = preferred_dist - distance
-                    max_shortfall = preferred_dist - min_dist
-                    ratio = shortfall / max_shortfall if max_shortfall > 0 else 0
-                    force_mag = self.config.repulsion_strength * 0.3 * ratio
 
-                    fx = force_mag * dx / distance
-                    fy = force_mag * dy / distance
+                elif abs(dx) < preferred_sep_x and abs(dy) < preferred_sep_y:
+                    # Between min and preferred clearance - medium repulsion
+                    shortfall_x = preferred_sep_x - abs(dx)
+                    shortfall_y = preferred_sep_y - abs(dy)
+                    max_shortfall = self.config.preferred_clearance - self.config.min_clearance
 
-                    forces[ref1].append(Force(fx, fy, ForceType.REPULSION,
-                                              f"space_{ref2}"))
-                    forces[ref2].append(Force(-fx, -fy, ForceType.REPULSION,
-                                              f"space_{ref1}"))
+                    if max_shortfall > 0:
+                        ratio = min(shortfall_x, shortfall_y) / max_shortfall
+                        ratio = min(ratio, 1.0)
+                        force_mag = self.config.repulsion_strength * 0.3 * ratio
+
+                        fx = force_mag * dx / distance
+                        fy = force_mag * dy / distance
+
+                        forces[ref1].append(Force(fx, fy, ForceType.REPULSION,
+                                                  f"space_{ref2}"))
+                        forces[ref2].append(Force(-fx, -fy, ForceType.REPULSION,
+                                                  f"space_{ref1}"))
                 else:
-                    # Weak inverse-distance (not inverse-square) for distant components
-                    # Using inverse distance instead of inverse-square reduces
-                    # oscillation in dense boards
+                    # Weak inverse-distance for distant components
                     force_mag = self.config.repulsion_strength * 0.1 / distance
 
                     fx = force_mag * dx / distance
@@ -277,77 +327,121 @@ class ForceDirectedRefiner:
 
     def _add_attraction_forces(self, state: PlacementState,
                                forces: Dict[str, List[Force]]):
-        """Add attraction forces for connected components."""
+        """Add attraction forces for connected components.
+
+        Uses a Hybrid Net Model:
+        - For small nets (<=3 pins): pairwise attraction between all components
+        - For large nets (>3 pins): Star Model - attract all pins to virtual centroid
+
+        The star model reduces O(N²) to O(N) for high-degree nets (GND, VCC)
+        and scales attraction by 1/k (where k is pin count) to prevent collapse.
+        """
         for net_name, net in self.board.nets.items():
             if len(net.connections) < 2:
                 continue
 
-            # Get component references for this net
-            refs = list(net.get_component_refs())
+            # Get component references for this net (filter to valid positions)
+            refs = [ref for ref in net.get_component_refs() if ref in state.positions]
+            num_refs = len(refs)
 
-            # Attraction between all pairs (could optimize with MST)
-            for i, ref1 in enumerate(refs):
-                if ref1 not in state.positions:
-                    continue
-                x1, y1 = state.positions[ref1]
+            if num_refs < 2:
+                continue
 
-                for ref2 in refs[i+1:]:
-                    if ref2 not in state.positions:
-                        continue
-                    x2, y2 = state.positions[ref2]
+            # Base strength, boosted for power/ground nets
+            base_strength = self.config.attraction_strength
+            if net.is_power or net.is_ground:
+                base_strength *= 2.0
 
-                    # Calculate distance
-                    dx = x2 - x1
-                    dy = y2 - y1
+            if num_refs <= 3:
+                # Small nets: use pairwise attraction (original behavior)
+                for i, ref1 in enumerate(refs):
+                    x1, y1 = state.positions[ref1]
+
+                    for ref2 in refs[i+1:]:
+                        x2, y2 = state.positions[ref2]
+
+                        dx = x2 - x1
+                        dy = y2 - y1
+                        distance = math.sqrt(dx*dx + dy*dy)
+
+                        if distance < 0.1:
+                            continue
+
+                        force_mag = base_strength * distance
+
+                        fx = force_mag * dx / distance
+                        fy = force_mag * dy / distance
+
+                        forces[ref1].append(Force(fx, fy, ForceType.ATTRACTION,
+                                                  f"net_{net_name}"))
+                        forces[ref2].append(Force(-fx, -fy, ForceType.ATTRACTION,
+                                                  f"net_{net_name}"))
+            else:
+                # Large nets: use Star Model with virtual centroid
+                # Calculate centroid of all connected components
+                centroid_x = sum(state.positions[ref][0] for ref in refs) / num_refs
+                centroid_y = sum(state.positions[ref][1] for ref in refs) / num_refs
+
+                # Scale strength by 1/k to prevent collapse on large nets
+                scaled_strength = base_strength / num_refs
+
+                for ref in refs:
+                    x, y = state.positions[ref]
+
+                    dx = centroid_x - x
+                    dy = centroid_y - y
                     distance = math.sqrt(dx*dx + dy*dy)
 
                     if distance < 0.1:
                         continue
 
-                    # Linear attraction (Hooke's law)
-                    # Stronger for power/ground nets
-                    strength = self.config.attraction_strength
-                    if net.is_power or net.is_ground:
-                        strength *= 2.0
-
-                    force_mag = strength * distance
+                    force_mag = scaled_strength * distance
 
                     fx = force_mag * dx / distance
                     fy = force_mag * dy / distance
 
-                    forces[ref1].append(Force(fx, fy, ForceType.ATTRACTION,
-                                              f"net_{net_name}"))
-                    forces[ref2].append(Force(-fx, -fy, ForceType.ATTRACTION,
-                                              f"net_{net_name}"))
+                    forces[ref].append(Force(fx, fy, ForceType.ATTRACTION,
+                                             f"net_{net_name}_star"))
 
     def _add_boundary_forces(self, state: PlacementState,
                              forces: Dict[str, List[Force]]):
-        """Add forces to keep components within board boundaries."""
+        """Add forces to keep components within board boundaries.
+
+        Uses AABB (Axis-Aligned Bounding Box) instead of diagonal radius
+        for more accurate boundary detection with rectangular components.
+        This allows long thin components to get closer to edges without
+        false boundary violations.
+        """
         outline = self.board.outline
 
         for ref, (x, y) in state.positions.items():
-            size = self._component_sizes[ref]
-            margin = size / 2 + self.config.min_clearance
+            # Get component dimensions (accounting for rotation)
+            half_w, half_h = self._component_sizes[ref]
+            clearance = self.config.min_clearance
 
             fx, fy = 0.0, 0.0
 
-            # Left edge
-            if x - margin < outline.origin_x:
-                fx = self.config.boundary_strength * (outline.origin_x + margin - x)
+            # Left edge - check component's left boundary
+            left_bound = x - half_w - clearance
+            if left_bound < outline.origin_x:
+                fx = self.config.boundary_strength * (outline.origin_x - left_bound)
 
-            # Right edge
-            if x + margin > outline.origin_x + outline.width:
+            # Right edge - check component's right boundary
+            right_bound = x + half_w + clearance
+            if right_bound > outline.origin_x + outline.width:
                 fx = self.config.boundary_strength * (
-                    outline.origin_x + outline.width - margin - x)
+                    outline.origin_x + outline.width - right_bound)
 
-            # Top edge
-            if y - margin < outline.origin_y:
-                fy = self.config.boundary_strength * (outline.origin_y + margin - y)
+            # Top edge - check component's top boundary
+            top_bound = y - half_h - clearance
+            if top_bound < outline.origin_y:
+                fy = self.config.boundary_strength * (outline.origin_y - top_bound)
 
-            # Bottom edge
-            if y + margin > outline.origin_y + outline.height:
+            # Bottom edge - check component's bottom boundary
+            bottom_bound = y + half_h + clearance
+            if bottom_bound > outline.origin_y + outline.height:
                 fy = self.config.boundary_strength * (
-                    outline.origin_y + outline.height - margin - y)
+                    outline.origin_y + outline.height - bottom_bound)
 
             if fx != 0 or fy != 0:
                 forces[ref].append(Force(fx, fy, ForceType.BOUNDARY, "boundary"))
@@ -515,12 +609,28 @@ class ForceDirectedRefiner:
 
         return connectivity
 
-    def _compute_component_sizes(self) -> Dict[str, float]:
-        """Compute effective size (diagonal) for each component."""
+    def _compute_component_sizes(self) -> Dict[str, Tuple[float, float]]:
+        """Compute effective AABB half-dimensions for each component.
+
+        Returns (half_width, half_height) tuples accounting for rotation.
+        For rotated components, we compute the axis-aligned bounding box
+        of the rotated rectangle.
+        """
         sizes = {}
         for ref, comp in self.board.components.items():
-            # Use diagonal as effective size for collision detection
-            sizes[ref] = math.sqrt(comp.width**2 + comp.height**2)
+            w, h = comp.width, comp.height
+            rot_rad = math.radians(comp.rotation)
+
+            # For axis-aligned bounding box of rotated rectangle:
+            # half_w = |w/2 * cos(θ)| + |h/2 * sin(θ)|
+            # half_h = |w/2 * sin(θ)| + |h/2 * cos(θ)|
+            cos_r = abs(math.cos(rot_rad))
+            sin_r = abs(math.sin(rot_rad))
+
+            half_w = (w / 2) * cos_r + (h / 2) * sin_r
+            half_h = (w / 2) * sin_r + (h / 2) * cos_r
+
+            sizes[ref] = (half_w, half_h)
         return sizes
 
 

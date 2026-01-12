@@ -143,8 +143,29 @@ def save_kicad_board(board: Board, path: Path):
 
 
 def _extract_outline(kicad_board) -> BoardOutline:
-    """Extract board outline from KiCad board."""
-    # Try to get bounding box from edge cuts
+    """Extract board outline from KiCad board.
+
+    Attempts to extract the actual polygon outline from Edge.Cuts layer,
+    falling back to bounding box for simple rectangular boards.
+    """
+    # Try to extract polygon outline from Edge.Cuts drawings
+    polygon, holes = _extract_polygon_outline(kicad_board)
+
+    if polygon and len(polygon) >= 3:
+        # Calculate bounding box for the polygon
+        xs = [p[0] for p in polygon]
+        ys = [p[1] for p in polygon]
+
+        return BoardOutline(
+            width=max(xs) - min(xs),
+            height=max(ys) - min(ys),
+            origin_x=min(xs),
+            origin_y=min(ys),
+            polygon=polygon,
+            holes=holes,
+        )
+
+    # Fall back to bounding box from edge cuts
     bbox = kicad_board.GetBoardEdgesBoundingBox()
 
     if bbox.GetWidth() > 0 and bbox.GetHeight() > 0:
@@ -163,6 +184,212 @@ def _extract_outline(kicad_board) -> BoardOutline:
         origin_x=pcbnew.ToMM(bbox.GetX()),
         origin_y=pcbnew.ToMM(bbox.GetY()),
     )
+
+
+def _extract_polygon_outline(kicad_board) -> tuple:
+    """Extract polygon outline and holes from Edge.Cuts layer.
+
+    Returns:
+        Tuple of (main_polygon, holes) where main_polygon is a list of (x, y) tuples
+        and holes is a list of polygon vertex lists.
+    """
+    import math
+
+    # Collect all Edge.Cuts segments
+    segments = []
+
+    for drawing in kicad_board.GetDrawings():
+        if drawing.GetLayer() != pcbnew.Edge_Cuts:
+            continue
+
+        # Handle different drawing types
+        shape_type = drawing.GetClass()
+
+        if shape_type == "PCB_SHAPE":
+            shape = drawing.GetShape()
+
+            if shape == pcbnew.SHAPE_T_SEGMENT:
+                # Line segment
+                start = drawing.GetStart()
+                end = drawing.GetEnd()
+                segments.append((
+                    (pcbnew.ToMM(start.x), pcbnew.ToMM(start.y)),
+                    (pcbnew.ToMM(end.x), pcbnew.ToMM(end.y))
+                ))
+
+            elif shape == pcbnew.SHAPE_T_ARC:
+                # Arc - convert to line segments for simplicity
+                center = drawing.GetCenter()
+                start = drawing.GetStart()
+                end = drawing.GetEnd()
+                radius = pcbnew.ToMM(drawing.GetRadius())
+                start_angle = drawing.GetArcAngleStart().AsDegrees()
+                arc_angle = drawing.GetArcAngle().AsDegrees()
+
+                # Discretize arc into line segments
+                num_segments = max(8, int(abs(arc_angle) / 10))
+                cx, cy = pcbnew.ToMM(center.x), pcbnew.ToMM(center.y)
+
+                prev_point = None
+                for i in range(num_segments + 1):
+                    angle = math.radians(start_angle + arc_angle * i / num_segments)
+                    px = cx + radius * math.cos(angle)
+                    py = cy + radius * math.sin(angle)
+                    point = (px, py)
+
+                    if prev_point:
+                        segments.append((prev_point, point))
+                    prev_point = point
+
+            elif shape == pcbnew.SHAPE_T_CIRCLE:
+                # Circle - convert to polygon
+                center = drawing.GetCenter()
+                radius = pcbnew.ToMM(drawing.GetRadius())
+                cx, cy = pcbnew.ToMM(center.x), pcbnew.ToMM(center.y)
+
+                num_points = 32
+                prev_point = None
+                first_point = None
+                for i in range(num_points + 1):
+                    angle = 2 * math.pi * i / num_points
+                    px = cx + radius * math.cos(angle)
+                    py = cy + radius * math.sin(angle)
+                    point = (px, py)
+
+                    if first_point is None:
+                        first_point = point
+                    if prev_point:
+                        segments.append((prev_point, point))
+                    prev_point = point
+
+            elif shape == pcbnew.SHAPE_T_RECT:
+                # Rectangle
+                start = drawing.GetStart()
+                end = drawing.GetEnd()
+                x1, y1 = pcbnew.ToMM(start.x), pcbnew.ToMM(start.y)
+                x2, y2 = pcbnew.ToMM(end.x), pcbnew.ToMM(end.y)
+
+                # Add four edges
+                segments.append(((x1, y1), (x2, y1)))
+                segments.append(((x2, y1), (x2, y2)))
+                segments.append(((x2, y2), (x1, y2)))
+                segments.append(((x1, y2), (x1, y1)))
+
+            elif shape == pcbnew.SHAPE_T_POLY:
+                # Polygon - extract vertices
+                try:
+                    poly_set = drawing.GetPolyShape()
+                    for outline_idx in range(poly_set.OutlineCount()):
+                        outline = poly_set.Outline(outline_idx)
+                        points = []
+                        for pt_idx in range(outline.PointCount()):
+                            pt = outline.GetPoint(pt_idx)
+                            points.append((pcbnew.ToMM(pt.x), pcbnew.ToMM(pt.y)))
+
+                        # Add edges from polygon
+                        for i in range(len(points)):
+                            j = (i + 1) % len(points)
+                            segments.append((points[i], points[j]))
+                except:
+                    pass
+
+    if not segments:
+        return None, []
+
+    # Chain segments into polygons
+    polygons = _chain_segments_to_polygons(segments)
+
+    if not polygons:
+        return None, []
+
+    # Find the largest polygon (main outline) and treat others as holes
+    main_polygon = max(polygons, key=lambda p: _polygon_area(p))
+    holes = [p for p in polygons if p is not main_polygon]
+
+    return main_polygon, holes
+
+
+def _chain_segments_to_polygons(segments, tolerance=0.01):
+    """Chain line segments into closed polygons.
+
+    Args:
+        segments: List of ((x1, y1), (x2, y2)) segment tuples
+        tolerance: Distance tolerance for connecting segments (mm)
+
+    Returns:
+        List of polygon vertex lists
+    """
+    if not segments:
+        return []
+
+    # Copy segments so we can modify the list
+    remaining = list(segments)
+    polygons = []
+
+    while remaining:
+        # Start a new polygon with the first remaining segment
+        current_polygon = list(remaining.pop(0))
+
+        # Try to extend the polygon
+        made_progress = True
+        while made_progress:
+            made_progress = False
+
+            for i, seg in enumerate(remaining):
+                start, end = seg
+
+                # Check if segment connects to end of polygon
+                if _points_close(current_polygon[-1], start, tolerance):
+                    current_polygon.append(end)
+                    remaining.pop(i)
+                    made_progress = True
+                    break
+                elif _points_close(current_polygon[-1], end, tolerance):
+                    current_polygon.append(start)
+                    remaining.pop(i)
+                    made_progress = True
+                    break
+                # Check if segment connects to start of polygon
+                elif _points_close(current_polygon[0], end, tolerance):
+                    current_polygon.insert(0, start)
+                    remaining.pop(i)
+                    made_progress = True
+                    break
+                elif _points_close(current_polygon[0], start, tolerance):
+                    current_polygon.insert(0, end)
+                    remaining.pop(i)
+                    made_progress = True
+                    break
+
+        # Check if polygon is closed
+        if len(current_polygon) >= 3:
+            if _points_close(current_polygon[0], current_polygon[-1], tolerance):
+                current_polygon.pop()  # Remove duplicate closing point
+            polygons.append(current_polygon)
+
+    return polygons
+
+
+def _points_close(p1, p2, tolerance):
+    """Check if two points are within tolerance distance."""
+    dx = p1[0] - p2[0]
+    dy = p1[1] - p2[1]
+    return (dx * dx + dy * dy) <= tolerance * tolerance
+
+
+def _polygon_area(polygon):
+    """Calculate area of polygon using shoelace formula."""
+    n = len(polygon)
+    if n < 3:
+        return 0
+
+    area = 0
+    for i in range(n):
+        j = (i + 1) % n
+        area += polygon[i][0] * polygon[j][1]
+        area -= polygon[j][0] * polygon[i][1]
+
+    return abs(area) / 2
 
 
 def _footprint_to_component(fp) -> Component:
@@ -367,14 +594,21 @@ def _extract_net(net_name: str, net_item, kicad_board) -> Net:
     if any(gnd in name_upper for gnd in ['GND', 'VSS', 'GROUND', 'AGND', 'DGND']):
         net.is_ground = True
 
-    # Check for differential pairs
-    if name_upper.endswith('+') or name_upper.endswith('_P'):
+    # Check for differential pairs - mark both + and - nets
+    # Positive nets
+    if name_upper.endswith('+'):
         net.is_differential = True
-        # Try to find matching pair
-        if name_upper.endswith('+'):
-            net.diff_pair_net = net_name[:-1] + '-'
-        elif name_upper.endswith('_P'):
-            net.diff_pair_net = net_name[:-2] + '_N'
+        net.diff_pair_net = net_name[:-1] + '-'
+    elif name_upper.endswith('_P'):
+        net.is_differential = True
+        net.diff_pair_net = net_name[:-2] + '_N'
+    # Negative nets - also mark these as differential
+    elif name_upper.endswith('-'):
+        net.is_differential = True
+        net.diff_pair_net = net_name[:-1] + '+'
+    elif name_upper.endswith('_N'):
+        net.is_differential = True
+        net.diff_pair_net = net_name[:-2] + '_P'
 
     # Find all pads connected to this net
     for fp in kicad_board.GetFootprints():

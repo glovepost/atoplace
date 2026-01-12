@@ -132,6 +132,26 @@ class AtopileProjectLoader:
             self._lock_data = self._load_lock_file()
         return self._lock_data
 
+    @property
+    def instance_to_ref_map(self) -> Dict[str, str]:
+        """
+        Build a mapping from atopile instance paths to KiCad reference designators.
+
+        The ato-lock.yaml file is keyed by instance path (e.g., 'root.voltage_div.r1')
+        and each entry contains a 'designator' field with the KiCad ref (e.g., 'R1').
+        """
+        if not hasattr(self, '_instance_to_ref_map') or self._instance_to_ref_map is None:
+            self._instance_to_ref_map = {}
+            for instance_path, data in self.lock_data.items():
+                if isinstance(data, dict) and 'designator' in data:
+                    self._instance_to_ref_map[instance_path] = data['designator']
+                    # Also store short instance name for easier lookup
+                    short_name = instance_path.split('.')[-1] if '.' in instance_path else instance_path
+                    # Only add short name if it doesn't conflict
+                    if short_name not in self._instance_to_ref_map:
+                        self._instance_to_ref_map[short_name] = data['designator']
+        return self._instance_to_ref_map
+
     def _load_ato_yaml(self) -> AtopileProject:
         """Parse ato.yaml configuration file."""
         ato_yaml_path = self.root / "ato.yaml"
@@ -339,6 +359,10 @@ class AtopileProjectLoader:
 
         This adds module grouping information that can be used for
         automatic GroupingConstraints.
+
+        The atopile module parser extracts instance names (e.g., 'r1', 'c1') from .ato files.
+        We use the instance_to_ref_map (built from ato-lock.yaml) to map these instance
+        names to KiCad reference designators (e.g., 'R1', 'C1').
         """
         ato_path = self.get_ato_source_path(build_name)
         if not ato_path or not ato_path.exists():
@@ -348,14 +372,39 @@ class AtopileProjectLoader:
         parser = AtopileModuleParser()
         hierarchy = parser.parse_file(ato_path)
 
+        # Get the instance-to-ref mapping from lock file
+        ref_map = self.instance_to_ref_map
+
         # Apply to components
         for module in hierarchy.values():
-            for comp_ref in module.components:
-                if comp_ref in board.components:
-                    comp = board.components[comp_ref]
+            for instance_name in module.components:
+                # Try to resolve instance name to KiCad reference designator
+                kicad_ref = None
+
+                # First, try direct lookup in the ref_map
+                if instance_name in ref_map:
+                    kicad_ref = ref_map[instance_name]
+                else:
+                    # Try to find by searching for instance paths containing this name
+                    for path, ref in ref_map.items():
+                        if path.endswith('.' + instance_name) or path == instance_name:
+                            kicad_ref = ref
+                            break
+
+                # If still not found, try case-insensitive match against board components
+                if not kicad_ref:
+                    for board_ref in board.components:
+                        if board_ref.lower() == instance_name.lower():
+                            kicad_ref = board_ref
+                            break
+
+                if kicad_ref and kicad_ref in board.components:
+                    comp = board.components[kicad_ref]
                     comp.properties["ato_module"] = module.name
                     if module.module_type:
                         comp.properties["ato_module_type"] = module.module_type
+                    if module.parent:
+                        comp.properties["ato_parent_module"] = module.parent
 
     def get_component_metadata(self, reference: str) -> Optional[ComponentMetadata]:
         """Get metadata for a specific component."""

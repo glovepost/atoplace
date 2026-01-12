@@ -29,6 +29,7 @@ classifiers = [
 
 dependencies = [
     "numpy>=1.21.0",
+    "PyYAML>=6.0.0",
 ]
 
 [project.optional-dependencies]

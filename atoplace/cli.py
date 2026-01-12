@@ -13,7 +13,7 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 
 def check_pcbnew():
@@ -131,6 +131,31 @@ def cmd_place(args):
         parsed, summary = parser.parse_interactive(args.constraints)
         constraints = parsed
         print(summary)
+
+    # Add atopile module grouping constraints if requested
+    if getattr(args, 'use_ato_modules', False) and is_atopile:
+        from .placement.constraints import GroupingConstraint
+        print("\nApplying atopile module grouping constraints...")
+
+        # Collect components by their ato_module property
+        modules_to_components: Dict[str, List[str]] = {}
+        for ref, comp in board.components.items():
+            ato_module = comp.properties.get("ato_module")
+            if ato_module:
+                if ato_module not in modules_to_components:
+                    modules_to_components[ato_module] = []
+                modules_to_components[ato_module].append(ref)
+
+        # Create grouping constraints for modules with 2+ components
+        for module_name, comp_refs in modules_to_components.items():
+            if len(comp_refs) >= 2:
+                constraint = GroupingConstraint(
+                    component_refs=comp_refs,
+                    strength=0.7,  # Moderate strength for module grouping
+                    description=f"Group atopile module: {module_name}"
+                )
+                constraints.append(constraint)
+                print(f"  {module_name}: {len(comp_refs)} components")
 
     # Configure refinement
     config = RefinementConfig(

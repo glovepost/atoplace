@@ -2,25 +2,44 @@
 
 This file tracks code review findings and risks discovered during development.
 
+## 2026-01-12 - FIXES APPLIED
+
+### High - RESOLVED
+- ~~**Atopile Integration**: Fallback YAML parser is unreliable; Module mapping is broken (instance name vs reference designator).~~ **FIXED**: Added PyYAML>=6.0.0 to dependencies. Implemented `instance_to_ref_map` property to map atopile instance paths to KiCad designators. Updated `_apply_module_hierarchy` to use this mapping with fallback strategies. Wired up `--use-ato-modules` in CLI to create GroupingConstraints from atopile modules.
+
+- ~~**Placement Physics**: High-degree net collapse ($O(N^2)$ attraction) and unused connectivity matrix.~~ **FIXED**: Implemented Hybrid Net Model in `_add_attraction_forces` - small nets (<=3 pins) use pairwise attraction, large nets use Star Model with centroid attraction scaled by 1/k. Replaced diagonal radius with AABB checks in boundary forces. Added rolling average energy convergence detection with configurable window and variance threshold.
+
+### Medium - RESOLVED
+- ~~**Board Outline Extraction**: `_extract_outline` currently uses `GetBoardEdgesBoundingBox`, reducing complex shapes to a rectangle.~~ **FIXED**: Implemented `_extract_polygon_outline` to chain Edge.Cuts segments (lines, arcs, circles, rectangles, polygons) into closed polygons. `BoardOutline` now supports `polygon` vertices and `holes`. Implemented `contains_point` using Ray Casting algorithm with margin support.
+
+- ~~**Board Adapter**: Differential pair detection only flags nets ending in `+` or `_P`.~~ **FIXED**: `_extract_net` now also marks `-` and `_N` suffixed nets as differential pairs with correct pair references.
+
+- ~~**DRC**: Pad size check compares component pad dimensions against `min_via_annular * 2`.~~ **FIXED**: `_check_minimum_sizes` now differentiates between through-hole pads (checked against drill and annular ring rules) and SMD pads (checked against min_spacing).
+
+- ~~**CLI**: `--use-ato-modules` flag is defined but ignored in `cmd_place`.~~ **FIXED**: When flag is set and board is from atopile, creates GroupingConstraints for each module with 2+ components.
+
+- ~~**Placement Physics**: Boundary forces use component diagonal as a circular margin.~~ **FIXED**: `_compute_component_sizes` now returns AABB half-dimensions accounting for rotation. `_add_boundary_forces` and `_add_repulsion_forces` use proper AABB collision detection.
+
+- ~~**Placement Physics**: Convergence check only looks at `max_movement`.~~ **FIXED**: Added energy history tracking with configurable `energy_window` and `energy_variance_threshold` for detecting oscillation and stall conditions.
+
 ## 2026-01-11 - REVIEW FINDINGS
 
 ### High - OPEN
-- **Atopile Integration**: Fallback YAML parser (`_parse_simple_yaml`) fails on nested structures (critical for `ato.yaml`). It flattens section headers and skips nested content, making project loading unreliable without PyYAML. File: `atoplace/board/atopile_adapter.py`.
-- **Atopile Module Mapping**: `AtopileModuleParser` extracts instance names (e.g., `res1`) but `Board` uses reference designators (e.g., `R1`). There is no mapping mechanism, so `ato_module` metadata is not applied to components. File: `atoplace/board/atopile_adapter.py`.
-- **Placement Physics**: `_add_attraction_forces` iterates all pairs in a net. For high-degree nets (GND/VCC), this creates massive attraction forces ($O(N^2)$), causing component collapse. `_build_connectivity_matrix` is computed but unused. File: `atoplace/placement/force_directed.py`.
+
+- **NLP Modification Logic**: `ModificationHandler` fails to execute "move closer to X" or "move away from X" commands.
+    - **Fix Strategy**:
+        1. Update `MODIFICATION_PATTERNS` regex to capture the target component. Change `(closer\s+to|away\s+from|...)` to `((?:closer\s+to|away\s+from)\s+\w+|left|right|up|down)`.
+        2. Update `_extract_modification` to parse the target from this new group correctly, separating the direction keyword ("closer to") from the target reference ("U1").
 
 ### Medium - OPEN
-- **Placement Physics**: Boundary forces use component diagonal as a circular margin. This is inaccurate for long rectangular components and can push them off-board or constrain them too tightly. File: `atoplace/placement/force_directed.py`.
-- **Placement Physics**: Convergence check only looks at `max_movement`. No oscillation or stall detection. File: `atoplace/placement/force_directed.py`.
-- **Board Outline Extraction**: `_extract_outline` currently uses `GetBoardEdgesBoundingBox`, reducing complex shapes to a rectangle.
-    - **Fix Strategy**:
-        1. Update `BoardOutline` in `atoplace/board/abstraction.py` to support `polygon` (list of vertices) and `holes`.
-        2. Update `_extract_outline` in `atoplace/board/kicad_adapter.py` to use `kicad_board.GetBoardPolygonOutlines()` (returns `SHAPE_POLY_SET`) to get the true outline. If unavailable, iterate `Edge.Cuts` drawings to chain segments.
-        3. Implement `contains_point` using the Ray Casting algorithm (even-odd rule) or integrate `shapely`.
-        4. Update `ForceDirectedRefiner` to use `contains_point` for boundary forces instead of simple bounds checking.
-- **Board Adapter**: Differential pair detection only flags nets ending in `+` or `_P`. The corresponding `-` or `_N` nets are not marked as differential. File: `atoplace/board/kicad_adapter.py`.
-- **DRC**: Pad size check compares component pad dimensions against `min_via_annular * 2`. This conflates via rules with SMD pad requirements, likely causing false positives. File: `atoplace/validation/drc.py`.
-- **CLI**: `--use-ato-modules` flag is defined but ignored in `cmd_place`. File: `atoplace/cli.py`.
+
+- **Pre-Route Validation**: `_check_overlapping_pads` uses a hardcoded `0.05mm` clearance check, ignoring the active DFM profile's `min_spacing` rules. It also relies on a coarse 1.0mm grid which may miss fine-pitch overlaps. File: `atoplace/validation/pre_route.py`.
+- **Confidence Scoring**: `_check_decoupling` enforces a hard 5mm distance limit for decoupling capacitors. This heuristic fails for high-speed/RF designs requiring <1mm placement and doesn't account for net impedance. File: `atoplace/validation/confidence.py`.
+
+## 2026-01-12 - REVIEW FINDINGS
+
+### Medium - OPEN
+- **Pad Geometry**: Pad rotation is not stored or applied. `_pad_to_pad` ignores pad orientation and `Pad` lacks a rotation field, so overlap/clearance checks treat rotated pads as axis-aligned rectangles, leading to false positives/negatives and skewed footprint extents. Files: `atoplace/board/abstraction.py`, `atoplace/board/kicad_adapter.py`, `atoplace/validation/pre_route.py`.
 
 ## 2025-02-14 - RESOLVED
 

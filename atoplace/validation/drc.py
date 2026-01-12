@@ -72,23 +72,60 @@ class DRCChecker:
                 ))
 
     def _check_minimum_sizes(self):
-        """Check that pads meet minimum size requirements."""
+        """Check that pads meet minimum size requirements.
+
+        Differentiates between through-hole pads (checked against via rules)
+        and SMD pads (checked against minimum manufacturable size).
+        """
         if not self.dfm_profile:
             return
 
-        min_pad = self.dfm_profile.min_via_annular * 2
+        # Through-hole pads: check drill and annular ring
+        min_th_drill = self.dfm_profile.min_hole_diameter
+        min_th_annular = self.dfm_profile.min_via_annular
+
+        # SMD pads: use a sensible minimum based on spacing rules
+        # Most fabs can handle pads as small as 0.15mm for 0201 components
+        # Use min_spacing as a lower bound (typically 0.1-0.15mm)
+        min_smd_pad = self.dfm_profile.min_spacing
 
         for ref, comp in self.board.components.items():
             for pad in comp.pads:
-                if pad.width < min_pad or pad.height < min_pad:
-                    abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
-                    self.violations.append(DRCViolation(
-                        rule="min_pad_size",
-                        severity="warning",
-                        message=f"Pad {ref}.{pad.number} may be too small ({pad.width:.2f}x{pad.height:.2f}mm)",
-                        location=(abs_x, abs_y),
-                        items=[f"{ref}.{pad.number}"],
-                    ))
+                abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
+
+                if pad.drill:
+                    # Through-hole pad - check drill size
+                    if pad.drill < min_th_drill:
+                        self.violations.append(DRCViolation(
+                            rule="min_drill_size",
+                            severity="warning",
+                            message=f"Drill in {ref}.{pad.number} too small ({pad.drill:.2f}mm < {min_th_drill:.2f}mm)",
+                            location=(abs_x, abs_y),
+                            items=[f"{ref}.{pad.number}"],
+                        ))
+
+                    # Check annular ring (pad size minus drill / 2)
+                    min_dimension = min(pad.width, pad.height)
+                    annular_ring = (min_dimension - pad.drill) / 2
+                    if annular_ring < min_th_annular:
+                        self.violations.append(DRCViolation(
+                            rule="min_annular_ring",
+                            severity="warning",
+                            message=f"Annular ring in {ref}.{pad.number} too small ({annular_ring:.3f}mm < {min_th_annular:.3f}mm)",
+                            location=(abs_x, abs_y),
+                            items=[f"{ref}.{pad.number}"],
+                        ))
+                else:
+                    # SMD pad - check minimum dimensions
+                    # Only warn for extremely small pads (smaller than min_spacing)
+                    if pad.width < min_smd_pad or pad.height < min_smd_pad:
+                        self.violations.append(DRCViolation(
+                            rule="min_smd_pad_size",
+                            severity="warning",
+                            message=f"SMD pad {ref}.{pad.number} very small ({pad.width:.2f}x{pad.height:.2f}mm)",
+                            location=(abs_x, abs_y),
+                            items=[f"{ref}.{pad.number}"],
+                        ))
 
     def _check_edge_clearance(self):
         """Check component clearance to board edges."""

@@ -170,28 +170,148 @@ class Net:
 
 @dataclass
 class BoardOutline:
-    """Represents the board edge/outline."""
-    # Simple rectangular board
+    """Represents the board edge/outline.
+
+    Supports both simple rectangular boards and complex polygon outlines
+    with optional holes (cutouts).
+    """
+    # Simple rectangular board (used when polygon is None)
     width: float = 100.0  # mm
     height: float = 100.0
     origin_x: float = 0.0
     origin_y: float = 0.0
 
-    # For complex shapes, store as polygon points
+    # For complex shapes, store as polygon vertices [(x, y), ...]
     polygon: Optional[List[Tuple[float, float]]] = None
 
+    # For boards with cutouts, store hole polygons
+    holes: List[List[Tuple[float, float]]] = field(default_factory=list)
+
     def contains_point(self, x: float, y: float, margin: float = 0.0) -> bool:
-        """Check if a point is within the board outline."""
+        """Check if a point is within the board outline.
+
+        Uses Ray Casting algorithm (even-odd rule) for polygon containment.
+        Returns False if point is in a hole.
+        """
         if self.polygon:
-            # TODO: Implement polygon containment test
-            raise NotImplementedError("Polygon containment not yet implemented")
+            # Offset the polygon inward by margin for boundary checking
+            # For simplicity, we check the point and then verify it's at least
+            # margin distance from any edge
+            if not self._point_in_polygon(x, y, self.polygon):
+                return False
+
+            # Check margin distance from polygon edges
+            if margin > 0 and not self._point_inside_margin(x, y, self.polygon, margin):
+                return False
+
+            # Check if point is in any hole
+            for hole in self.holes:
+                if self._point_in_polygon(x, y, hole):
+                    return False
+
+            return True
 
         # Simple rectangle check
         return (self.origin_x + margin <= x <= self.origin_x + self.width - margin and
                 self.origin_y + margin <= y <= self.origin_y + self.height - margin)
 
+    def _point_in_polygon(self, x: float, y: float,
+                          polygon: List[Tuple[float, float]]) -> bool:
+        """Ray casting algorithm for point-in-polygon test.
+
+        Casts a ray from the point to the right and counts edge crossings.
+        Odd number of crossings = inside, even = outside.
+        """
+        n = len(polygon)
+        if n < 3:
+            return False
+
+        inside = False
+        j = n - 1
+
+        for i in range(n):
+            xi, yi = polygon[i]
+            xj, yj = polygon[j]
+
+            # Check if ray from (x, y) going right crosses edge (i, j)
+            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                inside = not inside
+
+            j = i
+
+        return inside
+
+    def _point_inside_margin(self, x: float, y: float,
+                             polygon: List[Tuple[float, float]],
+                             margin: float) -> bool:
+        """Check if point is at least margin distance from all polygon edges."""
+        n = len(polygon)
+        if n < 2:
+            return True
+
+        for i in range(n):
+            j = (i + 1) % n
+            x1, y1 = polygon[i]
+            x2, y2 = polygon[j]
+
+            # Calculate distance from point to line segment
+            dist = self._point_to_segment_distance(x, y, x1, y1, x2, y2)
+            if dist < margin:
+                return False
+
+        return True
+
+    def _point_to_segment_distance(self, px: float, py: float,
+                                   x1: float, y1: float,
+                                   x2: float, y2: float) -> float:
+        """Calculate shortest distance from point (px, py) to line segment (x1,y1)-(x2,y2)."""
+        # Vector from segment start to point
+        dx = px - x1
+        dy = py - y1
+
+        # Vector along segment
+        sx = x2 - x1
+        sy = y2 - y1
+
+        # Segment length squared
+        seg_len_sq = sx * sx + sy * sy
+
+        if seg_len_sq < 1e-10:
+            # Degenerate segment (point)
+            return math.sqrt(dx * dx + dy * dy)
+
+        # Parameter t for closest point on infinite line
+        t = max(0.0, min(1.0, (dx * sx + dy * sy) / seg_len_sq))
+
+        # Closest point on segment
+        closest_x = x1 + t * sx
+        closest_y = y1 + t * sy
+
+        # Distance from point to closest point
+        diff_x = px - closest_x
+        diff_y = py - closest_y
+
+        return math.sqrt(diff_x * diff_x + diff_y * diff_y)
+
     def get_edge(self, edge: str) -> float:
-        """Get coordinate of specified edge."""
+        """Get coordinate of specified edge.
+
+        For polygons, returns the bounding box edge.
+        """
+        if self.polygon:
+            xs = [p[0] for p in self.polygon]
+            ys = [p[1] for p in self.polygon]
+            if edge == "left":
+                return min(xs)
+            elif edge == "right":
+                return max(xs)
+            elif edge == "top":
+                return min(ys)
+            elif edge == "bottom":
+                return max(ys)
+            else:
+                raise ValueError(f"Unknown edge: {edge}")
+
         if edge == "left":
             return self.origin_x
         elif edge == "right":
@@ -202,6 +322,15 @@ class BoardOutline:
             return self.origin_y + self.height
         else:
             raise ValueError(f"Unknown edge: {edge}")
+
+    def get_bounding_box(self) -> Tuple[float, float, float, float]:
+        """Get axis-aligned bounding box (min_x, min_y, max_x, max_y)."""
+        if self.polygon:
+            xs = [p[0] for p in self.polygon]
+            ys = [p[1] for p in self.polygon]
+            return (min(xs), min(ys), max(xs), max(ys))
+        return (self.origin_x, self.origin_y,
+                self.origin_x + self.width, self.origin_y + self.height)
 
 
 @dataclass

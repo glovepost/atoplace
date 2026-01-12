@@ -66,3 +66,11 @@ pytest tests/
 - `atoplace/placement/force_directed.py` - Core placement algorithm
 - `atoplace/validation/confidence.py` - Quality scoring
 - `atoplace/nlp/constraint_parser.py` - NL parsing
+
+## Issue Tracking
+
+Issues are tracked in `ISSUES.md`. When fixing issues:
+
+1. Work through issues in priority order (High before Medium before Low)
+2. After fixing a batch of related issues, create a git commit and push
+3. Update `ISSUES.md` to mark resolved issues with `~~strikethrough~~` and **FIXED** notes
