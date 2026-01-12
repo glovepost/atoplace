@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="images/atoplace.jpg" alt="AtoPlace">
+  <img src="images/atoplace.png" alt="AtoPlace" width="420">
 </p>
 
 <p align="center">
