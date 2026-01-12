@@ -436,33 +436,41 @@ class ConfidenceScorer:
         return flags, score
 
     def _check_boundaries(self, board: Board) -> List[DesignFlag]:
-        """Check if all components are within board boundaries."""
+        """Check if all components are within board boundaries.
+
+        Uses BoardOutline.contains_point() which properly handles:
+        - Polygon outlines (non-rectangular boards)
+        - Board cutouts/holes
+        - Margin enforcement for edge clearance
+        """
         flags = []
         outline = board.outline
+        margin = self.dfm_profile.min_trace_to_edge
 
         for ref, comp in board.components.items():
             if comp.dnp:  # Skip Do Not Populate components
                 continue
             bbox = comp.get_bounding_box()
 
-            outside = False
-            margin = self.dfm_profile.min_trace_to_edge
+            # Check all 4 corners of bounding box against board outline
+            corners = [
+                (bbox[0], bbox[1]),  # min_x, min_y (bottom-left)
+                (bbox[2], bbox[1]),  # max_x, min_y (bottom-right)
+                (bbox[0], bbox[3]),  # min_x, max_y (top-left)
+                (bbox[2], bbox[3]),  # max_x, max_y (top-right)
+            ]
 
-            if bbox[0] < outline.origin_x + margin:
-                outside = True
-            if bbox[2] > outline.origin_x + outline.width - margin:
-                outside = True
-            if bbox[1] < outline.origin_y + margin:
-                outside = True
-            if bbox[3] > outline.origin_y + outline.height - margin:
-                outside = True
+            outside_corners = []
+            for cx, cy in corners:
+                if not outline.contains_point(cx, cy, margin):
+                    outside_corners.append((cx, cy))
 
-            if outside:
+            if outside_corners:
                 flags.append(DesignFlag(
                     severity=Severity.ERROR,
                     category=FlagCategory.PLACEMENT,
                     location=ref,
-                    message=f"Component {ref} extends outside board boundary",
+                    message=f"Component {ref} extends outside board boundary or too close to edge ({len(outside_corners)} corners violate {margin:.2f}mm clearance)",
                     suggested_action="Move component within board outline",
                     confidence=1.0,
                     rule_source="DFM: Board edge clearance",

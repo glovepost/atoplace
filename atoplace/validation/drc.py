@@ -139,7 +139,13 @@ class DRCChecker:
                         ))
 
     def _check_edge_clearance(self):
-        """Check component clearance to board edges."""
+        """Check component clearance to board edges.
+
+        Uses BoardOutline.contains_point() which properly handles:
+        - Polygon outlines (non-rectangular boards)
+        - Board cutouts/holes
+        - Margin enforcement for edge clearance
+        """
         if not self.dfm_profile:
             return
 
@@ -151,22 +157,24 @@ class DRCChecker:
                 continue
             bbox = comp.get_bounding_box()
 
-            violations_found = []
+            # Check all 4 corners of bounding box against board outline with margin
+            corners = [
+                (bbox[0], bbox[1]),  # min_x, min_y (bottom-left)
+                (bbox[2], bbox[1]),  # max_x, min_y (bottom-right)
+                (bbox[0], bbox[3]),  # min_x, max_y (top-left)
+                (bbox[2], bbox[3]),  # max_x, max_y (top-right)
+            ]
 
-            if bbox[0] < outline.origin_x + min_edge:
-                violations_found.append("left edge")
-            if bbox[2] > outline.origin_x + outline.width - min_edge:
-                violations_found.append("right edge")
-            if bbox[1] < outline.origin_y + min_edge:
-                violations_found.append("top edge")
-            if bbox[3] > outline.origin_y + outline.height - min_edge:
-                violations_found.append("bottom edge")
+            violating_corners = 0
+            for cx, cy in corners:
+                if not outline.contains_point(cx, cy, min_edge):
+                    violating_corners += 1
 
-            if violations_found:
+            if violating_corners > 0:
                 self.violations.append(DRCViolation(
                     rule="edge_clearance",
                     severity="error",
-                    message=f"{ref} too close to {', '.join(violations_found)}",
+                    message=f"{ref} too close to board edge or cutout ({violating_corners} corners violate {min_edge:.2f}mm clearance)",
                     location=(comp.x, comp.y),
                     items=[ref],
                 ))
