@@ -200,8 +200,8 @@ class AtoPlacePlaceAction(AtoPlaceBaseAction):
             wx.MessageBox(
                 f"Placement optimization complete!\n\n"
                 f"Force-directed refinement:\n"
-                f"  - Iterations: {result.iterations}\n"
-                f"  - Final energy: {result.final_energy:.2f}\n\n"
+                f"  - Iterations: {result.iteration}\n"
+                f"  - Final energy: {result.total_energy:.2f}\n\n"
                 f"Legalization:\n"
                 f"  - Components snapped to grid: {legal_result.grid_snapped}\n"
                 f"  - Rows formed: {legal_result.rows_formed}\n"
@@ -268,8 +268,8 @@ class AtoPlaceValidateAction(AtoPlaceBaseAction):
             progress.Update(80, "Calculating confidence score...")
 
             # Confidence scoring
-            scorer = ConfidenceScorer(board, dfm_profile)
-            report = scorer.assess()
+            scorer = ConfidenceScorer(dfm_profile)
+            report = scorer.assess(board)
 
             progress.Update(100, "Complete!")
 
@@ -366,12 +366,12 @@ class AtoPlaceReportAction(AtoPlaceBaseAction):
             drc_ok, drc_violations = drc.run_checks()
 
             progress.Update(55, "Calculating confidence score...")
-            scorer = ConfidenceScorer(board, dfm_profile)
-            report = scorer.assess()
+            scorer = ConfidenceScorer(dfm_profile)
+            report = scorer.assess(board)
 
             progress.Update(75, "Detecting modules...")
             detector = ModuleDetector(board)
-            modules = detector.detect_modules()
+            modules = detector.detect()
 
             progress.Update(90, "Writing report...")
 

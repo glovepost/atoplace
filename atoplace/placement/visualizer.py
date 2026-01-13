@@ -57,8 +57,11 @@ class PlacementFrame:
 # Module type to color mapping
 MODULE_COLORS = {
     "power_supply": "#e74c3c",      # Red
+    "power": "#e74c3c",             # Red (alias)
     "microcontroller": "#3498db",   # Blue
+    "mcu": "#3498db",               # Blue (alias)
     "rf_frontend": "#9b59b6",       # Purple
+    "rf": "#9b59b6",                # Purple (alias)
     "sensor": "#2ecc71",            # Green
     "connector": "#f39c12",         # Orange
     "crystal": "#1abc9c",           # Teal
@@ -68,8 +71,76 @@ MODULE_COLORS = {
     "digital": "#607d8b",           # Blue Grey
     "esd_protection": "#795548",    # Brown
     "level_shifter": "#9c27b0",     # Deep Purple
+    "accel": "#00e676",             # Bright Green (accelerometer)
+    "imu": "#00e676",               # Bright Green (IMU)
+    "gps": "#ffeb3b",               # Yellow (GPS)
+    "lte": "#ff9800",               # Orange (LTE)
     "default": "#95a5a6",           # Grey
 }
+
+
+def get_module_color(module_type: str) -> str:
+    """Get color for a module type, generating one if not predefined.
+
+    Uses a deterministic hash-based color generation for unknown module types,
+    ensuring the same module name always gets the same color.
+
+    Args:
+        module_type: Module type name (e.g., "power", "accel", "rf")
+
+    Returns:
+        Hex color string (e.g., "#e74c3c")
+    """
+    if not module_type:
+        return MODULE_COLORS["default"]
+
+    # Check for direct match
+    if module_type in MODULE_COLORS:
+        return MODULE_COLORS[module_type]
+
+    # Check for case-insensitive match
+    module_lower = module_type.lower()
+    if module_lower in MODULE_COLORS:
+        return MODULE_COLORS[module_lower]
+
+    # Check for partial matches (e.g., "power_regulator" contains "power")
+    for key in MODULE_COLORS:
+        if key != "default" and (key in module_lower or module_lower in key):
+            return MODULE_COLORS[key]
+
+    # Generate a deterministic color based on hash of module name
+    # Use golden ratio to spread hues evenly
+    hash_val = hash(module_type)
+    # Generate hue from 0-360 using golden angle (137.5°) for good distribution
+    hue = (hash_val * 137.508) % 360
+    # Use fixed saturation (70%) and lightness (50%) for vibrant colors
+    saturation = 70
+    lightness = 50
+
+    # Convert HSL to RGB
+    c = (1 - abs(2 * lightness / 100 - 1)) * saturation / 100
+    x = c * (1 - abs((hue / 60) % 2 - 1))
+    m = lightness / 100 - c / 2
+
+    if hue < 60:
+        r, g, b = c, x, 0
+    elif hue < 120:
+        r, g, b = x, c, 0
+    elif hue < 180:
+        r, g, b = 0, c, x
+    elif hue < 240:
+        r, g, b = 0, x, c
+    elif hue < 300:
+        r, g, b = x, 0, c
+    else:
+        r, g, b = c, 0, x
+
+    # Convert to hex
+    r_hex = int((r + m) * 255)
+    g_hex = int((g + m) * 255)
+    b_hex = int((b + m) * 255)
+
+    return f"#{r_hex:02x}{g_hex:02x}{b_hex:02x}"
 
 FORCE_COLORS = {
     "repulsion": "#e74c3c",    # Red
@@ -152,7 +223,11 @@ class PlacementVisualizer:
                 self.max_y = max(ys) + margin
 
     def _extract_initial_positions(self):
-        """Store initial component positions for movement tracking."""
+        """Store initial component positions for movement tracking.
+
+        Component x,y is now the centroid (as of the origin offset fix),
+        so we can use it directly for accurate trail visualization.
+        """
         for ref, comp in self.board.components.items():
             if not comp.dnp:
                 self.initial_positions[ref] = (comp.x, comp.y)
@@ -290,6 +365,7 @@ class PlacementVisualizer:
         for ref, comp in self.board.components.items():
             if comp.dnp:
                 continue
+            # Component x,y is now the centroid (as of the origin offset fix)
             components[ref] = (
                 comp.x,
                 comp.y,
@@ -393,16 +469,36 @@ class PlacementVisualizer:
         # Background
         svg_parts.append(f'<rect width="100%" height="100%" fill="#1a1a2e"/>')
 
-        # Board outline
+        # Board outline - render actual polygon if available, otherwise rectangle
         if self.board and self.board.outline:
-            bbox = self.board.outline.get_bounding_box()
-            if bbox:
+            outline = self.board.outline
+            if outline.polygon and len(outline.polygon) >= 3:
+                # Render actual polygon outline
+                points = " ".join(f"{tx(p[0])},{ty(p[1])}" for p in outline.polygon)
                 svg_parts.append(
-                    f'<rect x="{tx(bbox[0])}" y="{ty(bbox[3])}" '
-                    f'width="{ts(bbox[2]-bbox[0])}" height="{ts(bbox[3]-bbox[1])}" '
+                    f'<polygon points="{points}" '
                     f'fill="#16213e" stroke="#0f3460" stroke-width="2" '
                     f'class="board-outline"/>'
                 )
+                # Render holes/cutouts
+                for hole in outline.holes:
+                    if len(hole) >= 3:
+                        hole_points = " ".join(f"{tx(p[0])},{ty(p[1])}" for p in hole)
+                        svg_parts.append(
+                            f'<polygon points="{hole_points}" '
+                            f'fill="#1a1a2e" stroke="#0f3460" stroke-width="1.5" '
+                            f'stroke-dasharray="4,2" class="board-outline board-cutout"/>'
+                        )
+            else:
+                # Fall back to bounding box rectangle
+                bbox = outline.get_bounding_box()
+                if bbox:
+                    svg_parts.append(
+                        f'<rect x="{tx(bbox[0])}" y="{ty(bbox[3])}" '
+                        f'width="{ts(bbox[2]-bbox[0])}" height="{ts(bbox[3]-bbox[1])}" '
+                        f'fill="#16213e" stroke="#0f3460" stroke-width="2" '
+                        f'class="board-outline"/>'
+                    )
 
         # Render grid
         if self.grid_spacing > 0:
@@ -467,7 +563,7 @@ class PlacementVisualizer:
                 group_max_x += padding
                 group_max_y += padding
 
-                color = MODULE_COLORS.get(module_type, MODULE_COLORS["default"])
+                color = get_module_color(module_type)
 
                 # Draw transparent bounding box
                 svg_parts.append(
@@ -497,18 +593,33 @@ class PlacementVisualizer:
             overlap_refs.add(ref1)
             overlap_refs.add(ref2)
 
-        # Render net connections (rats nest) - dim lines showing connectivity
-        for ref1, ref2, net_name in frame.connections:
-            if ref1 in frame.components and ref2 in frame.components:
-                x1, y1 = frame.components[ref1][:2]
-                x2, y2 = frame.components[ref2][:2]
-                # Color based on net type
-                if "gnd" in net_name.lower() or "vss" in net_name.lower():
-                    line_color = "#2ecc71"  # Green for ground
-                elif "vcc" in net_name.lower() or "vdd" in net_name.lower():
-                    line_color = "#e74c3c"  # Red for power
-                else:
-                    line_color = "#4a6fa5"  # Dim blue for signals
+        # Render net connections (rats nest) - draw pad-to-pad connections
+        # Build a map of net -> list of pad positions
+        net_pads: Dict[str, List[Tuple[float, float]]] = {}
+        for ref, pad_list in frame.pads.items():
+            for px, py, pw, ph, net_name in pad_list:
+                if net_name and net_name.strip():
+                    if net_name not in net_pads:
+                        net_pads[net_name] = []
+                    net_pads[net_name].append((px, py))
+
+        # Draw ratsnest lines between pads on the same net
+        for net_name, pads in net_pads.items():
+            if len(pads) < 2:
+                continue
+
+            # Color based on net type
+            if "gnd" in net_name.lower() or "vss" in net_name.lower():
+                line_color = "#2ecc71"  # Green for ground
+            elif "vcc" in net_name.lower() or "vdd" in net_name.lower():
+                line_color = "#e74c3c"  # Red for power
+            else:
+                line_color = "#4a6fa5"  # Dim blue for signals
+
+            # Simple star topology: connect all pads to the first pad
+            # (This keeps the visualization cleaner than full mesh)
+            x1, y1 = pads[0]
+            for x2, y2 in pads[1:]:
                 svg_parts.append(
                     f'<line x1="{tx(x1)}" y1="{ty(y1)}" x2="{tx(x2)}" y2="{ty(y2)}" '
                     f'stroke="{line_color}" stroke-width="0.5" opacity="0.3" '
@@ -522,7 +633,7 @@ class PlacementVisualizer:
         for ref, (x, y, rotation, w, h) in frame.components.items():
             # Get module color
             module_type = frame.modules.get(ref, "default")
-            color = MODULE_COLORS.get(module_type, MODULE_COLORS["default"])
+            color = get_module_color(module_type)
 
             # Highlight overlapping components
             stroke_color = "#ff0000" if ref in overlap_refs else "#ffffff"
@@ -543,7 +654,8 @@ class PlacementVisualizer:
             # Apply rotation transform with layer class and module type
             module_class = f"module-{module_type.replace('_', '-')}" if module_type else "module-default"
             svg_parts.append(
-                f'<g class="{layer_class} {module_class}" transform="rotate({-rotation} {cx} {cy})">'
+                f'<g class="{layer_class} {module_class} component" data-ref="{ref}" '
+                f'transform="rotate({-rotation} {cx} {cy})" style="cursor: pointer;">'
             )
 
             # Component body
@@ -687,7 +799,7 @@ class PlacementVisualizer:
         </defs>
         ''')
 
-        # Board name and dimensions label at bottom-left of board outline
+        # Board name and dimensions label above the board outline (like group labels)
         if self.board:
             board_name = self.board.name or (self.board.source_file.stem if self.board.source_file else "Board")
             board_width_mm = self.max_x - self.min_x - 10  # Subtract margin
@@ -696,21 +808,18 @@ class PlacementVisualizer:
                 board_width_mm = self.board.outline.width
                 board_height_mm = self.board.outline.height
 
-            # Position label at bottom-left corner, just outside the board edge
+            # Position label above the board outline, left-aligned
             label_x = tx(self.min_x + 5)  # Slight offset from left edge
-            label_y = ty(self.min_y) + 12  # Just below bottom edge
+            label_y = ty(self.max_y) - 5  # Above the top edge
 
             svg_parts.append(
                 f'<text x="{label_x}" y="{label_y}" '
                 f'font-family="sans-serif" font-size="11" font-weight="bold" '
                 f'fill="#888888" text-anchor="start">'
-                f'{board_name}</text>'
-            )
-            svg_parts.append(
-                f'<text x="{label_x}" y="{label_y + 12}" '
-                f'font-family="monospace" font-size="9" '
-                f'fill="#666666" text-anchor="start">'
-                f'{board_width_mm:.1f} x {board_height_mm:.1f} mm</text>'
+                f'{board_name}'
+                f'<tspan dx="8" font-family="monospace" font-size="9" font-weight="normal" fill="#666666">'
+                f'{board_width_mm:.1f} x {board_height_mm:.1f} mm</tspan>'
+                f'</text>'
             )
 
         svg_parts.append('</svg>')
@@ -782,7 +891,7 @@ class PlacementVisualizer:
         # Generate module legend items HTML with checkboxes for toggling
         module_legend_items = ""
         for module_type in unique_modules:
-            color = MODULE_COLORS.get(module_type, MODULE_COLORS["default"])
+            color = get_module_color(module_type)
             safe_id = module_type.replace("_", "-")
             module_legend_items += f'''
                 <div class="layer-item">
@@ -978,6 +1087,10 @@ class PlacementVisualizer:
             transition: background 0.2s;
             min-width: 32px;
         }}
+        #play-btn {{
+            width: 36px;  /* Fixed width to prevent layout shift */
+            text-align: center;
+        }}
         .controls button:hover {{
             background: #3a3a6e;
         }}
@@ -1037,6 +1150,14 @@ class PlacementVisualizer:
             position: absolute;
             transform-origin: 0 0;
             transition: none;
+        }}
+        .component.selected rect {{
+            stroke: #00d4ff !important;
+            stroke-width: 2.5 !important;
+        }}
+        .component:hover rect {{
+            stroke: #ffffff !important;
+            stroke-width: 2 !important;
         }}
         .zoom-controls {{
             display: flex;
@@ -1337,6 +1458,7 @@ class PlacementVisualizer:
         let playing = false;
         let playInterval = null;
         let playSpeed = 200;
+        let selectedComponent = null;  // Currently selected component ref
 
         // Board bounds for coordinate transformation (from Python)
         const boardBounds = {{
@@ -1345,7 +1467,8 @@ class PlacementVisualizer:
             minY: {self.min_y},
             maxY: {self.max_y},
             padding: 50,
-            width: 800
+            baseWidth: 800,
+            scale: {800.0 / (self.max_x - self.min_x)}  // Pre-calculated: 800 / board_width
         }};
 
         // Zoom and pan state
@@ -1398,6 +1521,9 @@ class PlacementVisualizer:
             // Apply layer visibility
             updateLayers();
 
+            // Re-apply component selection highlight
+            updateComponentSelection();
+
             // Draw breadcrumb trails
             drawTrails();
 
@@ -1413,14 +1539,10 @@ class PlacementVisualizer:
             // Remove existing trails
             svg.querySelectorAll('.movement-trail').forEach(el => el.remove());
 
-            // Get SVG dimensions for coordinate transformation
-            const svgWidth = parseFloat(svg.getAttribute('width')) || 800;
-            const svgHeight = parseFloat(svg.getAttribute('height')) || 600;
-            const boardWidth = boardBounds.maxX - boardBounds.minX;
-            const boardHeight = boardBounds.maxY - boardBounds.minY;
-            const scale = (svgWidth - 2 * boardBounds.padding) / boardWidth;
+            // Use pre-calculated scale factor from Python
+            const scale = boardBounds.scale;
 
-            // Transform board coords to SVG coords
+            // Transform board coords to SVG coords (matches Python tx/ty functions)
             function tx(x) {{ return boardBounds.padding + (x - boardBounds.minX) * scale; }}
             function ty(y) {{ return boardBounds.padding + (boardBounds.maxY - y) * scale; }}
 
@@ -1436,6 +1558,9 @@ class PlacementVisualizer:
             const currentPositions = frames[currentFrame].positions;
 
             for (const ref of Object.keys(currentPositions)) {{
+                // If a component is selected, only show its trail
+                if (selectedComponent && ref !== selectedComponent) continue;
+
                 // Collect position history for this component
                 const history = [];
                 for (let i = 0; i <= currentFrame; i++) {{
@@ -1453,19 +1578,24 @@ class PlacementVisualizer:
                 const totalDist = Math.sqrt(Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2));
                 if (totalDist < 0.5) continue;
 
+                // Use highlight color if this is the selected component
+                const isSelected = (ref === selectedComponent);
+                const trailColor = isSelected ? '#00d4ff' : '#ff6b6b';
+                const trailOpacityMult = isSelected ? 1.2 : 1.0;
+
                 // Draw breadcrumb dots along the path
                 for (let i = 0; i < history.length; i++) {{
                     const pos = history[i];
                     // Fade older positions
                     const age = (currentFrame - pos.frame) / Math.max(currentFrame, 1);
-                    const opacity = 0.2 + (1 - age) * 0.6;
-                    const radius = 1.5 + (1 - age) * 1.5;
+                    const opacity = Math.min(1, (0.2 + (1 - age) * 0.6) * trailOpacityMult);
+                    const radius = isSelected ? 2 + (1 - age) * 2 : 1.5 + (1 - age) * 1.5;
 
                     const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
                     dot.setAttribute('cx', tx(pos.x));
                     dot.setAttribute('cy', ty(pos.y));
                     dot.setAttribute('r', radius);
-                    dot.setAttribute('fill', '#ff6b6b');
+                    dot.setAttribute('fill', trailColor);
                     dot.setAttribute('opacity', opacity);
                     trailGroup.appendChild(dot);
                 }}
@@ -1478,23 +1608,58 @@ class PlacementVisualizer:
                     }}
                     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
                     path.setAttribute('d', pathD);
-                    path.setAttribute('stroke', '#ff6b6b');
-                    path.setAttribute('stroke-width', '1');
-                    path.setAttribute('stroke-opacity', '0.4');
+                    path.setAttribute('stroke', trailColor);
+                    path.setAttribute('stroke-width', isSelected ? '2' : '1');
+                    path.setAttribute('stroke-opacity', isSelected ? '0.7' : '0.4');
                     path.setAttribute('fill', 'none');
                     trailGroup.appendChild(path);
                 }}
 
-                // Mark initial position with a larger circle
+                // Mark initial position (START) with a circle
+                const startColor = isSelected ? '#2ecc71' : trailColor;  // Green for start when selected
                 const startDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
                 startDot.setAttribute('cx', tx(start.x));
                 startDot.setAttribute('cy', ty(start.y));
-                startDot.setAttribute('r', '3');
-                startDot.setAttribute('fill', 'none');
-                startDot.setAttribute('stroke', '#ff6b6b');
-                startDot.setAttribute('stroke-width', '1.5');
-                startDot.setAttribute('opacity', '0.7');
+                startDot.setAttribute('r', isSelected ? '5' : '3');
+                startDot.setAttribute('fill', isSelected ? startColor : 'none');
+                startDot.setAttribute('stroke', startColor);
+                startDot.setAttribute('stroke-width', isSelected ? '2' : '1.5');
+                startDot.setAttribute('opacity', isSelected ? '1' : '0.7');
                 trailGroup.appendChild(startDot);
+
+                // Mark final position (END) with a filled circle when selected
+                if (isSelected) {{
+                    const endColor = '#00d4ff';  // Cyan for end
+                    const endDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    endDot.setAttribute('cx', tx(end.x));
+                    endDot.setAttribute('cy', ty(end.y));
+                    endDot.setAttribute('r', '6');
+                    endDot.setAttribute('fill', endColor);
+                    endDot.setAttribute('stroke', '#ffffff');
+                    endDot.setAttribute('stroke-width', '2');
+                    endDot.setAttribute('opacity', '1');
+                    trailGroup.appendChild(endDot);
+
+                    // Add small arrow/direction indicator from second-to-last to end
+                    if (history.length >= 2) {{
+                        const prev = history[history.length - 2];
+                        const dx = end.x - prev.x;
+                        const dy = end.y - prev.y;
+                        const len = Math.sqrt(dx * dx + dy * dy);
+                        if (len > 0.1) {{
+                            // Draw a small direction line
+                            const dirLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                            dirLine.setAttribute('x1', tx(end.x - dx/len * 3));
+                            dirLine.setAttribute('y1', ty(end.y - dy/len * 3));
+                            dirLine.setAttribute('x2', tx(end.x));
+                            dirLine.setAttribute('y2', ty(end.y));
+                            dirLine.setAttribute('stroke', endColor);
+                            dirLine.setAttribute('stroke-width', '3');
+                            dirLine.setAttribute('opacity', '0.8');
+                            trailGroup.appendChild(dirLine);
+                        }}
+                    }}
+                }}
             }}
 
             // Insert trails before components (so they appear behind)
@@ -1580,10 +1745,13 @@ class PlacementVisualizer:
             }}
         }}
 
-        // Module visibility toggle - respects layer visibility
+        // Module visibility toggle - respects layer visibility and main display toggles
         function updateModuleVisibility() {{
             const showTop = document.getElementById('show-top')?.checked ?? true;
             const showBottom = document.getElementById('show-bottom')?.checked ?? true;
+            const showGroups = document.getElementById('show-groups')?.checked ?? true;
+            const showLabels = document.getElementById('show-labels')?.checked ?? true;
+            const showPads = document.getElementById('show-pads')?.checked ?? true;
 
             // Find all module type checkboxes
             document.querySelectorAll('[id^="show-module-"]').forEach(checkbox => {{
@@ -1592,12 +1760,38 @@ class PlacementVisualizer:
 
                 // Toggle components with this module type
                 document.querySelectorAll('.module-' + moduleType).forEach(el => {{
-                    // Check layer visibility first
+                    // Check element type
                     const isTop = el.classList.contains('comp-top');
                     const isBottom = el.classList.contains('comp-bottom');
                     const isModuleGroup = el.classList.contains('module-group');
+                    const isLabel = el.classList.contains('ref-label');
+                    const isPad = el.classList.contains('pad-element');
 
-                    // Module groups don't have layer class, always follow module visibility
+                    // Module groups require both main groups toggle AND individual module toggle
+                    if (isModuleGroup) {{
+                        el.style.display = (showGroups && moduleVisible) ? '' : 'none';
+                        return;
+                    }}
+
+                    // Labels require main labels toggle
+                    if (isLabel) {{
+                        let layerVisible = true;
+                        if (isTop) layerVisible = showTop;
+                        else if (isBottom) layerVisible = showBottom;
+                        el.style.display = (showLabels && layerVisible && moduleVisible) ? '' : 'none';
+                        return;
+                    }}
+
+                    // Pads require main pads toggle
+                    if (isPad) {{
+                        let layerVisible = true;
+                        if (isTop) layerVisible = showTop;
+                        else if (isBottom) layerVisible = showBottom;
+                        el.style.display = (showPads && layerVisible && moduleVisible) ? '' : 'none';
+                        return;
+                    }}
+
+                    // Components respect layer visibility
                     let layerVisible = true;
                     if (isTop) layerVisible = showTop;
                     else if (isBottom) layerVisible = showBottom;
@@ -1897,6 +2091,45 @@ class PlacementVisualizer:
         frameContainer.addEventListener('mousedown', handleMouseDown);
         document.addEventListener('mousemove', handleMouseMove);
         document.addEventListener('mouseup', handleMouseUp);
+
+        // Component selection for trail highlighting
+        frameContainer.addEventListener('click', (e) => {{
+            // Check if we clicked on a component (or child of component group)
+            const component = e.target.closest('.component');
+            if (component && !isDragging) {{
+                const ref = component.getAttribute('data-ref');
+                if (selectedComponent === ref) {{
+                    // Clicking same component deselects
+                    selectedComponent = null;
+                }} else {{
+                    selectedComponent = ref;
+                }}
+                // Update selection highlight
+                updateComponentSelection();
+                drawTrails();
+                e.stopPropagation();
+            }} else if (!e.target.closest('.component') && !isDragging) {{
+                // Clicking on empty space deselects
+                if (selectedComponent) {{
+                    selectedComponent = null;
+                    updateComponentSelection();
+                    drawTrails();
+                }}
+            }}
+        }});
+
+        function updateComponentSelection() {{
+            // Remove previous selection highlight
+            document.querySelectorAll('.component.selected').forEach(el => {{
+                el.classList.remove('selected');
+            }});
+            // Add highlight to selected component
+            if (selectedComponent) {{
+                document.querySelectorAll(`.component[data-ref="${{selectedComponent}}"]`).forEach(el => {{
+                    el.classList.add('selected');
+                }});
+            }}
+        }}
 
         // Histogram seeking
         let isSeekingHistogram = false;

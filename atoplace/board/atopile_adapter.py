@@ -141,10 +141,17 @@ class AtopileProjectLoader:
         1. Root-level entries with 'designator' field: { "root.r1": { "designator": "R1" } }
         2. Entries under 'components' key: { "components": { "R1": { "value": "10k" } } }
         3. Entries with 'address' field: { "components": { "R1": { "address": "root.r1" } } }
+
+        Short instance names (last path segment) are added only if globally unique.
+        This prevents mis-association when different modules reuse the same instance
+        name (e.g., multiple 'c_bulk' instances).
         """
         if not hasattr(self, '_instance_to_ref_map') or self._instance_to_ref_map is None:
             self._instance_to_ref_map = {}
+            # Track (short_name -> [kicad_ref, ...]) to detect collisions
+            short_name_candidates: Dict[str, List[str]] = {}
 
+            # First pass: Collect all mappings and identify short name collisions
             # Format 1: Root-level entries with 'designator' field
             for key, data in self.lock_data.items():
                 if key == 'components':
@@ -153,10 +160,11 @@ class AtopileProjectLoader:
                     instance_path = key
                     kicad_ref = data['designator']
                     self._instance_to_ref_map[instance_path] = kicad_ref
-                    # Also store short instance name for easier lookup
+                    # Track short name candidate
                     short_name = instance_path.split('.')[-1] if '.' in instance_path else instance_path
-                    if short_name not in self._instance_to_ref_map:
-                        self._instance_to_ref_map[short_name] = kicad_ref
+                    if short_name not in short_name_candidates:
+                        short_name_candidates[short_name] = []
+                    short_name_candidates[short_name].append(kicad_ref)
 
             # Format 2 & 3: Entries under 'components' key
             components_data = self.lock_data.get('components', {})
@@ -169,9 +177,11 @@ class AtopileProjectLoader:
                     if 'address' in comp_data:
                         instance_path = comp_data['address']
                         self._instance_to_ref_map[instance_path] = kicad_ref
+                        # Track short name candidate
                         short_name = instance_path.split('.')[-1] if '.' in instance_path else instance_path
-                        if short_name not in self._instance_to_ref_map:
-                            self._instance_to_ref_map[short_name] = kicad_ref
+                        if short_name not in short_name_candidates:
+                            short_name_candidates[short_name] = []
+                        short_name_candidates[short_name].append(kicad_ref)
 
                     # Also map the KiCad ref to itself for direct lookups
                     # This helps when .ato files use the ref directly
@@ -181,6 +191,18 @@ class AtopileProjectLoader:
                     kicad_ref_lower = kicad_ref.lower()
                     if kicad_ref_lower not in self._instance_to_ref_map:
                         self._instance_to_ref_map[kicad_ref_lower] = kicad_ref
+
+            # Second pass: Add short names ONLY if they're unique (no collision)
+            for short_name, refs in short_name_candidates.items():
+                if len(refs) == 1 and short_name not in self._instance_to_ref_map:
+                    # Unique short name - safe to add as alias
+                    self._instance_to_ref_map[short_name] = refs[0]
+                elif len(refs) > 1:
+                    # Log collision for debugging
+                    logger.debug(
+                        "Short name '%s' is ambiguous (maps to %s) - not adding alias",
+                        short_name, refs
+                    )
 
         return self._instance_to_ref_map
 
@@ -392,44 +414,74 @@ class AtopileProjectLoader:
         This adds module grouping information that can be used for
         automatic GroupingConstraints.
 
-        The atopile module parser extracts instance names (e.g., 'r1', 'c1') from .ato files.
-        We use the instance_to_ref_map (built from ato-lock.yaml) to map these instance
-        names to KiCad reference designators (e.g., 'R1', 'C1').
+        The method uses multiple strategies to map atopile instance paths to KiCad refs:
+        1. Primary: Use 'atopile_address' property set by atopile on KiCad footprints
+        2. Fallback: Use instance_to_ref_map from ato-lock.yaml
+        3. Fallback: Heuristic matching (instance name to ref case-insensitive)
         """
         ato_path = self.get_ato_source_path(build_name)
         if not ato_path or not ato_path.exists():
             return
 
-        # Parse module hierarchy
+        # Parse module hierarchy (now follows imports)
         parser = AtopileModuleParser()
         hierarchy = parser.parse_file(ato_path)
 
-        # Get the instance-to-ref mapping from lock file
-        ref_map = self.instance_to_ref_map
+        if not hierarchy:
+            logger.debug("No modules found in .ato file hierarchy")
+            return
 
-        # Apply to components
+        # Build primary mapping from atopile_address property in KiCad components
+        # This is the most reliable source as it's set directly by atopile
+        address_to_ref = self._build_address_map(board)
+
+        # Get the instance-to-ref mapping from lock file as fallback
+        lock_ref_map = self.instance_to_ref_map
+
+        # Track which components we've successfully mapped
+        mapped_count = 0
+        total_count = 0
+
+        # Apply module info to components
         for module in hierarchy.values():
+            # Build qualified paths for components in this module
+            # e.g., for module 'accel' with component 'c_hf', path is 'accel.c_hf'
+            module_prefix = module.name
+
             for instance_name in module.components:
-                # Try to resolve instance name to KiCad reference designator
+                total_count += 1
                 kicad_ref = None
 
-                # First, try direct lookup in the ref_map
-                if instance_name in ref_map:
-                    kicad_ref = ref_map[instance_name]
-                else:
-                    # Try to find by searching for instance paths containing this name
-                    for path, ref in ref_map.items():
-                        if path.endswith('.' + instance_name) or path == instance_name:
-                            kicad_ref = ref
-                            break
+                # Build potential qualified paths
+                qualified_path = f"{module_prefix}.{instance_name}"
 
-                # If still not found, try case-insensitive match against board components
+                # Strategy 1: Look up atopile_address (primary - most reliable)
+                if qualified_path in address_to_ref:
+                    kicad_ref = address_to_ref[qualified_path]
+                elif instance_name in address_to_ref:
+                    kicad_ref = address_to_ref[instance_name]
+
+                # Strategy 2: Lock file mapping
+                if not kicad_ref:
+                    if qualified_path in lock_ref_map:
+                        kicad_ref = lock_ref_map[qualified_path]
+                    elif instance_name in lock_ref_map:
+                        kicad_ref = lock_ref_map[instance_name]
+                    else:
+                        # Search for paths containing this instance name
+                        for path, ref in lock_ref_map.items():
+                            if path.endswith('.' + instance_name) or path == instance_name:
+                                kicad_ref = ref
+                                break
+
+                # Strategy 3: Heuristic case-insensitive match
                 if not kicad_ref:
                     for board_ref in board.components:
                         if board_ref.lower() == instance_name.lower():
                             kicad_ref = board_ref
                             break
 
+                # Apply module info to the component
                 if kicad_ref and kicad_ref in board.components:
                     comp = board.components[kicad_ref]
                     comp.properties["ato_module"] = module.name
@@ -437,6 +489,38 @@ class AtopileProjectLoader:
                         comp.properties["ato_module_type"] = module.module_type
                     if module.parent:
                         comp.properties["ato_parent_module"] = module.parent
+                    mapped_count += 1
+
+        logger.debug(f"Mapped {mapped_count}/{total_count} components to atopile modules")
+
+    def _build_address_map(self, board: Board) -> Dict[str, str]:
+        """
+        Build a mapping from atopile_address to KiCad reference designator.
+
+        Atopile sets the 'atopile_address' property on each footprint with
+        the full instance path (e.g., 'accel.c_bulk', 'power.l_mcu').
+
+        Returns:
+            Dict mapping instance paths to KiCad refs
+        """
+        address_map = {}
+
+        for ref, comp in board.components.items():
+            if 'atopile_address' in comp.properties:
+                address = comp.properties['atopile_address']
+                address_map[address] = ref
+
+                # Also map the leaf name for simpler lookups
+                if '.' in address:
+                    leaf_name = address.split('.')[-1]
+                    # Don't override if leaf name already mapped (could be ambiguous)
+                    if leaf_name not in address_map:
+                        address_map[leaf_name] = ref
+
+        if address_map:
+            logger.debug(f"Built atopile address map with {len(address_map)} entries")
+
+        return address_map
 
     def get_component_metadata(self, reference: str) -> Optional[ComponentMetadata]:
         """Get metadata for a specific component."""
@@ -527,27 +611,35 @@ class AtopileModuleParser:
 
     This is a simplified parser that extracts module definitions
     and component instantiations without fully parsing the atopile DSL.
+    It follows imports to build complete module hierarchies.
     """
 
     # Regex patterns for parsing .ato files
     MODULE_PATTERN = re.compile(r'^(module|component)\s+(\w+):', re.MULTILINE)
     COMPONENT_PATTERN = re.compile(r'(\w+)\s*=\s*new\s+(\w+)')
     IMPORT_PATTERN = re.compile(r'from\s+"([^"]+)"\s+import\s+(.+)')
+    SIMPLE_IMPORT_PATTERN = re.compile(r'^import\s+(.+)', re.MULTILINE)
 
     # Module type inference from names
     TYPE_KEYWORDS = {
         'power': ['power', 'supply', 'regulator', 'dcdc', 'ldo', 'buck', 'boost'],
-        'sensor': ['sensor', 'accel', 'gyro', 'temp', 'humidity', 'pressure'],
-        'rf': ['rf', 'antenna', 'bluetooth', 'wifi', 'radio', 'lora'],
-        'mcu': ['mcu', 'micro', 'processor', 'esp32', 'stm32', 'rp2040'],
-        'connector': ['connector', 'usb', 'uart', 'i2c', 'spi', 'jtag'],
+        'sensor': ['sensor', 'accel', 'gyro', 'temp', 'humidity', 'pressure', 'lis3dh', 'qmi', 'hdc'],
+        'rf': ['rf', 'antenna', 'bluetooth', 'wifi', 'radio', 'lora', 'matching'],
+        'mcu': ['mcu', 'micro', 'processor', 'esp32', 'stm32', 'rp2040', 'rak'],
+        'connector': ['connector', 'usb', 'uart', 'i2c', 'spi', 'jtag', 'swd', 'debug'],
         'led': ['led', 'indicator', 'status'],
         'crystal': ['crystal', 'oscillator', 'xtal', 'clock'],
+        'memory': ['eeprom', 'flash', 'memory', 'storage'],
     }
+
+    def __init__(self):
+        """Initialize the parser with caches for import resolution."""
+        self._parsed_files: Dict[Path, Dict[str, ModuleHierarchy]] = {}
+        self._imported_modules: Dict[str, ModuleHierarchy] = {}
 
     def parse_file(self, ato_path: Path) -> Dict[str, ModuleHierarchy]:
         """
-        Parse an .ato file and extract module hierarchy.
+        Parse an .ato file and extract module hierarchy, following imports.
 
         Args:
             ato_path: Path to .ato file
@@ -555,17 +647,103 @@ class AtopileModuleParser:
         Returns:
             Dictionary mapping module names to their hierarchy
         """
+        # Clear caches for fresh parse
+        self._parsed_files = {}
+        self._imported_modules = {}
+
+        return self._parse_file_recursive(ato_path.resolve())
+
+    def _parse_file_recursive(self, ato_path: Path, depth: int = 0) -> Dict[str, ModuleHierarchy]:
+        """Recursively parse an .ato file, following imports."""
         if not ato_path.exists():
+            logger.debug(f"File not found: {ato_path}")
+            return {}
+
+        # Check cache to avoid re-parsing
+        if ato_path in self._parsed_files:
+            return self._parsed_files[ato_path]
+
+        # Prevent infinite recursion
+        if depth > 10:
+            logger.warning(f"Max import depth exceeded parsing {ato_path}")
             return {}
 
         content = ato_path.read_text()
-        return self.parse_content(content, ato_path.stem)
 
-    def parse_content(self, content: str, root_name: str = "root") -> Dict[str, ModuleHierarchy]:
-        """Parse .ato content string."""
+        # First, process imports to make imported modules available
+        imports = self._extract_imports(content)
+        for import_path, imported_names in imports:
+            # Resolve path relative to current file
+            resolved_path = self._resolve_import_path(ato_path, import_path)
+            if resolved_path and resolved_path.exists():
+                # Parse imported file recursively
+                imported_modules = self._parse_file_recursive(resolved_path, depth + 1)
+                # Store imported module definitions
+                for name in imported_names:
+                    name = name.strip()
+                    if name in imported_modules:
+                        self._imported_modules[name] = imported_modules[name]
+                        logger.debug(f"Imported module {name} from {import_path}")
+
+        # Now parse this file's content
+        modules = self._parse_content_with_imports(content, ato_path.stem, ato_path.parent)
+
+        # Cache the result
+        self._parsed_files[ato_path] = modules
+
+        return modules
+
+    def _extract_imports(self, content: str) -> List[Tuple[str, List[str]]]:
+        """Extract import statements from content."""
+        imports = []
+
+        for line in content.split('\n'):
+            stripped = line.strip()
+            if stripped.startswith('#') or not stripped:
+                continue
+
+            # Match: from "path/file.ato" import ModuleName, AnotherModule
+            match = self.IMPORT_PATTERN.match(stripped)
+            if match:
+                path, names = match.groups()
+                name_list = [n.strip() for n in names.split(',')]
+                imports.append((path, name_list))
+
+        return imports
+
+    def _resolve_import_path(self, current_file: Path, import_path: str) -> Optional[Path]:
+        """Resolve an import path relative to the current file."""
+        # Handle relative paths
+        if import_path.startswith('./') or import_path.startswith('../'):
+            return (current_file.parent / import_path).resolve()
+
+        # Handle paths relative to project root
+        # Try relative to current file's directory first
+        candidate = current_file.parent / import_path
+        if candidate.exists():
+            return candidate.resolve()
+
+        # Try going up directories to find project root (has ato.yaml)
+        search_dir = current_file.parent
+        while search_dir != search_dir.parent:
+            candidate = search_dir / import_path
+            if candidate.exists():
+                return candidate.resolve()
+            # Check if we found project root
+            if (search_dir / "ato.yaml").exists():
+                break
+            search_dir = search_dir.parent
+
+        logger.debug(f"Could not resolve import path: {import_path} from {current_file}")
+        return None
+
+    def _parse_content_with_imports(self, content: str, root_name: str, base_dir: Path) -> Dict[str, ModuleHierarchy]:
+        """Parse .ato content string, resolving imported module types."""
         modules = {}
         current_module: Optional[ModuleHierarchy] = None
         indent_stack: List[Tuple[int, ModuleHierarchy]] = []
+        # Track instances and their types for later resolution
+        instance_types: Dict[str, str] = {}  # instance_name -> type_name
 
         lines = content.split('\n')
 
@@ -573,6 +751,10 @@ class AtopileModuleParser:
             # Skip empty lines and comments
             stripped = line.strip()
             if not stripped or stripped.startswith('#'):
+                continue
+
+            # Skip pragma and docstrings
+            if stripped.startswith('#pragma') or stripped.startswith('"""') or stripped.startswith("'''"):
                 continue
 
             indent = len(line) - len(line.lstrip())
@@ -606,10 +788,34 @@ class AtopileModuleParser:
                 comp_match = self.COMPONENT_PATTERN.search(stripped)
                 if comp_match:
                     instance_name, comp_type = comp_match.groups()
-                    # Store as potential component reference
-                    current_module.components.append(instance_name)
+
+                    # Check if this is an imported module type
+                    if comp_type in self._imported_modules:
+                        # This is a module instantiation - create a submodule entry
+                        imported_module = self._imported_modules[comp_type]
+                        submodule = ModuleHierarchy(
+                            name=instance_name,  # Use instance name, not type name
+                            module_type=imported_module.module_type or self._infer_module_type(comp_type),
+                            parent=current_module.name,
+                            # Copy component list from imported module definition
+                            components=list(imported_module.components),
+                        )
+                        current_module.submodules.append(submodule)
+                        modules[instance_name] = submodule
+                        instance_types[instance_name] = comp_type
+                        logger.debug(f"Found module instance: {instance_name} of type {comp_type} with {len(imported_module.components)} components")
+                    else:
+                        # Regular component instantiation - store instance name
+                        current_module.components.append(instance_name)
+                        instance_types[instance_name] = comp_type
 
         return modules
+
+    def parse_content(self, content: str, root_name: str = "root") -> Dict[str, ModuleHierarchy]:
+        """Parse .ato content string (legacy method without import resolution)."""
+        # Create a temporary parser instance for backward compatibility
+        self._imported_modules = {}
+        return self._parse_content_with_imports(content, root_name, Path('.'))
 
     def _infer_module_type(self, name: str) -> Optional[str]:
         """Infer module type from its name."""

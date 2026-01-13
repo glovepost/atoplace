@@ -176,13 +176,17 @@ class ForceDirectedRefiner:
                 continue
 
             rot = state.rotations.get(ref, comp.rotation)
+            # Component x,y is now the centroid (as of the origin offset fix)
             components[ref] = (x, y, rot, comp.width, comp.height)
 
-            # Extract pads
+            # Extract pads - need to compute pad positions relative to centroid
+            # Pad.x,y is relative to KiCad origin, so we need to offset by -origin_offset
             pad_list = []
             for pad in comp.pads:
-                # Transform pad to board coordinates
-                px, py = pad.x, pad.y
+                # Transform pad from KiCad-origin-relative to centroid-relative
+                # then apply rotation and translate to board coordinates
+                px = pad.x - comp.origin_offset_x
+                py = pad.y - comp.origin_offset_y
                 if rot != 0:
                     rad = math.radians(rot)
                     cos_r = math.cos(rad)
@@ -570,11 +574,15 @@ class ForceDirectedRefiner:
                     self._center_y = sum(ys) / len(ys)
 
         # Separate components by layer
+        # Skip locked components - they should not become anchors or be moved
         top_components = []
         bottom_components = []
 
         for ref, comp in self.board.components.items():
             if comp.dnp:
+                continue
+            # Skip locked components when selecting anchors
+            if self.config.lock_placed and comp.locked:
                 continue
 
             if comp.layer == Layer.BOTTOM_COPPER:
@@ -659,8 +667,11 @@ class ForceDirectedRefiner:
         moved_bottom = 0
 
         for ref, comp in self.board.components.items():
-            # Skip anchors and DNP components
+            # Skip anchors, DNP, and locked components
             if ref == self._anchor_top or ref == self._anchor_bottom or comp.dnp:
+                continue
+            # Skip locked components - they should not be moved during setup
+            if self.config.lock_placed and comp.locked:
                 continue
 
             # Determine which anchor this component relates to based on layer
@@ -747,11 +758,21 @@ class ForceDirectedRefiner:
         cutoff_distance = self.config.repulsion_cutoff
 
         for i, ref1 in enumerate(refs):
+            comp1 = self.board.components[ref1]
+            # Skip DNP (Do Not Populate) components
+            if comp1.dnp:
+                continue
+
             x1, y1 = state.positions[ref1]
             half_w1, half_h1 = self._component_sizes[ref1]
             locked1 = self._is_component_locked(ref1)
 
             for ref2 in refs[i+1:]:
+                comp2 = self.board.components[ref2]
+                # Skip DNP (Do Not Populate) components
+                if comp2.dnp:
+                    continue
+
                 x2, y2 = state.positions[ref2]
                 half_w2, half_h2 = self._component_sizes[ref2]
                 locked2 = self._is_component_locked(ref2)
@@ -761,10 +782,6 @@ class ForceDirectedRefiner:
                     continue
 
                 # Layer check to avoid unnecessary repulsion between Top/Bottom
-                # Retrieve components to check layers/through-hole status
-                comp1 = self.board.components[ref1]
-                comp2 = self.board.components[ref2]
-                
                 if not (comp1.is_through_hole or comp2.is_through_hole):
                     from ..board.abstraction import Layer
                     
@@ -865,9 +882,13 @@ class ForceDirectedRefiner:
 
             # Count pins per component for proper weighting
             # Components with multiple pins on a net should have stronger attraction
+            # Skip DNP (Do Not Populate) components
             pin_counts: Dict[str, int] = {}
             for ref, _ in net.connections:
                 if ref in state.positions:
+                    comp = self.board.components.get(ref)
+                    if comp and comp.dnp:
+                        continue  # Skip unpopulated components
                     pin_counts[ref] = pin_counts.get(ref, 0) + 1
 
             refs = list(pin_counts.keys())
@@ -1079,10 +1100,12 @@ class ForceDirectedRefiner:
                              forces: Dict[str, List[Force]]):
         """Add forces to keep components within board boundaries.
 
-        Uses AABB (Axis-Aligned Bounding Box) instead of diagonal radius
-        for more accurate boundary detection with rectangular components.
-        This allows long thin components to get closer to edges without
-        false boundary violations.
+        For rectangular outlines: Uses AABB (Axis-Aligned Bounding Box) instead
+        of diagonal radius for more accurate boundary detection.
+
+        For polygon outlines: Uses point-in-polygon test for each corner of
+        the component's AABB. This properly handles complex board shapes,
+        cutouts, and non-rectangular outlines.
 
         Forces are accumulated (+=) rather than overwritten to properly
         handle corner violations where both X and Y boundaries are exceeded.
@@ -1096,6 +1119,11 @@ class ForceDirectedRefiner:
             return
 
         for ref, (x, y) in state.positions.items():
+            # Skip DNP (Do Not Populate) components - they don't need boundary checking
+            comp = self.board.components.get(ref)
+            if comp and comp.dnp:
+                continue
+
             # Get component dimensions (accounting for rotation)
             half_w, half_h = self._component_sizes[ref]
             # Use edge_clearance to match validator's min_trace_to_edge
@@ -1103,27 +1131,65 @@ class ForceDirectedRefiner:
 
             fx, fy = 0.0, 0.0
 
-            # Left edge - check component's left boundary
-            left_bound = x - half_w - clearance
-            if left_bound < outline.origin_x:
-                fx += self.config.boundary_strength * (outline.origin_x - left_bound)
+            # For polygon outlines, use contains_point for proper boundary check
+            if outline.polygon:
+                # Check each corner of the component's AABB
+                corners = [
+                    (x - half_w, y - half_h),  # bottom-left
+                    (x + half_w, y - half_h),  # bottom-right
+                    (x - half_w, y + half_h),  # top-left
+                    (x + half_w, y + half_h),  # top-right
+                ]
 
-            # Right edge - check component's right boundary
-            right_bound = x + half_w + clearance
-            if right_bound > outline.origin_x + outline.width:
-                fx += self.config.boundary_strength * (
-                    outline.origin_x + outline.width - right_bound)
+                # Also check center point
+                if not outline.contains_point(x, y, margin=clearance):
+                    # Component center is outside or too close to edge
+                    # Push toward board center
+                    bbox = outline.get_bounding_box()
+                    center_x = (bbox[0] + bbox[2]) / 2
+                    center_y = (bbox[1] + bbox[3]) / 2
+                    dx = center_x - x
+                    dy = center_y - y
+                    dist = math.sqrt(dx * dx + dy * dy) + 0.001
+                    fx += self.config.boundary_strength * dx / dist * 2
+                    fy += self.config.boundary_strength * dy / dist * 2
 
-            # Top edge - check component's top boundary
-            top_bound = y - half_h - clearance
-            if top_bound < outline.origin_y:
-                fy += self.config.boundary_strength * (outline.origin_y - top_bound)
+                # Check corners
+                for cx, cy in corners:
+                    if not outline.contains_point(cx, cy, margin=clearance):
+                        # This corner is outside - push component inward
+                        # Calculate centroid direction
+                        bbox = outline.get_bounding_box()
+                        center_x = (bbox[0] + bbox[2]) / 2
+                        center_y = (bbox[1] + bbox[3]) / 2
+                        dx = center_x - cx
+                        dy = center_y - cy
+                        dist = math.sqrt(dx * dx + dy * dy) + 0.001
+                        fx += self.config.boundary_strength * dx / dist
+                        fy += self.config.boundary_strength * dy / dist
+            else:
+                # Rectangular outline - use simple AABB checks
+                # Left edge - check component's left boundary
+                left_bound = x - half_w - clearance
+                if left_bound < outline.origin_x:
+                    fx += self.config.boundary_strength * (outline.origin_x - left_bound)
 
-            # Bottom edge - check component's bottom boundary
-            bottom_bound = y + half_h + clearance
-            if bottom_bound > outline.origin_y + outline.height:
-                fy += self.config.boundary_strength * (
-                    outline.origin_y + outline.height - bottom_bound)
+                # Right edge - check component's right boundary
+                right_bound = x + half_w + clearance
+                if right_bound > outline.origin_x + outline.width:
+                    fx += self.config.boundary_strength * (
+                        outline.origin_x + outline.width - right_bound)
+
+                # Top edge - check component's top boundary
+                top_bound = y - half_h - clearance
+                if top_bound < outline.origin_y:
+                    fy += self.config.boundary_strength * (outline.origin_y - top_bound)
+
+                # Bottom edge - check component's bottom boundary
+                bottom_bound = y + half_h + clearance
+                if bottom_bound > outline.origin_y + outline.height:
+                    fy += self.config.boundary_strength * (
+                        outline.origin_y + outline.height - bottom_bound)
 
             if fx != 0 or fy != 0:
                 forces[ref].append(Force(fx, fy, ForceType.BOUNDARY, "boundary"))
@@ -1134,6 +1200,9 @@ class ForceDirectedRefiner:
         This is a safety net to ensure components never go off-board,
         even if repulsion forces are stronger than boundary forces.
         Boundary forces are the soft constraint; this is the hard constraint.
+
+        For polygon outlines: Uses point-in-polygon test and iteratively
+        moves component toward board centroid until all corners are inside.
 
         Uses edge_clearance to match DFM min_trace_to_edge requirement.
 
@@ -1151,26 +1220,67 @@ class ForceDirectedRefiner:
             # Get component dimensions (accounting for rotation)
             half_w, half_h = self._component_sizes.get(ref, (1.0, 1.0))
 
-            # Calculate valid position range
-            min_x = outline.origin_x + half_w + clearance
-            max_x = outline.origin_x + outline.width - half_w - clearance
-            min_y = outline.origin_y + half_h + clearance
-            max_y = outline.origin_y + outline.height - half_h - clearance
+            if outline.polygon:
+                # For polygon outlines, iteratively move toward centroid
+                bbox = outline.get_bounding_box()
+                center_x = (bbox[0] + bbox[2]) / 2
+                center_y = (bbox[1] + bbox[3]) / 2
 
-            # Ensure there's valid space (board might be too small)
-            if max_x < min_x:
-                # Board too narrow - center the component
-                x = outline.origin_x + outline.width / 2
+                # Check all corners with margin
+                corners = [
+                    (x - half_w, y - half_h),
+                    (x + half_w, y - half_h),
+                    (x - half_w, y + half_h),
+                    (x + half_w, y + half_h),
+                ]
+
+                # Iteratively move toward center until all corners are inside
+                for _ in range(20):  # Max iterations
+                    all_inside = True
+                    for cx, cy in corners:
+                        if not outline.contains_point(cx, cy, margin=clearance):
+                            all_inside = False
+                            break
+
+                    if all_inside:
+                        break
+
+                    # Move 10% toward center
+                    dx = center_x - x
+                    dy = center_y - y
+                    x += dx * 0.1
+                    y += dy * 0.1
+
+                    # Update corners
+                    corners = [
+                        (x - half_w, y - half_h),
+                        (x + half_w, y - half_h),
+                        (x - half_w, y + half_h),
+                        (x + half_w, y + half_h),
+                    ]
+
+                state.positions[ref] = (x, y)
             else:
-                x = max(min_x, min(max_x, x))
+                # Rectangular outline - use simple AABB clamp
+                min_x = outline.origin_x + half_w + clearance
+                max_x = outline.origin_x + outline.width - half_w - clearance
+                min_y = outline.origin_y + half_h + clearance
+                max_y = outline.origin_y + outline.height - half_h - clearance
 
-            if max_y < min_y:
-                # Board too short - center the component
-                y = outline.origin_y + outline.height / 2
-            else:
-                y = max(min_y, min(max_y, y))
+                # Ensure there's valid space (board might be too small)
+                if max_x < min_x:
+                    # Board too narrow - center the component
+                    x = outline.origin_x + outline.width / 2
+                else:
+                    x = max(min_x, min(max_x, x))
 
-            state.positions[ref] = (x, y)
+                if max_y < min_y:
+                    # Board too short - center the component
+                    y = outline.origin_y + outline.height / 2
+                else:
+                    y = max(min_y, min(max_y, y))
+
+                state.positions[ref] = (x, y)
 
     def _add_constraint_forces(self, state: PlacementState,
                                forces: Dict[str, List[Force]]):
@@ -1237,6 +1347,12 @@ class ForceDirectedRefiner:
         for ref in state.positions:
             # Skip locked components
             if self._is_component_locked(ref):
+                state.velocities[ref] = (0.0, 0.0)
+                continue
+
+            # Skip DNP (Do Not Populate) components - they don't need position updates
+            comp = self.board.components.get(ref)
+            if comp and comp.dnp:
                 state.velocities[ref] = (0.0, 0.0)
                 continue
 
@@ -1381,23 +1497,25 @@ class ForceDirectedRefiner:
     def _compute_component_sizes(self) -> Dict[str, Tuple[float, float]]:
         """Compute effective AABB half-dimensions for each component.
 
-        Returns (half_width, half_height) tuples accounting for rotation.
-        For rotated components, we compute the axis-aligned bounding box
-        of the rotated rectangle.
+        Returns (half_width, half_height) tuples accounting for rotation and
+        pad extents. Uses get_bounding_box_with_pads() to include pads that
+        extend beyond the component body (e.g., edge-mounted connectors).
         """
         sizes = {}
         for ref, comp in self.board.components.items():
-            w, h = comp.width, comp.height
-            rot_rad = math.radians(comp.rotation)
+            # Use pad-inclusive bounding box for accurate collision detection
+            # This handles connectors, edge-launch parts, and irregular footprints
+            bbox = comp.get_bounding_box_with_pads()
+            min_x, min_y, max_x, max_y = bbox
 
-            # For axis-aligned bounding box of rotated rectangle:
-            # half_w = |w/2 * cos(θ)| + |h/2 * sin(θ)|
-            # half_h = |w/2 * sin(θ)| + |h/2 * cos(θ)|
-            cos_r = abs(math.cos(rot_rad))
-            sin_r = abs(math.sin(rot_rad))
+            # Compute half-dimensions from bounding box
+            # Account for asymmetric pad extents by taking max distance from center
+            half_w = max(abs(max_x - comp.x), abs(comp.x - min_x))
+            half_h = max(abs(max_y - comp.y), abs(comp.y - min_y))
 
-            half_w = (w / 2) * cos_r + (h / 2) * sin_r
-            half_h = (w / 2) * sin_r + (h / 2) * cos_r
+            # Ensure minimum size to prevent division issues
+            half_w = max(half_w, 0.1)
+            half_h = max(half_h, 0.1)
 
             sizes[ref] = (half_w, half_h)
         return sizes
@@ -1407,21 +1525,37 @@ class ForceDirectedRefiner:
 
         Called after rotation constraints are applied to keep AABB
         dimensions accurate for boundary and collision detection.
+
+        Note: For rotation updates, we use the body dimensions plus a margin
+        to approximate pad extents. The initial _compute_component_sizes uses
+        get_bounding_box_with_pads() for accurate initial sizing. This is a
+        reasonable approximation since rotations during placement are typically
+        90-degree increments and the initial pad-inclusive size captures the
+        worst case.
         """
         for ref, rotation in state.rotations.items():
             comp = self.board.components.get(ref)
             if not comp:
                 continue
 
-            w, h = comp.width, comp.height
-            rot_rad = math.radians(rotation)
+            # Use pad-inclusive bounding box for accurate sizing
+            # Temporarily update component rotation to get correct pad positions
+            original_rotation = comp.rotation
+            comp.rotation = rotation
 
-            # Compute axis-aligned bounding box of rotated rectangle
-            cos_r = abs(math.cos(rot_rad))
-            sin_r = abs(math.sin(rot_rad))
+            bbox = comp.get_bounding_box_with_pads()
+            min_x, min_y, max_x, max_y = bbox
 
-            half_w = (w / 2) * cos_r + (h / 2) * sin_r
-            half_h = (w / 2) * sin_r + (h / 2) * cos_r
+            # Restore original rotation
+            comp.rotation = original_rotation
+
+            # Compute half-dimensions from bounding box
+            half_w = max(abs(max_x - comp.x), abs(comp.x - min_x))
+            half_h = max(abs(max_y - comp.y), abs(comp.y - min_y))
+
+            # Ensure minimum size
+            half_w = max(half_w, 0.1)
+            half_h = max(half_h, 0.1)
 
             self._component_sizes[ref] = (half_w, half_h)
 

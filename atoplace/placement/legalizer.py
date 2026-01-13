@@ -113,7 +113,7 @@ class LegalizerConfig:
     skip_locked: bool = True  # don't move locked components
 
     # Board outline compaction
-    compact_outline: bool = True  # shrink board outline to fit components
+    compact_outline: bool = False  # only compact when explicitly enabled or no outline exists
     outline_margin: float = 2.0  # mm - margin around components for new outline
 
 
@@ -223,11 +223,15 @@ class PlacementLegalizer:
 
         # Phase 1: Grid snapping
         result.grid_snapped = self._snap_to_grid()
+        # Clamp to bounds after snapping (prevents boundary violations)
+        self._clamp_all_to_bounds()
 
         # Phase 2: Row alignment (passives)
         rows_result = self._align_rows()
         result.rows_formed = rows_result[0]
         result.components_aligned = rows_result[1]
+        # Clamp to bounds after alignment (prevents boundary violations)
+        self._clamp_all_to_bounds()
 
         # Phase 3: Overlap removal
         overlap_result = self._remove_overlaps()
@@ -1322,9 +1326,18 @@ class PlacementLegalizer:
         Returns:
             List of component refs that overlap with the given ref
         """
+        # Skip DNP (Do Not Populate) components
+        comp = self.board.components.get(ref)
+        if comp and comp.dnp:
+            return []
+
         overlapping_refs = []
         for other_ref in self.board.components:
             if other_ref == ref:
+                continue
+            # Skip DNP components
+            other_comp = self.board.components.get(other_ref)
+            if other_comp and other_comp.dnp:
                 continue
             if self._get_overlap_values(ref, other_ref) is not None:
                 overlapping_refs.append(other_ref)
@@ -1340,10 +1353,15 @@ class PlacementLegalizer:
         Returns:
             Dictionary mapping grid cell (x, y) to list of component refs in that cell
         """
+        import math
+
         # Determine grid cell size based on max component dimension + clearance
         # This ensures overlapping components are in same or adjacent cells
         max_dim = 0.0
-        for ref in self.board.components:
+        for ref, comp in self.board.components.items():
+            # Skip DNP (Do Not Populate) components
+            if comp.dnp:
+                continue
             half_w, half_h = self._component_sizes.get(ref, (1.0, 1.0))
             max_dim = max(max_dim, half_w * 2, half_h * 2)
 
@@ -1354,13 +1372,18 @@ class PlacementLegalizer:
         spatial_index: Dict[Tuple[int, int], List[str]] = {}
 
         for ref, comp in self.board.components.items():
+            # Skip DNP (Do Not Populate) components
+            if comp.dnp:
+                continue
+
             half_w, half_h = self._component_sizes.get(ref, (1.0, 1.0))
 
             # Calculate the grid cells this component occupies
-            min_cell_x = int((comp.x - half_w - self.config.min_clearance) / self._grid_cell_size)
-            max_cell_x = int((comp.x + half_w + self.config.min_clearance) / self._grid_cell_size)
-            min_cell_y = int((comp.y - half_h - self.config.min_clearance) / self._grid_cell_size)
-            max_cell_y = int((comp.y + half_h + self.config.min_clearance) / self._grid_cell_size)
+            # Use math.floor() instead of int() for correct handling of negative coordinates
+            min_cell_x = math.floor((comp.x - half_w - self.config.min_clearance) / self._grid_cell_size)
+            max_cell_x = math.floor((comp.x + half_w + self.config.min_clearance) / self._grid_cell_size)
+            min_cell_y = math.floor((comp.y - half_h - self.config.min_clearance) / self._grid_cell_size)
+            max_cell_y = math.floor((comp.y + half_h + self.config.min_clearance) / self._grid_cell_size)
 
             # Add component to all cells it touches
             for cx in range(min_cell_x, max_cell_x + 1):
@@ -1397,30 +1420,44 @@ class PlacementLegalizer:
             # Check pairs within this cell
             for i, ref1 in enumerate(cell_refs):
                 comp1 = self.board.components[ref1]
+                # Skip DNP (Do Not Populate) components
+                if comp1.dnp:
+                    continue
+
                 half_w1, half_h1 = self._component_sizes.get(ref1, (1.0, 1.0))
-                
+
                 # Import Layer enum for checks
                 from ..board.abstraction import Layer
 
                 for ref2 in cell_refs[i+1:]:
+                    comp2 = self.board.components[ref2]
+                    # Skip DNP (Do Not Populate) components
+                    if comp2.dnp:
+                        continue
+
                     # Skip if already checked (components can be in multiple cells)
                     pair_key = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
                     if pair_key in checked_pairs:
                         continue
                     checked_pairs.add(pair_key)
 
-                    comp2 = self.board.components[ref2]
-                    
                     # Layer check: Skip if components are on opposite sides
-                    # We assume components on different copper layers don't physically collide
+                    # Unless one or both is through-hole (present on both layers)
                     if comp1.layer != comp2.layer:
-                        is_top1 = comp1.layer == Layer.TOP_COPPER
-                        is_bottom1 = comp1.layer == Layer.BOTTOM_COPPER
-                        is_top2 = comp2.layer == Layer.TOP_COPPER
-                        is_bottom2 = comp2.layer == Layer.BOTTOM_COPPER
-                        
-                        if (is_top1 and is_bottom2) or (is_bottom1 and is_top2):
-                            continue
+                        # Through-hole components are present on both layers
+                        # so they can collide with components on either side
+                        comp1_th = comp1.is_through_hole
+                        comp2_th = comp2.is_through_hole
+
+                        if not (comp1_th or comp2_th):
+                            # Neither is through-hole, so check if on opposite sides
+                            is_top1 = comp1.layer == Layer.TOP_COPPER
+                            is_bottom1 = comp1.layer == Layer.BOTTOM_COPPER
+                            is_top2 = comp2.layer == Layer.TOP_COPPER
+                            is_bottom2 = comp2.layer == Layer.BOTTOM_COPPER
+
+                            if (is_top1 and is_bottom2) or (is_bottom1 and is_top2):
+                                continue
 
                     half_w2, half_h2 = self._component_sizes.get(ref2, (1.0, 1.0))
 
@@ -1691,7 +1728,7 @@ class PlacementLegalizer:
         Phase 4: Compact board outline to fit the final component placement.
 
         Calculates the bounding box of all placed components (accounting for
-        their sizes and clearance), then updates the board outline to fit.
+        their sizes, pads, and clearance), then updates the board outline to fit.
 
         This creates a tight, professional board outline that matches the
         actual component placement area plus a margin for edge clearance.
@@ -1702,7 +1739,7 @@ class PlacementLegalizer:
         if not self.board.components:
             return (False, None)
 
-        # Calculate bounding box of all components including their footprints
+        # Calculate bounding box of all components including their pads
         min_x = float('inf')
         max_x = float('-inf')
         min_y = float('inf')
@@ -1713,17 +1750,13 @@ class PlacementLegalizer:
             if comp.dnp:
                 continue
 
-            half_w, half_h = self._component_sizes.get(ref, (comp.width / 2, comp.height / 2))
+            # Use pad-inclusive bounding box to capture actual component extent
+            bbox = comp.get_bounding_box_with_pads()
 
-            comp_min_x = comp.x - half_w
-            comp_max_x = comp.x + half_w
-            comp_min_y = comp.y - half_h
-            comp_max_y = comp.y + half_h
-
-            min_x = min(min_x, comp_min_x)
-            max_x = max(max_x, comp_max_x)
-            min_y = min(min_y, comp_min_y)
-            max_y = max(max_y, comp_max_y)
+            min_x = min(min_x, bbox[0])
+            max_x = max(max_x, bbox[2])
+            min_y = min(min_y, bbox[1])
+            max_y = max(max_y, bbox[3])
 
         # No valid components found
         if min_x == float('inf'):
@@ -1759,15 +1792,47 @@ class PlacementLegalizer:
         self.board.outline.width = new_width
         self.board.outline.height = new_height
         self.board.outline.has_outline = True
+        self.board.outline.auto_generated = True
+
+        # Create rectangular polygon for the outline (used by contains_point)
+        self.board.outline.polygon = [
+            (new_origin_x, new_origin_y),
+            (new_origin_x + new_width, new_origin_y),
+            (new_origin_x + new_width, new_origin_y + new_height),
+            (new_origin_x, new_origin_y + new_height),
+        ]
+        # Clear any existing holes since this is a simple rectangle
+        self.board.outline.holes = []
 
         return (True, (new_width, new_height))
+
+    def _clamp_all_to_bounds(self):
+        """Clamp all components to stay within board boundaries.
+
+        Called after grid snapping and row alignment to prevent
+        components from drifting outside the board outline.
+        """
+        for ref, comp in self.board.components.items():
+            if comp.dnp:
+                continue
+            # Skip locked or fixed-constraint components
+            if self.config.skip_locked and self._is_component_fixed(ref):
+                continue
+            grid = self.config.primary_grid
+            if self._is_passive(ref):
+                size = self._detect_passive_size(comp)
+                if size in FINE_PITCH_SIZES:
+                    grid = self.config.secondary_grid
+            self._clamp_to_bounds(ref, grid)
 
     def _clamp_to_bounds(self, ref: str, grid: float):
         """Clamp component position to stay within board boundaries.
 
-        Uses edge_clearance (matches DFM min_trace_to_edge) for boundary margin.
-        Grid snapping is done in the inward direction to ensure components
-        stay within bounds even after snapping.
+        For rectangular outlines: Uses edge_clearance (matches DFM min_trace_to_edge)
+        for boundary margin. Grid snapping is done in the inward direction.
+
+        For polygon outlines: Uses point-in-polygon test and iteratively
+        moves component toward board centroid until all corners are inside.
 
         Skipped when board has no explicit outline defined.
         """
@@ -1785,34 +1850,80 @@ class PlacementLegalizer:
         # Use edge_clearance to match validator's min_trace_to_edge check
         margin = self.config.edge_clearance
 
-        # Calculate bounds
-        min_x = outline.origin_x + half_w + margin
-        max_x = outline.origin_x + outline.width - half_w - margin
-        min_y = outline.origin_y + half_h + margin
-        max_y = outline.origin_y + outline.height - half_h - margin
+        if outline.polygon:
+            # For polygon outlines, iteratively move toward centroid
+            bbox = outline.get_bounding_box()
+            center_x = (bbox[0] + bbox[2]) / 2
+            center_y = (bbox[1] + bbox[3]) / 2
 
-        # Check for invalid bounds (board too small)
-        if max_x < min_x or max_y < min_y:
-            # Board is too small - center the component
-            comp.x = outline.origin_x + outline.width / 2
-            comp.y = outline.origin_y + outline.height / 2
-            return
+            x, y = comp.x, comp.y
 
-        # Clamp position and snap to grid in the INWARD direction
-        # This ensures grid snapping doesn't push components back out of bounds
-        if comp.x < min_x:
-            # Snap to next grid point INSIDE the bound (ceiling)
-            comp.x = math.ceil(min_x / grid) * grid
-        elif comp.x > max_x:
-            # Snap to next grid point INSIDE the bound (floor)
-            comp.x = math.floor(max_x / grid) * grid
+            # Check all corners with margin
+            corners = [
+                (x - half_w, y - half_h),
+                (x + half_w, y - half_h),
+                (x - half_w, y + half_h),
+                (x + half_w, y + half_h),
+            ]
 
-        if comp.y < min_y:
-            # Snap to next grid point INSIDE the bound (ceiling)
-            comp.y = math.ceil(min_y / grid) * grid
-        elif comp.y > max_y:
-            # Snap to next grid point INSIDE the bound (floor)
-            comp.y = math.floor(max_y / grid) * grid
+            # Iteratively move toward center until all corners are inside
+            for _ in range(20):  # Max iterations
+                all_inside = True
+                for cx, cy in corners:
+                    if not outline.contains_point(cx, cy, margin=margin):
+                        all_inside = False
+                        break
+
+                if all_inside:
+                    break
+
+                # Move 10% toward center
+                dx = center_x - x
+                dy = center_y - y
+                x += dx * 0.1
+                y += dy * 0.1
+
+                # Update corners
+                corners = [
+                    (x - half_w, y - half_h),
+                    (x + half_w, y - half_h),
+                    (x - half_w, y + half_h),
+                    (x + half_w, y + half_h),
+                ]
+
+            # Snap to grid after positioning
+            comp.x = round(x / grid) * grid
+            comp.y = round(y / grid) * grid
+        else:
+            # Rectangular outline - use simple AABB clamp
+            # Calculate bounds
+            min_x = outline.origin_x + half_w + margin
+            max_x = outline.origin_x + outline.width - half_w - margin
+            min_y = outline.origin_y + half_h + margin
+            max_y = outline.origin_y + outline.height - half_h - margin
+
+            # Check for invalid bounds (board too small)
+            if max_x < min_x or max_y < min_y:
+                # Board is too small - center the component
+                comp.x = outline.origin_x + outline.width / 2
+                comp.y = outline.origin_y + outline.height / 2
+                return
+
+            # Clamp position and snap to grid in the INWARD direction
+            # This ensures grid snapping doesn't push components back out of bounds
+            if comp.x < min_x:
+                # Snap to next grid point INSIDE the bound (ceiling)
+                comp.x = math.ceil(min_x / grid) * grid
+            elif comp.x > max_x:
+                # Snap to next grid point INSIDE the bound (floor)
+                comp.x = math.floor(max_x / grid) * grid
+
+            if comp.y < min_y:
+                # Snap to next grid point INSIDE the bound (ceiling)
+                comp.y = math.ceil(min_y / grid) * grid
+            elif comp.y > max_y:
+                # Snap to next grid point INSIDE the bound (floor)
+                comp.y = math.floor(max_y / grid) * grid
 
     def _is_passive(self, ref: str) -> bool:
         """Check if a component reference indicates a passive (R, C, L)."""
@@ -1857,17 +1968,26 @@ class PlacementLegalizer:
         return PassiveSize.UNKNOWN
 
     def _compute_component_sizes(self):
-        """Compute AABB half-dimensions for all components."""
+        """Compute AABB half-dimensions for all components.
+
+        Uses get_bounding_box_with_pads() to include pad extents that may
+        protrude beyond the component body (e.g., edge-mounted connectors,
+        irregular footprints). This ensures overlap detection catches all
+        potential collisions.
+        """
         for ref, comp in self.board.components.items():
-            w, h = comp.width, comp.height
-            rot_rad = math.radians(comp.rotation)
+            # Use pad-inclusive bounding box for accurate collision detection
+            bbox = comp.get_bounding_box_with_pads()
+            min_x, min_y, max_x, max_y = bbox
 
-            # Axis-aligned bounding box of rotated rectangle
-            cos_r = abs(math.cos(rot_rad))
-            sin_r = abs(math.sin(rot_rad))
+            # Compute half-dimensions from bounding box
+            # Account for asymmetric pad extents by taking max distance from center
+            half_w = max(abs(max_x - comp.x), abs(comp.x - min_x))
+            half_h = max(abs(max_y - comp.y), abs(comp.y - min_y))
 
-            half_w = (w / 2) * cos_r + (h / 2) * sin_r
-            half_h = (w / 2) * sin_r + (h / 2) * cos_r
+            # Ensure minimum size to prevent division issues
+            half_w = max(half_w, 0.1)
+            half_h = max(half_h, 0.1)
 
             self._component_sizes[ref] = (half_w, half_h)
 

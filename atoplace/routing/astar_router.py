@@ -94,6 +94,10 @@ class RouterConfig:
     direction: RouteDirection = RouteDirection.DIAGONAL
     prefer_layer: Optional[int] = None  # Preferred routing layer (0=top, 1=bottom)
 
+    # Layer configuration
+    layer_count: int = 2       # Number of routing layers (2, 4, 6, 8...)
+    inner_layer_cost: float = 1.2  # Cost multiplier for using inner layers
+
     # Via parameters
     via_cost: float = 5.0      # Cost multiplier for layer changes
     min_via_spacing: float = 0.5  # Minimum spacing between vias
@@ -140,6 +144,9 @@ class AStarRouter:
         self.routed_segments: List[RouteSegment] = []
         self.routed_vias: List[Via] = []
 
+        # Track visualization state
+        self._viz_obstacles_captured = False
+
     def _setup_neighbor_offsets(self):
         """Precompute valid movement directions based on config."""
         g = self.config.grid_size
@@ -168,7 +175,8 @@ class AStarRouter:
         pads: List[Obstacle],
         net_name: str = "",
         net_id: Optional[int] = None,
-        trace_width: Optional[float] = None
+        trace_width: Optional[float] = None,
+        clearance: Optional[float] = None
     ) -> RoutingResult:
         """
         Route a net connecting multiple pads.
@@ -183,7 +191,8 @@ class AStarRouter:
             pads: List of pad obstacles to connect
             net_name: Name of the net (for logging)
             net_id: Net ID for same-net filtering
-            trace_width: Trace width override
+            trace_width: Trace width override (from net-class rules)
+            clearance: Clearance override (from net-class rules)
 
         Returns:
             RoutingResult with success status and trace segments
@@ -197,6 +206,7 @@ class AStarRouter:
             )
 
         trace_width = trace_width or self.config.trace_width
+        clearance = clearance or self.config.clearance
         all_segments = []
         all_vias = []
         total_iterations = 0
@@ -248,31 +258,40 @@ class AStarRouter:
                 best_end,
                 net_id,
                 trace_width,
+                clearance,
                 net_name
             )
 
-            # If failed quickly, try starting on alternate layer
-            # This helps when one layer is congested but the other is clear
+            # If failed quickly, try starting on alternate layers
+            # This helps when one layer is congested but another is clear
             if not result.success and result.iterations < 1000:
-                alt_start = RouteNode(best_start.x, best_start.y, 1 - best_start.layer)
-                alt_result = self._route_two_points(
-                    alt_start,
-                    best_end,
-                    net_id,
-                    trace_width,
-                    net_name
-                )
-                if alt_result.success or alt_result.iterations > result.iterations:
-                    # Alternate layer found a path or explored more - use it
-                    if alt_result.success:
-                        # Add via to switch to alternate layer at start
-                        from .visualizer import Via
-                        all_vias.append(Via(
-                            x=best_start.x, y=best_start.y,
-                            drill_diameter=0.3, pad_diameter=0.6,
-                            net_id=net_id
-                        ))
-                    result = alt_result
+                # Try all available layers except the one we already tried
+                for alt_layer in range(self.config.layer_count):
+                    if alt_layer == best_start.layer:
+                        continue
+
+                    alt_start = RouteNode(best_start.x, best_start.y, alt_layer)
+                    alt_result = self._route_two_points(
+                        alt_start,
+                        best_end,
+                        net_id,
+                        trace_width,
+                        clearance,
+                        net_name
+                    )
+                    if alt_result.success or alt_result.iterations > result.iterations:
+                        # Alternate layer found a path or explored more - use it
+                        if alt_result.success:
+                            # Add via to switch to alternate layer at start
+                            from .visualizer import Via
+                            all_vias.append(Via(
+                                x=best_start.x, y=best_start.y,
+                                drill_diameter=0.3, pad_diameter=0.6,
+                                net_id=net_id
+                            ))
+                        result = alt_result
+                        if result.success:
+                            break  # Found a working route
 
             total_iterations += result.iterations
             total_explored += result.explored_count
@@ -322,13 +341,15 @@ class AStarRouter:
         goal: RouteNode,
         net_id: Optional[int],
         trace_width: float,
+        net_clearance: float,
         net_name: str = ""
     ) -> RoutingResult:
         """Route between two points using A* with greedy multiplier.
 
         This is the core A* implementation - iterative, not recursive.
         """
-        clearance = trace_width / 2 + self.config.clearance
+        # Total clearance = half trace width + net-class clearance
+        clearance = trace_width / 2 + net_clearance
 
         # Priority queue: (f_score, g_score, node, parent_map_key)
         # Using g_score as secondary sort for tie-breaking
@@ -368,8 +389,8 @@ class AStarRouter:
             if current in closed:
                 continue
 
-            # Visualization hook
-            if self.viz and iterations % viz_interval == 0:
+            # Visualization hook - capture first frame and every viz_interval iterations
+            if self.viz and (iterations == 1 or iterations % viz_interval == 0):
                 self._capture_viz_frame(
                     closed, open_set, current, goal, net_name, iterations
                 )
@@ -378,8 +399,13 @@ class AStarRouter:
             if self._is_at_goal(current, goal):
                 # Reconstruct path
                 path = self._reconstruct_path(came_from, current, start)
+                # Capture final frame showing completed search
+                if self.viz:
+                    self._capture_viz_frame(
+                        closed, open_set, current, goal, net_name, iterations
+                    )
                 return self._build_result(
-                    path, trace_width, iterations, len(closed), net_name
+                    path, trace_width, iterations, len(closed), net_name, net_id
                 )
 
             closed.add(current)
@@ -443,16 +469,25 @@ class AStarRouter:
             neighbor = RouteNode(nx, ny, node.layer)
             neighbors.append((neighbor, base_cost))
 
-        # Layer change (via) - only if we have 2 layers
-        other_layer = 1 - node.layer
-        if self._can_place_via(node.x, node.y, clearance, net_id):
-            # Check if destination layer is clear
-            if not self.obstacles.check_collision(
-                node.x, node.y, other_layer, clearance, net_id
-            ):
-                via_cost = self.config.via_cost * self.config.grid_size
-                neighbor = RouteNode(node.x, node.y, other_layer)
-                neighbors.append((neighbor, via_cost))
+        # Layer changes (vias) - support multi-layer routing
+        # Can via to adjacent layers (layer ±1)
+        for layer_delta in [-1, 1]:
+            other_layer = node.layer + layer_delta
+            # Check if target layer exists
+            if other_layer < 0 or other_layer >= self.config.layer_count:
+                continue
+
+            if self._can_place_via(node.x, node.y, clearance, net_id):
+                # Check if destination layer is clear
+                if not self.obstacles.check_collision(
+                    node.x, node.y, other_layer, clearance, net_id
+                ):
+                    via_cost = self.config.via_cost * self.config.grid_size
+                    # Inner layers have additional cost preference
+                    if 0 < other_layer < self.config.layer_count - 1:
+                        via_cost *= self.config.inner_layer_cost
+                    neighbor = RouteNode(node.x, node.y, other_layer)
+                    neighbors.append((neighbor, via_cost))
 
         return neighbors
 
@@ -484,11 +519,10 @@ class AStarRouter:
         """Check if a via can be placed at this location."""
         via_clearance = self.config.min_via_spacing / 2 + clearance
 
-        # Check both layers
-        if self.obstacles.check_collision(x, y, 0, via_clearance, net_id):
-            return False
-        if self.obstacles.check_collision(x, y, 1, via_clearance, net_id):
-            return False
+        # Check all layers - via goes through all of them
+        for layer in range(self.config.layer_count):
+            if self.obstacles.check_collision(x, y, layer, via_clearance, net_id):
+                return False
 
         return True
 
@@ -534,7 +568,8 @@ class AStarRouter:
         trace_width: float,
         iterations: int,
         explored: int,
-        net_name: str
+        net_name: str,
+        net_id: Optional[int] = None
     ) -> RoutingResult:
         """Convert node path to trace segments and vias."""
         segments = []
@@ -552,7 +587,7 @@ class AStarRouter:
                     y=curr.y,
                     drill_diameter=0.3,  # Standard via
                     pad_diameter=0.6,
-                    net_id=None  # TODO: pass net_id
+                    net_id=net_id
                 ))
             else:
                 # Trace segment
@@ -560,7 +595,8 @@ class AStarRouter:
                     start=(curr.x, curr.y),
                     end=(next_.x, next_.y),
                     layer=curr.layer,
-                    width=trace_width
+                    width=trace_width,
+                    net_id=net_id
                 )
                 segments.append(seg)
                 total_length += curr.distance_to(next_)
@@ -592,9 +628,22 @@ class AStarRouter:
         explored = {(n.x, n.y, n.layer) for n in closed}
         frontier = {(item[2].x, item[2].y, item[2].layer) for item in open_set}
 
+        # Extract obstacles for visualization (only once to avoid overhead)
+        # Use instance variable to cache obstacles/pads
+        if not hasattr(self, '_viz_obstacles_captured') or not self._viz_obstacles_captured:
+            self._viz_obstacles_captured = True
+            self._viz_obstacles = []
+            self._viz_pads = []
+            for obs in self.obstacles.all_obstacles:
+                # Pass Obstacle objects directly (not tuples) as expected by visualizer
+                if obs.obstacle_type == "pad":
+                    self._viz_pads.append(obs)
+                else:
+                    self._viz_obstacles.append(obs)
+
         self.viz.capture_frame(
-            obstacles=[],  # Already rendered
-            pads=[],
+            obstacles=self._viz_obstacles,
+            pads=self._viz_pads,
             explored_nodes=explored,
             frontier_nodes=frontier,
             current_path=[(current.x, current.y, current.layer)],
@@ -603,7 +652,12 @@ class AStarRouter:
         )
 
     def add_routed_trace(self, segment: RouteSegment):
-        """Add a routed trace segment as an obstacle for future routing."""
+        """Add a routed trace segment as an obstacle for future routing.
+
+        Note: Clearance is set to 0 because collision checks already add
+        clearance via the query parameter. Setting clearance here would
+        double-count and create overly conservative spacing.
+        """
         self.routed_segments.append(segment)
 
         # Add to obstacle index
@@ -618,13 +672,18 @@ class AStarRouter:
             max_x=max_x,
             max_y=max_y,
             layer=segment.layer,
-            clearance=self.config.clearance,
+            clearance=0,  # Clearance applied during collision check, not here
             net_id=segment.net_id,
             obstacle_type="trace"
         ))
 
     def add_routed_via(self, via: Via):
-        """Add a routed via as an obstacle for future routing."""
+        """Add a routed via as an obstacle for future routing.
+
+        Note: Clearance is set to 0 because collision checks already add
+        clearance via the query parameter. Setting clearance here would
+        double-count and create overly conservative spacing.
+        """
         self.routed_vias.append(via)
 
         # Add to obstacle index (blocks all layers)
@@ -635,7 +694,7 @@ class AStarRouter:
             max_x=via.x + r,
             max_y=via.y + r,
             layer=-1,  # All layers
-            clearance=self.config.clearance,
+            clearance=0,  # Clearance applied during collision check, not here
             net_id=via.net_id,
             obstacle_type="via"
         ))
@@ -743,10 +802,11 @@ def route_board(
     # Create visualizer if requested
     viz = create_visualizer_from_board(board) if visualize else None
 
-    # Configure router
+    # Configure router with board's layer count
     config = config or RouterConfig(
         trace_width=dfm_profile.min_trace_width,
         clearance=dfm_profile.min_spacing,
+        layer_count=board.layer_count,
     )
 
     # Create router
@@ -761,11 +821,23 @@ def route_board(
     success_count = 0
 
     for net in ordered_nets:
+        # Look up net-class rules from the board's Net object
+        # Use net-specific trace_width/clearance if defined, otherwise use config defaults
+        board_net = board.nets.get(net.net_name)
+        net_trace_width = config.trace_width
+        net_clearance = config.clearance
+        if board_net:
+            if board_net.trace_width is not None:
+                net_trace_width = board_net.trace_width
+            if board_net.clearance is not None:
+                net_clearance = board_net.clearance
+
         result = router.route_net(
             pads=net.pads,
             net_name=net.net_name,
             net_id=net.net_id,
-            trace_width=config.trace_width
+            trace_width=net_trace_width,
+            clearance=net_clearance
         )
         results[net.net_name] = result
 

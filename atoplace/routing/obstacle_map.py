@@ -10,10 +10,24 @@ The obstacle map is built once and reused for all net routing.
 from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass
 import logging
+import hashlib
 
 from .spatial_index import SpatialHashIndex, Obstacle, auto_calibrate_cell_size
+from ..board.abstraction import Layer
 
 logger = logging.getLogger(__name__)
+
+
+def _deterministic_hash(s: str) -> int:
+    """Create a deterministic integer hash from a string.
+
+    Uses MD5 for fast, consistent hashing across Python processes and sessions.
+    Python's built-in hash() is randomized by PYTHONHASHSEED for security,
+    which makes routing results non-reproducible.
+    """
+    # Use MD5 (fast, 128-bit) and take first 8 bytes as int64
+    digest = hashlib.md5(s.encode('utf-8')).digest()
+    return int.from_bytes(digest[:8], byteorder='little', signed=True)
 
 
 @dataclass
@@ -89,9 +103,13 @@ class ObstacleMapBuilder:
         return index
 
     def _add_component_obstacles(self, index: SpatialHashIndex) -> int:
-        """Add component bodies as obstacles."""
+        """Add component bodies as obstacles.
+
+        Note: Clearance is NOT embedded in obstacles. The router is responsible
+        for passing the full clearance (trace_width/2 + dfm_clearance) to
+        collision checks. This avoids double-counting clearance.
+        """
         count = 0
-        clearance = self.dfm.min_spacing
 
         for ref, comp in self.board.components.items():
             # Skip DNP components
@@ -100,11 +118,14 @@ class ObstacleMapBuilder:
 
             bbox = comp.get_bounding_box()
 
-            # Determine layers blocked
+            # Determine layers blocked - use Layer enum for comparison
             if comp.is_through_hole:
                 layers = [-1]  # All layers
             else:
-                layer = 0 if comp.layer in ('F.Cu', 'Top') else 1
+                # Compare against Layer enum values, not strings
+                is_top = comp.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
+                                       Layer.TOP_MASK, Layer.TOP_PASTE, Layer.TOP_COURTYARD)
+                layer = 0 if is_top else 1
                 layers = [layer]
 
             for layer in layers:
@@ -114,7 +135,7 @@ class ObstacleMapBuilder:
                     max_x=bbox[2],
                     max_y=bbox[3],
                     layer=layer,
-                    clearance=clearance,
+                    clearance=0,  # Router handles clearance to avoid double-counting
                     net_id=None,  # Blocks all nets
                     obstacle_type="component",
                     ref=ref
@@ -124,43 +145,53 @@ class ObstacleMapBuilder:
         return count
 
     def _add_pad_obstacles(self, index: SpatialHashIndex) -> int:
-        """Add pads as obstacles (with net association for filtering)."""
+        """Add pads as obstacles (with net association for filtering).
+
+        Note: Clearance is NOT embedded in obstacles. The router is responsible
+        for passing the full clearance (trace_width/2 + dfm_clearance) to
+        collision checks. This avoids double-counting clearance.
+        """
         count = 0
-        clearance = self.dfm.min_spacing
 
         for ref, comp in self.board.components.items():
             if comp.dnp:
                 continue
 
             for pad in comp.pads:
-                # Transform pad position to board coordinates
-                # Account for component rotation
-                px, py = self._transform_pad_position(comp, pad)
-                hw, hh = pad.width / 2, pad.height / 2
+                # Get pad bounding box in board coordinates
+                # This properly handles both pad rotation and component rotation
+                bbox = pad.get_bounding_box(comp.x, comp.y, comp.rotation)
 
                 # Get net ID (hash of net name for fast comparison)
                 net_id = None
                 if pad.net:
-                    net_id = hash(pad.net)
+                    net_id = _deterministic_hash(pad.net)
 
-                # Determine layers
-                if hasattr(pad, 'is_through_hole') and pad.is_through_hole:
+                # Determine layers - check for through-hole based on drill attribute
+                # (Pad class uses drill, not is_through_hole)
+                is_through_hole = pad.drill is not None and pad.drill > 0
+                if is_through_hole:
                     layers = [-1]  # All layers
-                elif hasattr(pad, 'layer'):
-                    layers = [0 if pad.layer in ('F.Cu', 'Top') else 1]
+                elif hasattr(pad, 'layer') and pad.layer is not None:
+                    # Compare against Layer enum values, not strings
+                    is_top = pad.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
+                                          Layer.TOP_MASK, Layer.TOP_PASTE, Layer.TOP_COURTYARD)
+                    layers = [0 if is_top else 1]
                 else:
-                    # Default based on component
-                    layer = 0 if comp.layer in ('F.Cu', 'Top') else 1
+                    # Default based on component - use Layer enum comparison
+                    is_top = comp.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
+                                           Layer.TOP_MASK, Layer.TOP_PASTE, Layer.TOP_COURTYARD)
+                    layer = 0 if is_top else 1
                     layers = [layer]
 
                 for layer in layers:
                     index.add(Obstacle(
-                        min_x=px - hw,
-                        min_y=py - hh,
-                        max_x=px + hw,
-                        max_y=py + hh,
+                        min_x=bbox[0],
+                        min_y=bbox[1],
+                        max_x=bbox[2],
+                        max_y=bbox[3],
                         layer=layer,
-                        clearance=clearance,
+                        clearance=0,  # Router handles clearance to avoid double-counting
                         net_id=net_id,
                         obstacle_type="pad",
                         ref=f"{ref}.{pad.name}" if hasattr(pad, 'name') else ref
@@ -190,8 +221,21 @@ class ObstacleMapBuilder:
         return (comp.x + px, comp.y + py)
 
     def _add_edge_keepout(self, index: SpatialHashIndex) -> int:
-        """Add board edge keepout zones."""
+        """Add board edge keepout zones.
+
+        Only generates keepouts when an explicit board outline is defined
+        (has_outline=True). This prevents artificial obstacles on boards
+        without explicit Edge.Cuts boundaries.
+
+        Handles both clockwise and counter-clockwise winding by testing
+        which direction is "inside" the board using contains_point.
+        """
         if not self.board.outline:
+            return 0
+
+        # Skip if no explicit outline is defined
+        # This prevents artificial obstacles on outline-less boards
+        if not self.board.outline.has_outline:
             return 0
 
         # Get outline points - BoardOutline uses 'polygon' attribute
@@ -224,7 +268,6 @@ class ObstacleMapBuilder:
             p2 = points[(i + 1) % len(points)]
 
             # Create thin rectangle along edge
-            # Expand outward from the edge by edge_clearance
             dx = p2[0] - p1[0]
             dy = p2[1] - p1[1]
             length = (dx*dx + dy*dy) ** 0.5
@@ -236,25 +279,47 @@ class ObstacleMapBuilder:
             dx /= length
             dy /= length
 
-            # Create rectangle perpendicular to edge, extending inward
-            # This is a simplified approach - for complex outlines, use
-            # proper polygon offset algorithms
+            # Calculate both possible normals and test which points inward
+            # Normal options: (dy, -dx) or (-dy, dx)
             import math
 
-            # Normal pointing inward (assuming CCW winding)
-            nx, ny = dy, -dx
+            # Test point slightly offset from edge midpoint in each direction
+            mid_x = (p1[0] + p2[0]) / 2
+            mid_y = (p1[1] + p2[1]) / 2
+            test_dist = 0.1  # Small offset for testing
+
+            # Try normal (dy, -dx)
+            test_x1 = mid_x + dy * test_dist
+            test_y1 = mid_y - dx * test_dist
+
+            # Try normal (-dy, dx)
+            test_x2 = mid_x - dy * test_dist
+            test_y2 = mid_y + dx * test_dist
+
+            # Determine which side is "inside" the board
+            inside1 = self.board.outline.contains_point(test_x1, test_y1)
+            inside2 = self.board.outline.contains_point(test_x2, test_y2)
+
+            # Choose the normal pointing INWARD (inside the board)
+            if inside1 and not inside2:
+                nx, ny = dy, -dx  # Normal 1 points inward
+            elif inside2 and not inside1:
+                nx, ny = -dy, dx  # Normal 2 points inward
+            else:
+                # Both or neither - fall back to CCW assumption
+                nx, ny = dy, -dx
 
             # Four corners of keepout rectangle
-            # Outer edge
-            x1 = p1[0] - nx * edge_clearance
-            y1 = p1[1] - ny * edge_clearance
-            x2 = p2[0] - nx * edge_clearance
-            y2 = p2[1] - ny * edge_clearance
-            # Inner edge (at board boundary)
-            x3 = p2[0]
-            y3 = p2[1]
-            x4 = p1[0]
-            y4 = p1[1]
+            # Outer edge (outside board, at board boundary)
+            x1 = p1[0]
+            y1 = p1[1]
+            x2 = p2[0]
+            y2 = p2[1]
+            # Inner edge (inside board, at keepout boundary)
+            x3 = p2[0] + nx * edge_clearance
+            y3 = p2[1] + ny * edge_clearance
+            x4 = p1[0] + nx * edge_clearance
+            y4 = p1[1] + ny * edge_clearance
 
             # Bounding box of the keepout zone
             min_x = min(x1, x2, x3, x4)
@@ -295,25 +360,33 @@ class ObstacleMapBuilder:
                 if not pad.net:
                     continue
 
-                px, py = self._transform_pad_position(comp, pad)
-                hw, hh = pad.width / 2, pad.height / 2
+                # Get pad bounding box in board coordinates
+                # This properly handles both pad rotation and component rotation
+                bbox = pad.get_bounding_box(comp.x, comp.y, comp.rotation)
 
-                # Determine layer
-                if hasattr(pad, 'is_through_hole') and pad.is_through_hole:
-                    layer = -1
-                elif hasattr(pad, 'layer'):
-                    layer = 0 if pad.layer in ('F.Cu', 'Top') else 1
+                # Determine layer - check for through-hole based on drill attribute
+                is_through_hole = pad.drill is not None and pad.drill > 0
+                if is_through_hole:
+                    layer = -1  # All layers
+                elif hasattr(pad, 'layer') and pad.layer is not None:
+                    # Compare against Layer enum values, not strings
+                    is_top = pad.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
+                                          Layer.TOP_MASK, Layer.TOP_PASTE, Layer.TOP_COURTYARD)
+                    layer = 0 if is_top else 1
                 else:
-                    layer = 0 if comp.layer in ('F.Cu', 'Top') else 1
+                    # Default based on component - use Layer enum comparison
+                    is_top = comp.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
+                                           Layer.TOP_MASK, Layer.TOP_PASTE, Layer.TOP_COURTYARD)
+                    layer = 0 if is_top else 1
 
                 pad_obs = Obstacle(
-                    min_x=px - hw,
-                    min_y=py - hh,
-                    max_x=px + hw,
-                    max_y=py + hh,
+                    min_x=bbox[0],
+                    min_y=bbox[1],
+                    max_x=bbox[2],
+                    max_y=bbox[3],
                     layer=layer,
                     clearance=0,
-                    net_id=hash(pad.net),
+                    net_id=_deterministic_hash(pad.net),
                     obstacle_type="pad",
                     ref=f"{ref}.{pad.name}" if hasattr(pad, 'name') else ref
                 )
@@ -335,7 +408,7 @@ class ObstacleMapBuilder:
 
             result.append(NetPads(
                 net_name=net_name,
-                net_id=hash(net_name),
+                net_id=_deterministic_hash(net_name),
                 pads=pads,
                 is_power=is_power,
                 is_ground=is_ground
@@ -344,7 +417,11 @@ class ObstacleMapBuilder:
         return result
 
     def get_routing_stats(self) -> Dict:
-        """Get statistics about the board for routing planning."""
+        """Get statistics about the board for routing planning.
+
+        For polygon outlines, uses actual polygon area (Shoelace formula)
+        instead of bounding box area, giving accurate density for irregular boards.
+        """
         nets = self.get_net_pads()
         total_pads = sum(len(n.pads) for n in nets)
 
@@ -352,14 +429,24 @@ class ObstacleMapBuilder:
         # More pads in small area = harder
         area = 1000  # Default
         if self.board.outline:
-            if hasattr(self.board.outline, 'get_bounding_box'):
+            # Prefer actual polygon area over bounding box area
+            if hasattr(self.board.outline, 'polygon') and self.board.outline.polygon:
+                # Calculate polygon area using Shoelace formula
+                polygon = self.board.outline.polygon
+                n = len(polygon)
+                if n >= 3:
+                    area = 0.0
+                    for i in range(n):
+                        j = (i + 1) % n
+                        area += polygon[i][0] * polygon[j][1]
+                        area -= polygon[j][0] * polygon[i][1]
+                    area = abs(area) / 2.0
+            elif hasattr(self.board.outline, 'get_bounding_box'):
+                # Fall back to bounding box only if no polygon
                 bbox = self.board.outline.get_bounding_box()
                 if bbox:
                     area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-            elif hasattr(self.board.outline, 'polygon') and self.board.outline.polygon:
-                xs = [p[0] for p in self.board.outline.polygon]
-                ys = [p[1] for p in self.board.outline.polygon]
-                area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+
         if area <= 0:
             area = self.board.width * self.board.height if hasattr(self.board, 'width') else 1000
 

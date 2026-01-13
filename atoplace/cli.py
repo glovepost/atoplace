@@ -277,6 +277,37 @@ def load_board_from_path(
         return None, None, False
 
     if path.suffix == ".kicad_pcb":
+        # Check if this kicad_pcb file is inside an atopile project
+        project_root = AtopileProjectLoader.find_project_root(path.parent)
+        if project_root:
+            emit(f"Detected atopile project: [bold]{project_root}[/bold]")
+            loader = AtopileProjectLoader(project_root)
+
+            # Try to determine which build this file belongs to
+            build_name = build or "default"
+
+            # Check if this file matches any build's board path
+            try:
+                expected_board = loader.get_board_path(build_name)
+                if path.resolve() == expected_board.resolve():
+                    emit(f"  Build: [bold]{build_name}[/bold]")
+                    board = loader.load_board(build_name)
+                    return board, path, True
+            except ValueError:
+                pass
+
+            # Fall back to loading as plain KiCad but with atopile enrichment attempt
+            emit(f"Loading KiCad board: [bold]{path}[/bold] (with atopile enrichment)")
+            board = load_kicad_board(path)
+            try:
+                # Apply atopile metadata: component values and module hierarchy
+                loader._apply_component_metadata(board)
+                loader._apply_module_hierarchy(board, build_name)
+                return board, path, True
+            except Exception as e:
+                emit(f"[yellow]Warning:[/yellow] Could not apply atopile metadata: {e}")
+                return board, path, False
+
         emit(f"Loading KiCad board: [bold]{path}[/bold]")
         board = load_kicad_board(path)
         return board, path, False
@@ -515,10 +546,18 @@ def place(
     module_map = {}  # ref -> module_type
     if visualize:
         visualizer = PlacementVisualizer(board_obj)
-        # Build module map from detected modules
+        # Build module map from detected modules (heuristic-based)
         for module in modules:
             for ref in module.components:
                 module_map[ref] = module.module_type.value
+
+        # If atopile project, override with atopile module names for visualization
+        # This provides more meaningful module names than heuristic detection
+        if is_atopile:
+            for ref, comp in board_obj.components.items():
+                ato_module = comp.properties.get("ato_module")
+                if ato_module:
+                    module_map[ref] = ato_module
 
     constraints_list = []
     if constraints:
@@ -665,6 +704,10 @@ def place(
         # Use STRICT overlap prevention settings
         # Use at least 0.35mm clearance, or DFM profile if stricter
         strict_clearance = max(0.35, dfm_profile.min_spacing)
+        # Only compact outline if board had no explicit outline to begin with
+        # This preserves user-designed board shapes while auto-generating
+        # outlines for boards that had none
+        should_compact_outline = not board_obj.outline.has_outline or compact_outline
         legalize_config = LegalizerConfig(
             primary_grid=grid if grid else 0.5,
             snap_rotation=True,
@@ -676,6 +719,7 @@ def place(
             max_displacement_iterations=1000,  # More iterations for thorough resolution
             overlap_retry_passes=50,  # More passes to guarantee resolution
             escalation_factor=1.3,  # Gentler escalation for better results
+            compact_outline=should_compact_outline,  # Only compact when appropriate
         )
         legalizer = PlacementLegalizer(
             board_obj, legalize_config, constraints=constraints_list
@@ -707,6 +751,15 @@ def place(
     _render_validation_summary(console, report)
 
     output_path = output if output else pcb_path.with_suffix(".placed.kicad_pcb")
+
+    # Reposition ref des text to avoid overlaps
+    with console.status("Repositioning reference designators..."):
+        repositioned = board_obj.reposition_ref_des_text(
+            clearance=0.2,
+            pad_clearance=dfm_profile.min_silk_to_pad if hasattr(dfm_profile, 'min_silk_to_pad') else 0.15
+        )
+    if repositioned > 0:
+        console.print(f"  Repositioned {repositioned} reference designators")
 
     if dry_run:
         console.print(Panel("Dry run - output not saved", border_style="yellow"))
@@ -884,12 +937,13 @@ def route(
         viz = create_visualizer_from_board(board_obj)
         console.print("Visualization: [cyan]enabled[/]")
 
-    # Configure router
+    # Configure router with board's layer count
     config = RouterConfig(
         greedy_weight=greedy,
         grid_size=grid,
         trace_width=dfm_profile.min_trace_width,
         clearance=dfm_profile.min_spacing,
+        layer_count=board_obj.layer_count,
     )
 
     # Create router
@@ -1181,6 +1235,8 @@ Modification examples:
             )
 
             console.print(Rule("Legalization", style="cyan"))
+            # Only compact outline if board has no explicit outline
+            should_compact = not board_obj.outline.has_outline
             legalize_config = LegalizerConfig(
                 primary_grid=0.5,
                 snap_rotation=True,
@@ -1188,6 +1244,7 @@ Modification examples:
                 min_clearance=dfm_profile.min_spacing,
                 edge_clearance=dfm_profile.min_trace_to_edge,
                 row_spacing=dfm_profile.min_spacing * 1.5,
+                compact_outline=should_compact,
             )
             legalizer = PlacementLegalizer(
                 board_obj, legalize_config, constraints=constraints_list

@@ -29,11 +29,12 @@ PCB layout automation has historically been "black box" and "messy"—producing 
 
 ## ✨ Key Features
 
-- **🧩 Manhattan Legalizer**: Transforms "organic" force-directed placements into professional, grid-snapped, and row-aligned layouts.
-- **🧠 Intelligent Placement**: Force-directed annealing engine with a "Star Model" for stable power/ground net handling.
+- **🧩 Manhattan Legalizer**: Transforms "organic" force-directed placements into professional, grid-snapped, and row-aligned layouts using PCA axis detection and Abacus-style overlap resolution.
+- **🧠 Intelligent Placement**: Force-directed annealing engine with a **Star Model** for stable high-degree net (GND/VCC) handling and adaptive damping for oscillation control.
+- **🚀 A* Routing**: High-performance, deterministic geometric router using a **Greedy Multiplier** ($w=2-3$) and **Spatial Hash Indexing** for O(~1) collision detection.
 - **🔍 Confidence Scoring**: Automated assessment of your board's routability, signal integrity risks, and DFM compliance.
 - **💬 Natural Language Control**: "Move the USB connector to the left edge", "Align these capacitors", "Keep the crystal near the MCU".
-- **🔌 Atopile Native**: First-class support for `atopile` projects with module-aware grouping constraints.
+- **🔌 Atopile Native**: First-class support for `atopile` projects with `ato-lock.yaml` parsing and module-aware grouping.
 
 ## 🛠️ Installation
 
@@ -41,15 +42,11 @@ PCB layout automation has historically been "black box" and "messy"—producing 
 pip install atoplace
 ```
 
-Alternative (no install): run from a local clone:
-```bash
-git clone https://github.com/glovepost/atoplace
-cd atoplace
-/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 -m atoplace.cli --help
-```
+### Requirements
+- **Python 3.10+**
+- **KiCad 8.0+** (AtoPlace uses the `pcbnew` Python API)
 
-> **Note:** AtoPlace requires access to KiCad's Python API (`pcbnew`).
-> You typically need to run it using the Python interpreter bundled with KiCad:
+> **Pro Tip:** AtoPlace works best when run using the Python interpreter bundled with KiCad:
 
 **macOS:**
 ```bash
@@ -69,13 +66,19 @@ Automatically place components with "Manhattan" legalization:
 atoplace place board.kicad_pcb --grid 0.5 --constraints "USB on left edge"
 ```
 
-### 2. Validate Layout
+### 2. Route the Board
+Route all nets using the internal A* geometric planner:
+```bash
+atoplace route board.kicad_pcb --visualize
+```
+
+### 3. Validate Layout
 Check your board against DFM rules (JLCPCB, OSH Park, etc.):
 ```bash
 atoplace validate board.kicad_pcb --dfm jlcpcb_standard
 ```
 
-### 3. Interactive Mode
+### 4. Interactive Mode
 Refine your design using natural language:
 ```bash
 atoplace interactive board.kicad_pcb
@@ -84,41 +87,20 @@ atoplace interactive board.kicad_pcb
 # > "Save"
 ```
 
-## 🧠 Python API
-
-For deeper integration or custom workflows:
-
-```python
-from atoplace.board import Board
-from atoplace.placement import ForceDirectedRefiner, PlacementLegalizer
-
-# 1. Load Board
-board = Board.from_kicad("board.kicad_pcb")
-
-# 2. Physics Refinement (Global Optimization)
-refiner = ForceDirectedRefiner(board)
-refiner.refine()
-
-# 3. Legalization (Manhattan Polish)
-legalizer = PlacementLegalizer(board)
-legalizer.legalize()
-
-# 4. Save Result
-board.to_kicad("board_polished.kicad_pcb")
-```
-
 ## 🗺️ Roadmap
 
 - **Milestone A (Q1 2026): Solid Foundation** ✅
-  - [x] Manhattan Legalizer (Grid snapping & Alignment).
-  - [x] Physics Engine scaling fixes ($O(N)$ Star Model).
-  - [x] Rotated Pad geometry modeling.
-- **Milestone B (Q1-Q2 2026): Routing Assistant** 🚧
-  - [ ] Critical Path Geometric Planner (A* Dual-Grid).
+  - [x] Manhattan Legalizer (Grid snapping & PCA Alignment).
+  - [x] Physics Engine scaling (Star Model & Adaptive Damping).
+  - [x] Atopile `ato-lock.yaml` and module hierarchy integration.
+- **Milestone B (Q1-Q2 2026): Routing & Persistence** 🚧
+  - [x] **A* Geometric Planner** (Greedy Multiplier & Spatial Indexing).
+  - [ ] `atoplace.lock` Sidecar Persistence for Atopile.
   - [ ] BGA/QFN Fanout Generator.
-  - [ ] Atopile `ato-lock.yaml` persistence.
+  - [ ] Differential Pair Path Planning.
 - **Milestone C (Q2 2026): Professional Agent** 🔮
   - [ ] MCP Server for full conversational design.
+  - [ ] Deep Signal Integrity Analysis (Crosstalk/Impedance).
   - [ ] Automated Manufacturing Outputs (Gerbers/BOM/PNP).
 
 ## 📂 Architecture
@@ -129,13 +111,14 @@ atoplace/
 ├── placement/      # Force-directed physics & Manhattan Legalizer
 │   ├── force_directed.py   # Physics Engine (Star Model)
 │   ├── legalizer.py        # Manhattan Pipeline (REQ-P-03)
-│   ├── module_detector.py  # Hierarchy Analysis
-│   └── constraints.py      # Placement Constraints
+│   └── module_detector.py  # Hierarchy Analysis
+├── routing/        # A* Geometric Router
+│   ├── astar_router.py     # Core A* with Greedy Multiplier
+│   ├── spatial_index.py    # O(~1) collision detection
+│   └── obstacle_map.py     # Obstacle generation
 ├── nlp/            # Natural Language & Intent Engine
-├── routing/        # Routing integration (planned: Freerouting)
 ├── validation/     # Confidence Scorer & DFM/DRC Checker
-├── dfm/            # Fab-specific design rules
-├── mcp/            # MCP Server for Claude/LLM integration
+├── mcp/            # MCP Server (Planned)
 └── cli.py          # CLI entry point
 ```
 

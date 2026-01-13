@@ -90,6 +90,67 @@ class Pad:
 
 
 @dataclass
+class RefDesText:
+    """Represents reference designator text positioning.
+
+    Stores the position and properties of the reference designator text
+    relative to the component. This allows tracking and repositioning
+    of ref des text during placement to avoid overlaps.
+    """
+    # Position relative to component center (mm)
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+
+    # Text properties
+    rotation: float = 0.0  # Degrees, relative to component
+    size: float = 1.0  # Text height in mm
+    thickness: float = 0.15  # Stroke thickness in mm
+
+    # Visibility and layer
+    visible: bool = True
+    layer: Layer = Layer.TOP_SILK
+
+    def get_absolute_position(self, comp_x: float, comp_y: float,
+                              comp_rotation: float = 0) -> Tuple[float, float]:
+        """Get absolute text position given component position and rotation."""
+        rad = math.radians(comp_rotation)
+        cos_r, sin_r = math.cos(rad), math.sin(rad)
+        rx = self.offset_x * cos_r - self.offset_y * sin_r
+        ry = self.offset_x * sin_r + self.offset_y * cos_r
+        return (comp_x + rx, comp_y + ry)
+
+    def get_bounding_box(self, comp_x: float, comp_y: float,
+                         comp_rotation: float, text: str) -> Tuple[float, float, float, float]:
+        """Get axis-aligned bounding box for the text in absolute coordinates.
+
+        Args:
+            comp_x, comp_y: Component center position
+            comp_rotation: Component rotation in degrees
+            text: The text string (for width calculation)
+
+        Returns:
+            (min_x, min_y, max_x, max_y)
+        """
+        abs_x, abs_y = self.get_absolute_position(comp_x, comp_y, comp_rotation)
+
+        # Estimate text dimensions (approximate: width ~= 0.6 * height per char)
+        text_width = len(text) * self.size * 0.6
+        text_height = self.size
+
+        # Apply text rotation
+        total_rotation = (self.rotation + comp_rotation) % 360
+        rad = math.radians(total_rotation)
+        cos_r = abs(math.cos(rad))
+        sin_r = abs(math.sin(rad))
+
+        # AABB half-dimensions of rotated text box
+        half_w = (text_width / 2) * cos_r + (text_height / 2) * sin_r
+        half_h = (text_width / 2) * sin_r + (text_height / 2) * cos_r
+
+        return (abs_x - half_w, abs_y - half_h, abs_x + half_w, abs_y + half_h)
+
+
+@dataclass
 class Component:
     """Represents a PCB component/footprint."""
     reference: str  # e.g., "U1", "R1", "C1"
@@ -105,9 +166,18 @@ class Component:
     width: float = 0.0  # mm
     height: float = 0.0
 
+    # Origin offset from KiCad footprint origin to centroid (in local coordinates)
+    # This allows x,y to represent the centroid while preserving KiCad's origin
+    # for accurate save-back. The offset is in unrotated local coordinates.
+    origin_offset_x: float = 0.0
+    origin_offset_y: float = 0.0
+
     # Component properties
     locked: bool = False
     dnp: bool = False  # Do Not Populate
+
+    # Reference designator text positioning
+    ref_des_text: Optional[RefDesText] = None
 
     # Metadata
     properties: Dict[str, str] = field(default_factory=dict)
@@ -856,6 +926,210 @@ class Board:
                 return False
 
         return True
+
+    def reposition_ref_des_text(self, clearance: float = 0.2, pad_clearance: float = 0.15) -> int:
+        """Reposition reference designator text to avoid overlaps.
+
+        This method repositions ref des text for each component to:
+        1. Avoid overlapping with pads on the same component
+        2. Avoid overlapping with pads on nearby components
+        3. Stay within a reasonable distance from the component
+
+        The algorithm tries multiple candidate positions around the component
+        and selects the one with the least overlap with pads/other text.
+
+        Args:
+            clearance: Minimum clearance between text and component body (mm)
+            pad_clearance: Minimum clearance between text and pads (mm)
+
+        Returns:
+            Number of ref des texts that were repositioned
+        """
+        repositioned_count = 0
+
+        for comp in self.components.values():
+            if comp.dnp or not comp.ref_des_text:
+                continue
+
+            # Get current text position and bounding box
+            ref_text = comp.ref_des_text
+            current_bbox = ref_text.get_bounding_box(
+                comp.x, comp.y, comp.rotation, comp.reference
+            )
+
+            # Check if current position has conflicts
+            has_conflict = self._check_text_conflicts(
+                comp, current_bbox, pad_clearance
+            )
+
+            if not has_conflict:
+                continue
+
+            # Try candidate positions around the component
+            best_position = None
+            best_score = float('inf')
+
+            candidates = self._generate_text_candidates(comp, ref_text, clearance)
+
+            for offset_x, offset_y in candidates:
+                # Create temporary text with new position
+                test_text = RefDesText(
+                    offset_x=offset_x,
+                    offset_y=offset_y,
+                    rotation=ref_text.rotation,
+                    size=ref_text.size,
+                    thickness=ref_text.thickness,
+                    visible=ref_text.visible,
+                    layer=ref_text.layer,
+                )
+
+                test_bbox = test_text.get_bounding_box(
+                    comp.x, comp.y, comp.rotation, comp.reference
+                )
+
+                # Score this position (lower is better)
+                score = self._score_text_position(
+                    comp, test_bbox, pad_clearance, offset_x, offset_y
+                )
+
+                if score < best_score:
+                    best_score = score
+                    best_position = (offset_x, offset_y)
+
+            # Apply best position if found and better than current
+            if best_position and best_score < float('inf'):
+                ref_text.offset_x, ref_text.offset_y = best_position
+                repositioned_count += 1
+
+        return repositioned_count
+
+    def _generate_text_candidates(self, comp: Component, ref_text: RefDesText,
+                                  clearance: float) -> List[Tuple[float, float]]:
+        """Generate candidate positions for ref des text.
+
+        Returns positions around the component where text could be placed.
+        """
+        candidates = []
+        comp_hw, comp_hh = comp.width / 2, comp.height / 2
+
+        # Estimate text dimensions
+        text_width = len(comp.reference) * ref_text.size * 0.6
+        text_height = ref_text.size
+
+        # Try positions: above, below, left, right of component
+        # Above (centered horizontally)
+        candidates.append((0, -(comp_hh + text_height / 2 + clearance)))
+        # Below
+        candidates.append((0, comp_hh + text_height / 2 + clearance))
+        # Left
+        candidates.append((-(comp_hw + text_width / 2 + clearance), 0))
+        # Right
+        candidates.append((comp_hw + text_width / 2 + clearance, 0))
+
+        # Try corners
+        for x_mult in [-1, 1]:
+            for y_mult in [-1, 1]:
+                candidates.append((
+                    x_mult * (comp_hw + text_width / 2 + clearance) * 0.7,
+                    y_mult * (comp_hh + text_height / 2 + clearance) * 0.7
+                ))
+
+        # Try edge-aligned positions (for small components, text to the side)
+        # Left edge, above
+        candidates.append((-(comp_hw + text_width / 2 + clearance), -comp_hh * 0.5))
+        # Right edge, below
+        candidates.append((comp_hw + text_width / 2 + clearance, comp_hh * 0.5))
+
+        return candidates
+
+    def _check_text_conflicts(self, comp: Component, text_bbox: Tuple[float, float, float, float],
+                              pad_clearance: float) -> bool:
+        """Check if text bounding box conflicts with pads."""
+        # Check against own component pads
+        for pad in comp.pads:
+            pad_bbox = pad.get_bounding_box(comp.x, comp.y, comp.rotation)
+            # Expand pad bbox by clearance
+            pad_bbox = (
+                pad_bbox[0] - pad_clearance,
+                pad_bbox[1] - pad_clearance,
+                pad_bbox[2] + pad_clearance,
+                pad_bbox[3] + pad_clearance,
+            )
+            if self._bboxes_overlap(text_bbox, pad_bbox):
+                return True
+
+        # Check against nearby component pads
+        for other in self.components.values():
+            if other.reference == comp.reference or other.dnp:
+                continue
+            # Skip if components are far apart
+            dist = comp.distance_to(other)
+            if dist > 10.0:  # Only check nearby components
+                continue
+            for pad in other.pads:
+                pad_bbox = pad.get_bounding_box(other.x, other.y, other.rotation)
+                pad_bbox = (
+                    pad_bbox[0] - pad_clearance,
+                    pad_bbox[1] - pad_clearance,
+                    pad_bbox[2] + pad_clearance,
+                    pad_bbox[3] + pad_clearance,
+                )
+                if self._bboxes_overlap(text_bbox, pad_bbox):
+                    return True
+
+        return False
+
+    def _score_text_position(self, comp: Component,
+                             text_bbox: Tuple[float, float, float, float],
+                             pad_clearance: float, offset_x: float, offset_y: float) -> float:
+        """Score a text position (lower is better).
+
+        Considers:
+        - Pad overlap (very bad)
+        - Distance from component center (prefer closer)
+        - Out of board bounds (very bad)
+        """
+        score = 0.0
+
+        # Heavy penalty for pad overlap
+        overlap_penalty = 0.0
+        for pad in comp.pads:
+            pad_bbox = pad.get_bounding_box(comp.x, comp.y, comp.rotation)
+            if self._bboxes_overlap(text_bbox, pad_bbox):
+                overlap_penalty += 100.0
+
+        # Check nearby components' pads
+        for other in self.components.values():
+            if other.reference == comp.reference or other.dnp:
+                continue
+            dist = comp.distance_to(other)
+            if dist > 10.0:
+                continue
+            for pad in other.pads:
+                pad_bbox = pad.get_bounding_box(other.x, other.y, other.rotation)
+                if self._bboxes_overlap(text_bbox, pad_bbox):
+                    overlap_penalty += 50.0
+
+        score += overlap_penalty
+
+        # Prefer positions closer to component
+        distance = math.sqrt(offset_x ** 2 + offset_y ** 2)
+        score += distance * 2.0
+
+        # Penalty for being outside board bounds
+        if self.outline.has_outline:
+            text_center_x = (text_bbox[0] + text_bbox[2]) / 2
+            text_center_y = (text_bbox[1] + text_bbox[3]) / 2
+            if not self.outline.contains_point(text_center_x, text_center_y):
+                score += 200.0
+
+        return score
+
+    def _bboxes_overlap(self, bb1: Tuple[float, float, float, float],
+                        bb2: Tuple[float, float, float, float]) -> bool:
+        """Check if two bounding boxes overlap."""
+        return not (bb1[2] < bb2[0] or bb2[2] < bb1[0] or
+                    bb1[3] < bb2[1] or bb2[3] < bb1[1])
 
     def to_kicad(self, path: Path):
         """Save board to KiCad file."""

@@ -123,6 +123,13 @@ class EdgeConstraint(PlacementConstraint):
 
         tolerance = 1.0  # mm
 
+        # Get component bounding box to account for component size
+        bbox = comp.get_bounding_box()  # (min_x, min_y, max_x, max_y)
+        comp_left = bbox[0]
+        comp_bottom = bbox[1]
+        comp_right = bbox[2]
+        comp_top = bbox[3]
+
         # Use get_edge() which properly handles polygon outlines
         try:
             edge_coord = board.outline.get_edge(self.edge)
@@ -130,19 +137,23 @@ class EdgeConstraint(PlacementConstraint):
             return (False, float('inf'))
 
         if self.edge in ("left", "right"):
-            # For left/right edges, target is edge +/- offset
+            # For left edge: component's left side should be at offset from edge
+            # For right edge: component's right side should be at offset from edge
             if self.edge == "left":
                 target = edge_coord + self.offset
+                violation = abs(comp_left - target)
             else:
                 target = edge_coord - self.offset
-            violation = abs(comp.x - target)
+                violation = abs(comp_right - target)
         else:
-            # For top/bottom edges
+            # For top edge: component's top should be at offset from edge
+            # For bottom edge: component's bottom should be at offset from edge
             if self.edge == "top":
                 target = edge_coord + self.offset
+                violation = abs(comp_top - target)
             else:
                 target = edge_coord - self.offset
-            violation = abs(comp.y - target)
+                violation = abs(comp_bottom - target)
 
         return (violation <= tolerance, max(0, violation - tolerance))
 
@@ -155,6 +166,13 @@ class EdgeConstraint(PlacementConstraint):
         if not comp:
             return (0.0, 0.0)
 
+        # Get component bounding box to account for component size
+        bbox = comp.get_bounding_box()
+        comp_left = bbox[0]
+        comp_bottom = bbox[1]
+        comp_right = bbox[2]
+        comp_top = bbox[3]
+
         # Use get_edge() which properly handles polygon outlines
         try:
             edge_coord = board.outline.get_edge(self.edge)
@@ -165,16 +183,16 @@ class EdgeConstraint(PlacementConstraint):
 
         if self.edge == "left":
             target = edge_coord + self.offset
-            fx = strength * (target - comp.x)
+            fx = strength * (target - comp_left)
         elif self.edge == "right":
             target = edge_coord - self.offset
-            fx = strength * (target - comp.x)
+            fx = strength * (target - comp_right)
         elif self.edge == "top":
             target = edge_coord + self.offset
-            fy = strength * (target - comp.y)
+            fy = strength * (target - comp_top)
         elif self.edge == "bottom":
             target = edge_coord - self.offset
-            fy = strength * (target - comp.y)
+            fy = strength * (target - comp_bottom)
 
         return (fx, fy)
 
@@ -201,16 +219,23 @@ class ZoneConstraint(PlacementConstraint):
             if not comp:
                 continue
 
-            # Check if within zone
-            if comp.x < self.zone_x:
-                total_violation += self.zone_x - comp.x
-            elif comp.x > self.zone_x + self.zone_width:
-                total_violation += comp.x - (self.zone_x + self.zone_width)
+            # Get component bounding box to account for component size
+            bbox = comp.get_bounding_box()  # (min_x, min_y, max_x, max_y)
+            comp_left = bbox[0]
+            comp_bottom = bbox[1]
+            comp_right = bbox[2]
+            comp_top = bbox[3]
 
-            if comp.y < self.zone_y:
-                total_violation += self.zone_y - comp.y
-            elif comp.y > self.zone_y + self.zone_height:
-                total_violation += comp.y - (self.zone_y + self.zone_height)
+            # Check if entire component body is within zone
+            if comp_left < self.zone_x:
+                total_violation += self.zone_x - comp_left
+            if comp_right > self.zone_x + self.zone_width:
+                total_violation += comp_right - (self.zone_x + self.zone_width)
+
+            if comp_bottom < self.zone_y:
+                total_violation += self.zone_y - comp_bottom
+            if comp_top > self.zone_y + self.zone_height:
+                total_violation += comp_top - (self.zone_y + self.zone_height)
 
         return (total_violation == 0, total_violation)
 
@@ -223,17 +248,25 @@ class ZoneConstraint(PlacementConstraint):
         if not comp:
             return (0.0, 0.0)
 
+        # Get component bounding box to account for component size
+        bbox = comp.get_bounding_box()
+        comp_left = bbox[0]
+        comp_bottom = bbox[1]
+        comp_right = bbox[2]
+        comp_top = bbox[3]
+
         fx, fy = 0.0, 0.0
 
-        if comp.x < self.zone_x:
-            fx = strength * (self.zone_x - comp.x)
-        elif comp.x > self.zone_x + self.zone_width:
-            fx = strength * (self.zone_x + self.zone_width - comp.x)
+        # Push component into zone if any part is outside
+        if comp_left < self.zone_x:
+            fx = strength * (self.zone_x - comp_left)
+        elif comp_right > self.zone_x + self.zone_width:
+            fx = strength * (self.zone_x + self.zone_width - comp_right)
 
-        if comp.y < self.zone_y:
-            fy = strength * (self.zone_y - comp.y)
-        elif comp.y > self.zone_y + self.zone_height:
-            fy = strength * (self.zone_y + self.zone_height - comp.y)
+        if comp_bottom < self.zone_y:
+            fy = strength * (self.zone_y - comp_bottom)
+        elif comp_top > self.zone_y + self.zone_height:
+            fy = strength * (self.zone_y + self.zone_height - comp_top)
 
         return (fx, fy)
 

@@ -459,7 +459,8 @@ class ConfidenceScorer:
         for ref, comp in board.components.items():
             if comp.dnp:  # Skip Do Not Populate components
                 continue
-            bbox = comp.get_bounding_box()
+            # Use pad-inclusive bounding box to catch pads that protrude beyond body
+            bbox = comp.get_bounding_box_with_pads()
 
             # Check all 4 corners of bounding box against board outline
             corners = [

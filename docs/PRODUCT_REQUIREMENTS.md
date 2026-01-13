@@ -1,6 +1,6 @@
 # Product Requirements Document: AtoPlace (v2.0)
 
-**Date:** 2026-01-11
+**Date:** 2026-01-13
 **Status:** Living Document
 **Target Audience:** Development Team, Product Stakeholders
 
@@ -46,7 +46,7 @@ To provide Professional Electrical Engineers with an "AI Pair Designer" that aut
 
 ## 3. System Architecture
 
-AtoPlace operates as an orchestration layer over existing, proven EDA tools (KiCad, Freerouting).
+AtoPlace operates as an orchestration layer over existing, proven EDA tools (KiCad, Freerouting) with its own internal geometry engines.
 
 ```mermaid
 graph TD
@@ -54,19 +54,21 @@ graph TD
     User -->|KiCad/Atopile Files| Loader[Project Loader]
     
     subgraph "Phase 1: Intelligent Placement"
-        Loader --> Physics[Force-Directed Physics]
-        Physics -->|Raw Cloud| Legalizer[Grid Legalizer & Aligner]
-        Legalizer -->|Manhattan Layout| Valid[Validation Engine]
+        Loader --> Physics[Force-Directed Physics (Star Model)]
+        Physics -->|Raw Cloud| Quantizer[Grid Snapping]
+        Quantizer --> Beautifier[Row/Col Alignment]
+        Beautifier --> Solver[Abacus Legalization]
+        Solver -->|Manhattan Layout| Valid[Validation Engine]
     end
     
     subgraph "Phase 2: Critical Routing"
         Valid --> Fanout[BGA/QFN Fanout Generator]
-        Fanout --> CritRoute[Critical Path Router]
+        Fanout --> CritRoute[A* Geometric Planner]
     end
     
     subgraph "Phase 3: Completion"
-        CritRoute -->|Locked Critical Nets| AutoRoute[General Autorouter]
-        AutoRoute --> DFM[DFM & DRC Checker]
+        CritRoute -->|Locked Critical Nets| Fallback[Freerouting Fallback]
+        Fallback --> DFM[DFM & DRC Checker]
     end
     
     DFM -->|Final Board| Output[Output Generator]
@@ -79,65 +81,71 @@ graph TD
 
 ### 4.1. Placement Engine (The "Brain")
 *   **REQ-P-01 (Clustering):** System MUST group components by logical module (Power, Analog, Digital, RF) using schema hierarchy or netlist topology.
-*   **REQ-P-02 (Physics):** System MUST use force-directed annealing for global optimization ($O(N)$ Star Model for large nets).
-*   **REQ-P-03 (Legalization - CRITICAL):** System MUST apply a post-physics "Legalization Pass" that:
-    *   Snaps component centroids to the user grid.
-    *   Aligns adjacent same-size components (e.g., 0402 resistors) into shared-axis rows/columns.
-    *   Removes overlaps using AABB/SAT collision detection.
-*   **REQ-P-04 (Flow):** System MUST attempt to place components in logical signal flow order (e.g., Connector → ESD → PHY → MCU).
+*   **REQ-P-02 (Physics):** System MUST use force-directed annealing for global optimization ($O(N)$ **Star Model** for large nets like GND/VCC).
+    *   *Constraint:* Repulsion forces MUST use **Spatial Hashing** (O(~1)) for performance.
+*   **REQ-P-03 (Legalization - CRITICAL):** System MUST apply a 3-stage post-physics pipeline:
+    *   *Quantizer:* Snap component centroids to the user grid (0.5mm/0.1mm) and 90° rotation.
+    *   *Beautifier:* Align adjacent same-size components into shared-axis rows/columns using PCA.
+    *   *Solver:* Remove overlaps using the **Abacus** algorithm (dynamic programming) to minimize displacement.
+*   **REQ-P-04 (Flow):** System MUST attempt to place components in logical signal flow order.
 
 ### 4.2. Routing Engine (The "Nervous System")
 *   **REQ-R-01 (Fanout):** System MUST generate escape patterns (dogbone, via-in-pad) for high-density components (BGA/QFN) *before* general routing.
-*   **REQ-R-02 (Criticality):** System MUST support a "Priority Queue" for nets:
-    *   *Tier 1:* Diff-pairs, RF, Clocks (Route first, lock).
+*   **REQ-R-02 (Core Algorithm):** System MUST implement an **A* Router** with a "Greedy Multiplier" ($w=2.0-3.0$) for internal routing of Tier 1/2 nets.
+    *   *Data Structure:* Must use **Spatial Hash Index** for obstacle detection.
+    *   *Visualization:* Must include a `RouteVisualizer` (SVG/HTML) for debugging.
+*   **REQ-R-03 (Priority):** System MUST support a "Priority Queue" for nets:
+    *   *Tier 1:* Diff-pairs, RF, Clocks (Geometric Planner).
     *   *Tier 2:* Power/Ground (Route second, huge widths/planes).
-    *   *Tier 3:* General Signals (GPIO, LED).
-*   **REQ-R-03 (Completion):** System uses `Freerouting` (or similar) ONLY for Tier 3 nets, ensuring Tier 1/2 are protected.
+    *   *Tier 3:* General Signals (Fallback to Freerouting if internal router fails).
 
 ### 4.3. Validation & Physics Feedback
 *   **REQ-V-01 (Proactive Forces):** Validation rules (e.g., "Decoupling caps < 2mm") MUST be projected into the physics engine as high-strength attractive forces.
-*   **REQ-V-02 (Confidence):** System MUST emit a "Confidence Score" (0-100%) based on:
-    *   Routability estimation (congestion maps).
-    *   Signal Integrity metrics (estimated crosstalk, return path discontinuities).
-    *   DFM compliance (clearances, acid traps).
+*   **REQ-V-02 (Confidence):** System MUST emit a "Confidence Score" (0-100%) based on routability, SI metrics, and DFM compliance.
 
 ### 4.4. Integration & UX
-*   **REQ-I-01 (Atopile):** System MUST support `ato-lock.yaml` as a first-class citizen for persistent placement data.
+*   **REQ-I-01 (Persistence):** System MUST support `atoplace.lock` (sidecar pattern) to persist placement data for Atopile projects without modifying source code.
 *   **REQ-I-02 (CLI):** System MUST provide a CLI for CI/CD integration (`atoplace check board.kicad_pcb`).
-*   **REQ-I-03 (MCP):** System MUST expose an MCP Server interface for LLM agents (Claude, etc.) to perform "Human-in-the-loop" design.
+*   **REQ-I-03 (MCP):** System MUST expose an MCP Server interface for LLM agents.
+*   **REQ-I-04 (LLM Context):** System MUST implement a **Multi-Level RAG** strategy:
+    *   *Level 1:* Executive Summary (Stats, Modules).
+    *   *Level 2:* Structured Netlist (Connectivity Graph, no coords).
+    *   *Level 3:* Spatial Microscope (`focus_region` tool) for precise geometry.
 
 ---
 
 ## 5. Roadmap & Phasing
 
 ### Phase 1: The "Solid Foundation" (Current Focus)
-*   **Goal:** A tool that places components logically and legally, even if not yet routed.
+*   **Goal:** A tool that places components logically and legally (Manhattan style).
 *   **Key Deliverables:**
-    *   Fix Physics Engine (Star model, AABB collision).
-    *   Implement "Legalizer" (Grid snapping, row alignment).
-    *   Fix Atopile mapping (Instance path resolution).
+    *   Physics Engine upgrade (Star Model, Spatial Hash).
+    *   Legalization Pipeline (Quantizer, Beautifier, Abacus).
+    *   Sidecar Persistence (`atoplace.lock`).
+    *   Polygonal Outline support.
 
 ### Phase 2: The "Routing Assistant"
 *   **Goal:** A tool that can safely route a board without ruining signal integrity.
 *   **Key Deliverables:**
+    *   Routing Visualization System.
+    *   Obstacle Map Builder & Spatial Index.
+    *   A* Router (Greedy Multiplier).
     *   Fanout Generator for QFN/BGA.
-    *   Critical Net Classifier (detect USB, Power, etc.).
-    *   Partial Routing Workflow (Route critical -> Lock -> Autoroute rest).
 
 ### Phase 3: The "Professional Agent"
 *   **Goal:** An autonomous agent capable of passing a Senior Engineer's design review.
 *   **Key Deliverables:**
     *   MCP Server for full conversational design.
-    *   Deep Signal Integrity checks (Impedance calculator, Crosstalk estimator).
-    *   Automated DFM output generation (Gerbers, BOM, Pick-and-Place).
+    *   Deep Signal Integrity checks.
+    *   Automated DFM output generation.
 
 ---
 
 ## 6. Technical Constraints & Standards
 *   **Language:** Python 3.10+
-*   **Input Format:** KiCad 6/7/8+ (`.kicad_pcb`), Atopile (`.ato`, `.yaml`)
-*   **Routing Backend:** Freerouting (Java) via IPC or file exchange.
-*   **License:** MIT (Open Source Core), Potential Commercial Pro Extensions.
+*   **Input Format:** KiCad 8+ (`.kicad_pcb`), Atopile (`.ato`, `.yaml`)
+*   **Routing Backend:** Internal A* (Primary), Freerouting (Fallback).
+*   **License:** MIT (Open Source Core).
 
 ---
 

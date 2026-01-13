@@ -150,8 +150,10 @@ class PreRouteValidator:
                 is_through_hole = pad.drill is not None and pad.drill > 0
                 pad_layer = pad.layer.value if pad.layer else "F.Cu"
 
-                grid_x = int(abs_x / grid_size)
-                grid_y = int(abs_y / grid_size)
+                # Use floor() instead of int() for correct bucketing with negative coordinates
+                # int() truncates toward zero, so -0.5 -> 0, but floor(-0.5) -> -1
+                grid_x = math.floor(abs_x / grid_size)
+                grid_y = math.floor(abs_y / grid_size)
 
                 info = (ref, pad.number, abs_x, abs_y, half_w, half_h, pad_layer, is_through_hole)
 

@@ -7,6 +7,7 @@ Provides design rule checking using KiCad's DRC engine or custom checks.
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+import math
 
 from ..board.abstraction import Board
 from ..dfm.profiles import DFMProfile
@@ -59,22 +60,21 @@ class DRCChecker:
         Uses the effective clearance which is the maximum of:
         - Board's design rule default clearance (if available)
         - DFM profile minimum spacing
+        - Net-class clearance from KiCad (for nets connected to the components)
         """
         if not self.dfm_profile:
             return
 
-        # Determine effective minimum clearance
+        # Determine base minimum clearance
         # Board's design rules take precedence if they're stricter
         dfm_clearance = self.dfm_profile.min_spacing
         board_clearance = self.board.default_clearance or 0.0
-
-        min_clearance = max(dfm_clearance, board_clearance)
-        clearance_source = "board" if board_clearance > dfm_clearance else "DFM"
+        base_clearance = max(dfm_clearance, board_clearance)
 
         # Use layer-aware overlap detection with pad extents for accuracy
         # - check_layers: avoid false positives for components on opposite sides
         # - include_pads: catch overlaps where pads protrude beyond body
-        overlaps = self.board.find_overlaps(min_clearance, check_layers=True, include_pads=True)
+        overlaps = self.board.find_overlaps(base_clearance, check_layers=True, include_pads=True)
 
         for ref1, ref2, dist in overlaps:
             c1 = self.board.get_component(ref1)
@@ -85,10 +85,24 @@ class DRCChecker:
                 mid_x = (c1.x + c2.x) / 2
                 mid_y = (c1.y + c2.y) / 2
 
+                # Check for net-class clearance requirements on component pads
+                # Use the maximum clearance required by any net on these components
+                required_clearance = base_clearance
+                clearance_source = "board" if board_clearance > dfm_clearance else "DFM"
+                net_class_name = None
+
+                for pad in c1.pads + c2.pads:
+                    if pad.net and pad.net in self.board.nets:
+                        net = self.board.nets[pad.net]
+                        if net.clearance is not None and net.clearance > required_clearance:
+                            required_clearance = net.clearance
+                            clearance_source = f"net-class '{net.net_class}'"
+                            net_class_name = net.net_class
+
                 self.violations.append(DRCViolation(
                     rule="component_clearance",
                     severity="error",
-                    message=f"Clearance violation: {ref1} and {ref2} ({dist:.2f}mm < {min_clearance}mm [{clearance_source}])",
+                    message=f"Clearance violation: {ref1} and {ref2} ({dist:.2f}mm < {required_clearance}mm [{clearance_source}])",
                     location=(mid_x, mid_y),
                     items=[ref1, ref2],
                 ))
@@ -177,7 +191,8 @@ class DRCChecker:
         for ref, comp in self.board.components.items():
             if comp.dnp:  # Skip Do Not Populate components
                 continue
-            bbox = comp.get_bounding_box()
+            # Use pad-inclusive bounding box to catch pads that protrude beyond body
+            bbox = comp.get_bounding_box_with_pads()
 
             # Check all 4 corners of bounding box against board outline with margin
             corners = [
@@ -232,8 +247,10 @@ class DRCChecker:
         hole_grid: Dict[Tuple[int, int], List[int]] = {}
 
         for idx, (_, _, x, y, _) in enumerate(holes):
-            cell_x = int(x / grid_size)
-            cell_y = int(y / grid_size)
+            # Use floor() instead of int() for correct bucketing with negative coordinates
+            # int() truncates toward zero, so -0.5 -> 0, but floor(-0.5) -> -1
+            cell_x = math.floor(x / grid_size)
+            cell_y = math.floor(y / grid_size)
             # Add to current and adjacent cells
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
