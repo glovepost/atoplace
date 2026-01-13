@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="images/atoplace.png" alt="AtoPlace" width="420">
+  <img src="images/atoplace.png" alt="atoplace" width="420">
 </p>
+
+---
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
@@ -13,15 +15,13 @@
   <strong>The AI Pair Designer for Professional PCB Layout</strong>
 </p>
 
----
-
-**AtoPlace** is an intelligent orchestration layer for PCB design that bridges the gap between schematic and physical layout. It automates the tedious 80% of design—placement optimization and DFM validation—while strictly adhering to "Manhattan" aesthetics and Signal Integrity (SI) best practices.
+**atoplace** is an intelligent orchestration layer for PCB design that bridges the gap between schematic and physical layout. It automates the tedious 80% of design—placement optimization and DFM validation—while strictly adhering to "Manhattan" aesthetics and Signal Integrity (SI) best practices.
 
 Designed to work seamlessly with **[atopile](https://atopile.io)** and **[KiCad](https://kicad.org)**.
 
-## 🚀 Why AtoPlace?
+## 🚀 Why atoplace?
 
-PCB layout automation has historically been "black box" and "messy"—producing organic, unreadable layouts that professional engineers reject. AtoPlace takes a different approach:
+PCB layout automation has historically been "black box" and "messy"—producing organic, unreadable layouts that professional engineers reject. atoplace takes a different approach:
 
 *   **Human-Grade Aesthetics**: We don't just minimize wirelength. We enforce **grids**, **alignment**, and **orthogonal routing** so the result looks like *you* designed it.
 *   **Physics-First**: We model high-degree nets (GND/VCC) correctly to prevent component collapse, and prioritize critical signals (USB, RF) before general routing.
@@ -44,9 +44,9 @@ pip install atoplace
 
 ### Requirements
 - **Python 3.10+**
-- **KiCad 8.0+** (AtoPlace uses the `pcbnew` Python API)
+- **KiCad 8.0+** (atoplace uses the `pcbnew` Python API)
 
-> **Pro Tip:** AtoPlace works best when run using the Python interpreter bundled with KiCad:
+> **Pro Tip:** atoplace works best when run using the Python interpreter bundled with KiCad:
 
 **macOS:**
 ```bash
