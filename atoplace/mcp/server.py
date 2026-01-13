@@ -16,6 +16,9 @@ Tools are organized into categories:
 from pathlib import Path
 from typing import List, Optional
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -35,6 +38,7 @@ from ..api.session import Session
 from .context.micro import Microscope
 from .context.macro import MacroContext
 from .context.vision import VisionContext
+from .prompts import SYSTEM_PROMPT, FIX_OVERLAPS_PROMPT
 
 
 # Initialize FastMCP server
@@ -42,6 +46,74 @@ mcp = FastMCP("atoplace")
 
 # Session state (manages board, undo/redo, dirty tracking)
 session = Session()
+
+
+# =============================================================================
+# Response Helpers
+# =============================================================================
+
+def _error_response(message: str, code: str = "error") -> str:
+    """Standard error response format."""
+    logger.warning("Error response: code=%s message=%s", code, message)
+    return json.dumps({
+        "status": "error",
+        "code": code,
+        "message": message
+    })
+
+
+def _success_response(data: dict) -> str:
+    """Standard success response format."""
+    return json.dumps({"status": "success", **data})
+
+
+# =============================================================================
+# Validation Helpers
+# =============================================================================
+
+def _validate_ref(ref: str) -> Optional[str]:
+    """Validate component reference exists. Returns error message or None."""
+    if not ref:
+        return "Component reference cannot be empty"
+    if not session.board or ref not in session.board.components:
+        valid_refs = list(session.board.components.keys())[:5] if session.board else []
+        hint = f" Valid refs include: {valid_refs}" if valid_refs else ""
+        return f"Component '{ref}' not found.{hint}"
+    return None
+
+
+def _validate_refs(refs: List[str]) -> Optional[str]:
+    """Validate multiple component references. Returns error message or None."""
+    if not refs:
+        return "Component reference list cannot be empty"
+    missing = [r for r in refs if r not in session.board.components]
+    if missing:
+        return f"Components not found: {missing[:5]}"
+    return None
+
+
+def _validate_side(side: str) -> Optional[str]:
+    """Validate side parameter. Returns error message or None."""
+    valid = ["top", "bottom", "left", "right"]
+    if side.lower() not in valid:
+        return f"Side must be one of: {valid}. Got: '{side}'"
+    return None
+
+
+def _validate_axis(axis: str) -> Optional[str]:
+    """Validate axis parameter. Returns error message or None."""
+    valid = ["x", "y"]
+    if axis.lower() not in valid:
+        return f"Axis must be one of: {valid}. Got: '{axis}'"
+    return None
+
+
+def _validate_anchor(anchor: str) -> Optional[str]:
+    """Validate anchor parameter. Returns error message or None."""
+    valid = ["first", "last", "center"]
+    if anchor.lower() not in valid:
+        return f"Anchor must be one of: {valid}. Got: '{anchor}'"
+    return None
 
 
 def _require_board():
@@ -65,17 +137,22 @@ def load_board(path: str) -> str:
     Returns:
         Summary of loaded board
     """
+    logger.info("load_board called", extra={"path": path})
     try:
         session.load(Path(path))
         board = session.board
-        return json.dumps({
-            "status": "loaded",
+        logger.info("Board loaded successfully", extra={
+            "components": len(board.components),
+            "nets": len(board.nets)
+        })
+        return _success_response({
             "path": path,
             "components": len(board.components),
             "nets": len(board.nets),
         })
     except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
+        logger.exception("Failed to load board")
+        return _error_response(str(e), "load_failed")
 
 
 @mcp.tool()
@@ -89,30 +166,37 @@ def save_board(path: Optional[str] = None) -> str:
     Returns:
         Path where board was saved
     """
+    logger.info("save_board called", extra={"path": path})
     _require_board()
     try:
         output_path = session.save(Path(path) if path else None)
-        return json.dumps({"status": "saved", "path": str(output_path)})
+        logger.info("Board saved", extra={"output_path": str(output_path)})
+        return _success_response({"path": str(output_path)})
     except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
+        logger.exception("Failed to save board")
+        return _error_response(str(e), "save_failed")
 
 
 @mcp.tool()
 def undo() -> str:
     """Undo the last placement action."""
+    logger.debug("undo called")
     _require_board()
     if session.undo():
-        return json.dumps({"status": "undone"})
-    return json.dumps({"status": "nothing_to_undo"})
+        logger.info("Undo successful")
+        return _success_response({"action": "undone"})
+    return _success_response({"action": "nothing_to_undo"})
 
 
 @mcp.tool()
 def redo() -> str:
     """Redo the last undone action."""
+    logger.debug("redo called")
     _require_board()
     if session.redo():
-        return json.dumps({"status": "redone"})
-    return json.dumps({"status": "nothing_to_redo"})
+        logger.info("Redo successful")
+        return _success_response({"action": "redone"})
+    return _success_response({"action": "nothing_to_redo"})
 
 
 # =============================================================================
@@ -130,13 +214,22 @@ def move_component(ref: str, x: float, y: float, rotation: Optional[float] = Non
         y: Y coordinate in mm
         rotation: Optional rotation in degrees (0-360)
     """
+    logger.info("move_component called", extra={"ref": ref, "x": x, "y": y, "rotation": rotation})
     _require_board()
+
+    # Validate input
+    if err := _validate_ref(ref):
+        return _error_response(err, "invalid_ref")
+
     session.checkpoint(f"Move {ref}")
     actions = LayoutActions(session.board)
     result = actions.move_absolute(ref, x, y, rotation)
     if result.success:
         session.mark_modified(result.modified_refs)
-    return json.dumps({"success": result.success, "message": result.message})
+        logger.debug("Move successful", extra={"modified": result.modified_refs})
+    else:
+        logger.warning("Move failed", extra={"reason": result.message})
+    return _success_response({"success": result.success, "message": result.message})
 
 
 @mcp.tool()
@@ -157,13 +250,28 @@ def place_next_to(
         clearance: Gap between components in mm
         align: Alignment ("center", "top", "bottom", "left", "right")
     """
+    logger.info("place_next_to called", extra={
+        "ref": ref, "target": target, "side": side, "clearance": clearance, "align": align
+    })
     _require_board()
+
+    # Validate inputs
+    if err := _validate_ref(ref):
+        return _error_response(err, "invalid_ref")
+    if err := _validate_ref(target):
+        return _error_response(err, "invalid_target")
+    if err := _validate_side(side):
+        return _error_response(err, "invalid_side")
+
     session.checkpoint(f"Place {ref} next to {target}")
     actions = LayoutActions(session.board)
     result = actions.place_next_to(ref, target, side, clearance, align)
     if result.success:
         session.mark_modified(result.modified_refs)
-    return json.dumps({"success": result.success, "message": result.message})
+        logger.debug("Place next to successful")
+    else:
+        logger.warning("Place next to failed", extra={"reason": result.message})
+    return _success_response({"success": result.success, "message": result.message})
 
 
 @mcp.tool()
@@ -176,13 +284,94 @@ def align_components(refs: List[str], axis: str = "x", anchor: str = "first") ->
         axis: Alignment axis ("x" for row, "y" for column)
         anchor: Reference point ("first", "last", "center")
     """
+    logger.info("align_components called", extra={"refs": refs, "axis": axis, "anchor": anchor})
     _require_board()
+
+    # Validate inputs
+    if err := _validate_refs(refs):
+        return _error_response(err, "invalid_refs")
+    if err := _validate_axis(axis):
+        return _error_response(err, "invalid_axis")
+    if err := _validate_anchor(anchor):
+        return _error_response(err, "invalid_anchor")
+
     session.checkpoint(f"Align {len(refs)} components")
     actions = LayoutActions(session.board)
     result = actions.align_components(refs, axis, anchor)
     if result.success:
         session.mark_modified(result.modified_refs)
-    return json.dumps({"success": result.success, "message": result.message})
+        logger.debug("Align successful")
+    else:
+        logger.warning("Align failed", extra={"reason": result.message})
+    return _success_response({"success": result.success, "message": result.message})
+
+
+@mcp.tool()
+def distribute_evenly(
+    refs: List[str],
+    start_ref: Optional[str] = None,
+    end_ref: Optional[str] = None,
+    axis: str = "auto"
+) -> str:
+    """
+    Distribute components evenly between two points or outer extremes.
+
+    Args:
+        refs: List of components to distribute
+        start_ref: Component to anchor start (optional)
+        end_ref: Component to anchor end (optional)
+        axis: "x", "y", or "auto"
+    """
+    logger.info("distribute_evenly called", extra={"refs": refs})
+    _require_board()
+
+    if err := _validate_refs(refs):
+        return _error_response(err, "invalid_refs")
+
+    session.checkpoint(f"Distribute {len(refs)} components")
+    actions = LayoutActions(session.board)
+    result = actions.distribute_evenly(refs, start_ref, end_ref, axis)
+    
+    if result.success:
+        session.mark_modified(result.modified_refs)
+    else:
+        logger.warning("Distribute failed", extra={"reason": result.message})
+        
+    return _success_response({"success": result.success, "message": result.message})
+
+
+@mcp.tool()
+def stack_components(
+    refs: List[str],
+    direction: str = "down",
+    spacing: float = 0.5,
+    alignment: str = "center"
+) -> str:
+    """
+    Stack components sequentially in a direction.
+
+    Args:
+        refs: List of components to stack
+        direction: "up", "down", "left", "right"
+        spacing: Gap between components
+        alignment: "center", "left", "right", "top", "bottom"
+    """
+    logger.info("stack_components called", extra={"refs": refs, "dir": direction})
+    _require_board()
+
+    if err := _validate_refs(refs):
+        return _error_response(err, "invalid_refs")
+
+    session.checkpoint(f"Stack {len(refs)} components")
+    actions = LayoutActions(session.board)
+    result = actions.stack_components(refs, direction, spacing, alignment)
+    
+    if result.success:
+        session.mark_modified(result.modified_refs)
+    else:
+        logger.warning("Stack failed", extra={"reason": result.message})
+        
+    return _success_response({"success": result.success, "message": result.message})
 
 
 @mcp.tool()
@@ -194,15 +383,21 @@ def swap_positions(ref1: str, ref2: str) -> str:
         ref1: First component reference
         ref2: Second component reference
     """
+    logger.info("swap_positions called", extra={"ref1": ref1, "ref2": ref2})
     _require_board()
+
+    # Validate inputs
+    if err := _validate_ref(ref1):
+        return _error_response(err, "invalid_ref1")
+    if err := _validate_ref(ref2):
+        return _error_response(err, "invalid_ref2")
+
     c1 = session.board.components.get(ref1)
     c2 = session.board.components.get(ref2)
 
-    if not c1 or not c2:
-        return json.dumps({"success": False, "message": "Component not found"})
-
     if c1.locked or c2.locked:
-        return json.dumps({"success": False, "message": "Cannot swap locked components"})
+        locked = [r for r, c in [(ref1, c1), (ref2, c2)] if c.locked]
+        return _error_response(f"Cannot swap locked components: {locked}", "locked_component")
 
     session.checkpoint(f"Swap {ref1} and {ref2}")
 
@@ -211,7 +406,147 @@ def swap_positions(ref1: str, ref2: str) -> str:
     c1.y, c2.y = c2.y, c1.y
 
     session.mark_modified([ref1, ref2])
-    return json.dumps({"success": True, "message": f"Swapped {ref1} and {ref2}"})
+    logger.debug("Swap successful")
+    return _success_response({"success": True, "message": f"Swapped {ref1} and {ref2}"})
+
+
+@mcp.tool()
+def group_components(refs: List[str], group_name: str) -> str:
+    """
+    Group components logically.
+
+    Args:
+        refs: List of components
+        group_name: Name of the group
+    """
+    logger.info("group_components called", extra={"group": group_name})
+    _require_board()
+    
+    if err := _validate_refs(refs):
+        return _error_response(err, "invalid_refs")
+        
+    actions = LayoutActions(session.board)
+    result = actions.group_components(refs, group_name)
+    return _success_response({"success": result.success, "message": result.message})
+
+
+@mcp.tool()
+def lock_components(refs: List[str], locked: bool = True) -> str:
+    """
+    Lock or unlock components to prevent accidental movement.
+
+    Args:
+        refs: List of components
+        locked: True to lock, False to unlock
+    """
+    logger.info("lock_components called", extra={"locked": locked})
+    _require_board()
+    
+    if err := _validate_refs(refs):
+        return _error_response(err, "invalid_refs")
+        
+    actions = LayoutActions(session.board)
+    result = actions.lock_components(refs, locked)
+    return _success_response({"success": result.success, "message": result.message})
+
+
+@mcp.tool()
+def arrange_pattern(
+    refs: List[str],
+    pattern: str = "grid",
+    spacing: float = 2.0,
+    cols: Optional[int] = None,
+    radius: Optional[float] = None,
+    center_x: Optional[float] = None,
+    center_y: Optional[float] = None,
+) -> str:
+    """
+    Arrange components in a pattern (grid, row, column, or circular).
+
+    Args:
+        refs: List of component references to arrange
+        pattern: Pattern type ("grid", "row", "column", "circular")
+        spacing: Spacing between components in mm
+        cols: Number of columns for grid (auto-calculated if not specified)
+        radius: Radius for circular pattern (auto-calculated if not specified)
+        center_x: X center for arrangement (uses centroid if not specified)
+        center_y: Y center for arrangement (uses centroid if not specified)
+    """
+    logger.info("arrange_pattern called", extra={
+        "refs": refs, "pattern": pattern, "spacing": spacing
+    })
+    _require_board()
+
+    # Validate inputs
+    if err := _validate_refs(refs):
+        return _error_response(err, "invalid_refs")
+
+    valid_patterns = ["grid", "row", "column", "circular"]
+    if pattern not in valid_patterns:
+        return _error_response(f"Pattern must be one of: {valid_patterns}", "invalid_pattern")
+
+    center = None
+    if center_x is not None and center_y is not None:
+        center = (center_x, center_y)
+
+    session.checkpoint(f"Arrange {len(refs)} in {pattern}")
+    actions = LayoutActions(session.board)
+    result = actions.arrange_pattern(refs, pattern, spacing, cols, radius, center)
+
+    if result.success:
+        session.mark_modified(result.modified_refs)
+        logger.debug("Arrange pattern successful", extra={"modified": len(result.modified_refs)})
+    else:
+        logger.warning("Arrange pattern failed", extra={"reason": result.message})
+
+    return _success_response({"success": result.success, "message": result.message})
+
+
+@mcp.tool()
+def cluster_around(
+    anchor_ref: str,
+    target_refs: List[str],
+    side: str = "nearest",
+    clearance: float = 0.5,
+) -> str:
+    """
+    Cluster components around an anchor on a specified side.
+
+    Useful for grouping decoupling capacitors near an IC or
+    organizing passives around a central component.
+
+    Args:
+        anchor_ref: Reference component to cluster around
+        target_refs: List of components to cluster
+        side: Side to cluster on ("top", "bottom", "left", "right", "nearest")
+        clearance: Gap between anchor and clustered components in mm
+    """
+    logger.info("cluster_around called", extra={
+        "anchor": anchor_ref, "targets": target_refs, "side": side
+    })
+    _require_board()
+
+    # Validate inputs
+    if err := _validate_ref(anchor_ref):
+        return _error_response(err, "invalid_anchor")
+    if err := _validate_refs(target_refs):
+        return _error_response(err, "invalid_targets")
+
+    valid_sides = ["top", "bottom", "left", "right", "nearest"]
+    if side not in valid_sides:
+        return _error_response(f"Side must be one of: {valid_sides}", "invalid_side")
+
+    session.checkpoint(f"Cluster around {anchor_ref}")
+    actions = LayoutActions(session.board)
+    result = actions.cluster_around(anchor_ref, target_refs, side, clearance)
+
+    if result.success:
+        session.mark_modified(result.modified_refs)
+        logger.debug("Cluster around successful", extra={"modified": len(result.modified_refs)})
+    else:
+        logger.warning("Cluster around failed", extra={"reason": result.message})
+
+    return _success_response({"success": result.success, "message": result.message})
 
 
 # =============================================================================
@@ -230,7 +565,13 @@ def find_components(query: str, filter_by: str = "ref") -> str:
     Returns:
         List of matching components with their locations
     """
+    logger.info("find_components called", extra={"query": query, "filter_by": filter_by})
     _require_board()
+
+    valid_filters = ["ref", "value", "footprint"]
+    if filter_by not in valid_filters:
+        return _error_response(f"filter_by must be one of: {valid_filters}", "invalid_filter")
+
     matches = []
     query_lower = query.lower()
 
@@ -254,7 +595,8 @@ def find_components(query: str, filter_by: str = "ref") -> str:
                 "locked": comp.locked,
             })
 
-    return json.dumps({"count": len(matches), "components": matches[:50]})
+    logger.debug("find_components result", extra={"count": len(matches)})
+    return _success_response({"count": len(matches), "components": matches[:50]})
 
 
 @mcp.tool()
@@ -265,11 +607,12 @@ def get_board_bounds() -> str:
     Returns:
         Board bounding box and dimensions
     """
+    logger.debug("get_board_bounds called")
     _require_board()
     macro = MacroContext(session.board)
     summary = macro.get_summary()
 
-    return json.dumps({
+    return _success_response({
         "width": round(summary.board_width, 2),
         "height": round(summary.board_height, 2),
         "component_count": summary.component_count,
@@ -285,6 +628,7 @@ def get_unplaced_components() -> str:
     Returns:
         List of unplaced component references
     """
+    logger.debug("get_unplaced_components called")
     _require_board()
     macro = MacroContext(session.board)
     summary = macro.get_summary()
@@ -296,7 +640,7 @@ def get_unplaced_components() -> str:
         if abs(comp.x) > 500 or abs(comp.y) > 500:
             unplaced.append(ref)
 
-    return json.dumps({
+    return _success_response({
         "count": len(unplaced),
         "refs": unplaced[:100],
         "estimated_unplaced": summary.unplaced_count,
@@ -318,11 +662,14 @@ def get_connected_components(ref: str) -> str:
     Returns:
         Dictionary of net names to connected component lists
     """
+    logger.info("get_connected_components called", extra={"ref": ref})
     _require_board()
-    comp = session.board.components.get(ref)
-    if not comp:
-        return json.dumps({"error": f"Component {ref} not found"})
 
+    # Validate input
+    if err := _validate_ref(ref):
+        return _error_response(err, "invalid_ref")
+
+    comp = session.board.components.get(ref)
     connections = {}
 
     for pad in comp.pads:
@@ -334,15 +681,16 @@ def get_connected_components(ref: str) -> str:
             continue
 
         connected_refs = []
-        for net_pad in net.pads:
-            if net_pad.component_ref and net_pad.component_ref != ref:
-                if net_pad.component_ref not in connected_refs:
-                    connected_refs.append(net_pad.component_ref)
+        for comp_ref, _ in net.connections:
+            if comp_ref and comp_ref != ref:
+                if comp_ref not in connected_refs:
+                    connected_refs.append(comp_ref)
 
         if connected_refs:
             connections[pad.net] = connected_refs
 
-    return json.dumps({"ref": ref, "connections": connections})
+    logger.debug("get_connected_components result", extra={"net_count": len(connections)})
+    return _success_response({"ref": ref, "connections": connections})
 
 
 @mcp.tool()
@@ -353,6 +701,7 @@ def get_critical_nets() -> str:
     Returns:
         List of critical nets with their properties
     """
+    logger.debug("get_critical_nets called")
     _require_board()
     macro = MacroContext(session.board)
     summary = macro.get_summary()
@@ -377,7 +726,7 @@ def get_critical_nets() -> str:
                 "priority": "medium"
             })
 
-    return json.dumps({"critical_nets": critical})
+    return _success_response({"critical_nets": critical})
 
 
 # =============================================================================
@@ -385,21 +734,38 @@ def get_critical_nets() -> str:
 # =============================================================================
 
 @mcp.tool()
-def inspect_region(refs: List[str], padding: float = 5.0) -> str:
+def inspect_region(refs: List[str], padding: float = 5.0, include_image: bool = False) -> str:
     """
     Get detailed geometric data for a set of components.
 
     Args:
         refs: List of component references to inspect
         padding: Padding around the region in mm
+        include_image: If True, includes SVG visualization in response
 
     Returns:
         Detailed JSON with positions, bounding boxes, and gap analysis
     """
+    logger.info("inspect_region called", extra={"refs": refs, "padding": padding})
     _require_board()
+
+    # Validate refs (allow partial matches for inspection)
+    if refs:
+        missing = [r for r in refs if r not in session.board.components]
+        if missing:
+            logger.warning("Some refs not found", extra={"missing": missing})
+
     microscope = Microscope(session.board)
     data = microscope.inspect_region(refs, padding)
-    return data.to_json()
+    result = json.loads(data.to_json())
+    
+    if include_image:
+        vision = VisionContext(session.board)
+        # Use existing render logic but keep it minimal
+        image = vision.render_region(refs, show_dimensions=True)
+        result["image_svg"] = image.svg_content
+        
+    return json.dumps(result)
 
 
 @mcp.tool()
@@ -410,6 +776,7 @@ def get_board_summary() -> str:
     Returns:
         High-level board statistics and critical issues
     """
+    logger.debug("get_board_summary called")
     _require_board()
     macro = MacroContext(session.board)
     return macro.get_summary().to_json()
@@ -423,6 +790,7 @@ def get_semantic_grid() -> str:
     Returns:
         Mapping of zones to component lists
     """
+    logger.debug("get_semantic_grid called")
     _require_board()
     macro = MacroContext(session.board)
     return macro.get_semantic_grid().to_json()
@@ -436,6 +804,7 @@ def get_module_map() -> str:
     Returns:
         Tree structure of functional modules
     """
+    logger.debug("get_module_map called")
     _require_board()
     macro = MacroContext(session.board)
     return macro.get_module_map().to_json()
@@ -453,10 +822,11 @@ def render_region(refs: List[str], show_dimensions: bool = True) -> str:
     Returns:
         SVG content as string
     """
+    logger.info("render_region called", extra={"refs": refs, "show_dimensions": show_dimensions})
     _require_board()
     vision = VisionContext(session.board)
     image = vision.render_region(refs, show_dimensions=show_dimensions)
-    return json.dumps({
+    return _success_response({
         "svg": image.svg_content,
         "component_count": image.component_count,
         "annotations": image.annotations,
@@ -478,6 +848,7 @@ def check_overlaps(refs: Optional[List[str]] = None) -> str:
     Returns:
         List of overlapping pairs with overlap amount
     """
+    logger.info("check_overlaps called", extra={"refs": refs})
     _require_board()
 
     components = []
@@ -507,7 +878,8 @@ def check_overlaps(refs: Optional[List[str]] = None) -> str:
                     "overlap_y": round(overlap_y, 3),
                 })
 
-    return json.dumps({
+    logger.debug("check_overlaps result", extra={"overlap_count": len(overlaps)})
+    return _success_response({
         "overlap_count": len(overlaps),
         "overlaps": overlaps[:20],  # Limit output
     })
@@ -521,13 +893,14 @@ def validate_placement() -> str:
     Returns:
         Validation report with issues and recommendations
     """
+    logger.info("validate_placement called")
     _require_board()
 
     issues = []
 
     # Check overlaps
     overlap_result = json.loads(check_overlaps())
-    if overlap_result["overlap_count"] > 0:
+    if overlap_result.get("overlap_count", 0) > 0:
         issues.append({
             "severity": "error",
             "type": "overlap",
@@ -552,8 +925,12 @@ def validate_placement() -> str:
             "message": issue,
         })
 
-    return json.dumps({
-        "valid": len([i for i in issues if i["severity"] == "error"]) == 0,
+    error_count = len([i for i in issues if i["severity"] == "error"])
+    is_valid = error_count == 0
+    logger.info("validate_placement result", extra={"valid": is_valid, "issue_count": len(issues)})
+
+    return _success_response({
+        "valid": is_valid,
         "issue_count": len(issues),
         "issues": issues,
     })
@@ -567,7 +944,7 @@ def validate_placement() -> str:
 def board_summary_resource() -> str:
     """Board summary as a resource."""
     if not session.is_loaded:
-        return json.dumps({"error": "No board loaded"})
+        return _error_response("No board loaded", "no_board")
     return get_board_summary()
 
 
@@ -575,8 +952,68 @@ def board_summary_resource() -> str:
 def board_modules_resource() -> str:
     """Module map as a resource."""
     if not session.is_loaded:
-        return json.dumps({"error": "No board loaded"})
+        return _error_response("No board loaded", "no_board")
     return get_module_map()
+
+
+@mcp.resource("board://components")
+def board_components_resource() -> str:
+    """List of all components as a resource."""
+    if not session.is_loaded:
+        return _error_response("No board loaded", "no_board")
+
+    components = []
+    for ref, comp in session.board.components.items():
+        components.append({
+            "ref": ref,
+            "value": comp.value,
+            "footprint": comp.footprint,
+            "x": round(comp.x, 2),
+            "y": round(comp.y, 2),
+            "rotation": comp.rotation,
+            "locked": comp.locked,
+        })
+
+    return _success_response({"component_count": len(components), "components": components})
+
+
+@mcp.resource("board://nets")
+def board_nets_resource() -> str:
+    """Net connectivity as a resource."""
+    if not session.is_loaded:
+        return _error_response("No board loaded", "no_board")
+
+    nets = []
+    for name, net in session.board.nets.items():
+        nets.append({
+            "name": name,
+            "code": net.code,
+            "connection_count": len(net.connections),
+            "is_power": net.is_power,
+            "is_ground": net.is_ground,
+            "components": list(net.get_component_refs())[:20],  # Limit for readability
+        })
+
+    return _success_response({"net_count": len(nets), "nets": nets})
+
+
+@mcp.resource("board://session")
+def board_session_resource() -> str:
+    """Current session state as a resource."""
+    stats = session.get_stats()
+    return _success_response(stats)
+
+
+@mcp.resource("prompts://system")
+def system_prompt_resource() -> str:
+    """The system prompt for LLM context."""
+    return SYSTEM_PROMPT
+
+
+@mcp.resource("prompts://fix_overlaps")
+def fix_overlaps_prompt_resource() -> str:
+    """Prompt for overlap resolution."""
+    return FIX_OVERLAPS_PROMPT
 
 
 # =============================================================================

@@ -277,24 +277,27 @@ class VisionContext:
                     continue
 
                 # Find other pads on same net within our component set
-                for other_pad in net.pads:
-                    if (other_pad.component_ref and
-                        other_pad.component_ref != comp.reference and
-                        other_pad.component_ref in comp_refs):
+                for other_comp_ref, other_pad_num in net.connections:
+                    if (other_comp_ref and
+                        other_comp_ref != comp.reference and
+                        other_comp_ref in comp_refs):
 
-                        other_comp = self.board.components.get(other_pad.component_ref)
+                        other_comp = self.board.components.get(other_comp_ref)
                         if other_comp:
-                            x1 = tx(comp.x + pad.x)
-                            y1 = ty(comp.y + pad.y)
-                            x2 = tx(other_comp.x + other_pad.x)
-                            y2 = ty(other_comp.y + other_pad.y)
+                            # Find the pad on the other component
+                            other_pad = other_comp.get_pad_by_number(other_pad_num)
+                            if other_pad:
+                                x1 = tx(comp.x + pad.x)
+                                y1 = ty(comp.y + pad.y)
+                                x2 = tx(other_comp.x + other_pad.x)
+                                y2 = ty(other_comp.y + other_pad.y)
 
-                            svg_parts.append(
-                                f'<line x1="{x1}" y1="{y1}" '
-                                f'x2="{x2}" y2="{y2}" '
-                                f'stroke="{self.COLORS["ratsnest"]}" '
-                                f'stroke-width="0.5" opacity="0.5"/>'
-                            )
+                                svg_parts.append(
+                                    f'<line x1="{x1}" y1="{y1}" '
+                                    f'x2="{x2}" y2="{y2}" '
+                                    f'stroke="{self.COLORS["ratsnest"]}" '
+                                    f'stroke-width="0.5" opacity="0.5"/>'
+                                )
 
     def _render_dimensions(self, svg_parts: List[str], components: List[Component],
                            tx, ty, ts, annotations: List[str]):

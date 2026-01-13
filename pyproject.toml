@@ -45,6 +45,7 @@ dev = [
 
 [project.scripts]
 atoplace = "atoplace.cli:main"
+atoplace-mcp = "atoplace.mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/atoplace/atoplace"

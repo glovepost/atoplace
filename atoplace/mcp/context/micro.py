@@ -12,6 +12,41 @@ import math
 
 from ...board.abstraction import Board, Component
 
+
+# Component type inference from reference designator
+COMPONENT_TYPE_MAP = {
+    "U": "IC",
+    "IC": "IC",
+    "R": "Resistor",
+    "C": "Capacitor",
+    "L": "Inductor",
+    "D": "Diode",
+    "Q": "Transistor",
+    "J": "Connector",
+    "P": "Connector",
+    "SW": "Switch",
+    "LED": "LED",
+    "F": "Fuse",
+    "Y": "Crystal",
+    "X": "Crystal",
+    "FB": "Ferrite",
+    "T": "Transformer",
+    "K": "Relay",
+    "TP": "TestPoint",
+    "H": "MountingHole",
+}
+
+
+def _infer_component_type(ref: str) -> str:
+    """Infer component type from reference designator prefix."""
+    ref_upper = ref.upper()
+    # Try longest prefixes first (e.g., "LED" before "L")
+    for prefix in sorted(COMPONENT_TYPE_MAP.keys(), key=len, reverse=True):
+        if ref_upper.startswith(prefix):
+            return COMPONENT_TYPE_MAP[prefix]
+    return "Component"
+
+
 @dataclass
 class Viewport:
     center: Tuple[float, float]
@@ -81,7 +116,7 @@ class Microscope:
             # Create object view
             obj = ObjectView(
                 ref=comp.reference,
-                type="Component", # TODO: Infer type (IC, R, C)
+                type=_infer_component_type(comp.reference),
                 layer=str(comp.layer),
                 location=(comp.x, comp.y),
                 rotation=comp.rotation,

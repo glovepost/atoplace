@@ -1171,6 +1171,74 @@ def report(
     raise typer.Exit(code=0 if drc_passed and can_proceed and confidence_ok else 1)
 
 
+@app.command("mcp")
+def mcp_serve(
+    ctx: typer.Context,
+    transport: str = typer.Option(
+        "stdio",
+        "--transport",
+        "-t",
+        help="Transport mode: 'stdio' (default) or 'sse' for HTTP.",
+    ),
+    log_level: str = typer.Option(
+        "INFO",
+        "--log-level",
+        "-l",
+        help="Log level for MCP server (DEBUG, INFO, WARNING, ERROR).",
+    ),
+):
+    """Start the MCP server for LLM agent integration.
+
+    The MCP (Model Context Protocol) server exposes AtoPlace tools to LLM agents
+    like Claude. Tools include board management, placement actions, discovery,
+    topology analysis, context generation, and validation.
+
+    Examples:
+        atoplace mcp                    # Start with stdio transport
+        atoplace mcp --log-level DEBUG  # Enable debug logging
+    """
+    import logging as mcp_logging
+
+    context = _get_context(ctx)
+    console = context.console
+
+    # Configure MCP-specific logging
+    mcp_logger = mcp_logging.getLogger("atoplace.mcp")
+    mcp_logger.setLevel(getattr(mcp_logging, log_level.upper(), mcp_logging.INFO))
+
+    console.print(
+        Panel(
+            f"Starting MCP server (transport={transport}, log_level={log_level})",
+            border_style="cyan",
+        )
+    )
+
+    try:
+        from .mcp.server import mcp, MCP_AVAILABLE
+
+        if not MCP_AVAILABLE:
+            console.print(
+                Panel(
+                    "[red]MCP package not installed[/red]\n\n"
+                    "Install with: pip install mcp",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(code=1)
+
+        # Run the MCP server
+        mcp.run()
+
+    except ImportError as e:
+        console.print(
+            Panel(
+                f"[red]Failed to import MCP server[/red]: {e}",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def interactive(
     ctx: typer.Context,

@@ -136,8 +136,8 @@ class MacroContext:
         high_fanout = []
 
         for net_name, net in self.board.nets.items():
-            pad_count = len(net.pads)
-            components = list(set(p.component_ref for p in net.pads if p.component_ref))
+            pad_count = len(net.connections)
+            components = list(set(comp_ref for comp_ref, _ in net.connections if comp_ref))
 
             name_lower = net_name.lower()
             is_power = any(p in name_lower for p in ['vcc', 'vdd', '3v3', '5v', '12v', 'vin'])
@@ -378,9 +378,9 @@ class MacroContext:
         for pad in comp.pads:
             if pad.net and pad.net in self.board.nets:
                 net = self.board.nets[pad.net]
-                for net_pad in net.pads:
-                    if net_pad.component_ref and net_pad.component_ref != ref:
-                        connected.add(net_pad.component_ref)
+                for comp_ref, _ in net.connections:
+                    if comp_ref and comp_ref != ref:
+                        connected.add(comp_ref)
 
         return list(connected)
 
