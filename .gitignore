@@ -55,3 +55,12 @@ Thumbs.db
 # Project specific
 *.kicad_pcb.placed.*
 *.backup
+
+# Local development docs (not for repo)
+SCRATCHPAD.md
+CLAUDE.md
+AGENTS.md
+ISSUES.md
+logs/
+placement_debug/
+route_debug/
