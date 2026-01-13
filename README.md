@@ -19,6 +19,10 @@
 
 Designed to work seamlessly with **[atopile](https://atopile.io)** and **[KiCad](https://kicad.org)**.
 
+<p align="center">
+  <img src="images/placement_demo.gif" alt="atoplace placement visualization" width="720">
+</p>
+
 ## 🚀 Why atoplace?
 
 PCB layout automation has historically been "black box" and "messy"—producing organic, unreadable layouts that professional engineers reject. atoplace takes a different approach:
