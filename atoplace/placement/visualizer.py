@@ -400,7 +400,8 @@ class PlacementVisualizer:
                 svg_parts.append(
                     f'<rect x="{tx(bbox[0])}" y="{ty(bbox[3])}" '
                     f'width="{ts(bbox[2]-bbox[0])}" height="{ts(bbox[3]-bbox[1])}" '
-                    f'fill="#16213e" stroke="#0f3460" stroke-width="2"/>'
+                    f'fill="#16213e" stroke="#0f3460" stroke-width="2" '
+                    f'class="board-outline"/>'
                 )
 
         # Render grid
@@ -474,7 +475,7 @@ class PlacementVisualizer:
                     f'width="{ts(group_max_x - group_min_x)}" height="{ts(group_max_y - group_min_y)}" '
                     f'fill="{color}" fill-opacity="0.15" '
                     f'stroke="{color}" stroke-width="1.5" stroke-dasharray="4,2" '
-                    f'class="module-group"/>'
+                    f'class="module-group module-{module_type.replace("_", "-")}"/>'
                 )
 
                 # Draw group label
@@ -484,7 +485,7 @@ class PlacementVisualizer:
                     f'<text x="{label_x}" y="{label_y}" '
                     f'font-family="monospace" font-size="10" font-weight="bold" '
                     f'fill="{color}" text-anchor="middle" '
-                    f'class="module-group group-label">'
+                    f'class="module-group group-label module-{module_type.replace("_", "-")}">'
                     f'{module_type}</text>'
                 )
 
@@ -514,24 +515,8 @@ class PlacementVisualizer:
                     f'class="ratsnest"/>'
                 )
 
-        # Render movement trails (show where components moved from)
-        for ref, (dx, dy, dist) in frame.movement.items():
-            if ref in frame.components and dist > 0.5:  # Only show significant moves
-                x, y = frame.components[ref][:2]
-                # Draw line from initial to current position
-                ix, iy = x - dx, y - dy
-                # Color intensity based on distance
-                opacity = min(0.8, 0.2 + dist / 10)
-                svg_parts.append(
-                    f'<line x1="{tx(ix)}" y1="{ty(iy)}" x2="{tx(x)}" y2="{ty(y)}" '
-                    f'stroke="#ff6b6b" stroke-width="1" opacity="{opacity}" '
-                    f'stroke-dasharray="3,2" class="movement-trail"/>'
-                )
-                # Small circle at initial position (also has movement-trail class for hiding)
-                svg_parts.append(
-                    f'<circle cx="{tx(ix)}" cy="{ty(iy)}" r="2" '
-                    f'fill="#ff6b6b" opacity="{opacity * 0.5}" class="movement-trail"/>'
-                )
+        # Movement trails are now rendered dynamically in JavaScript
+        # to show breadcrumb paths across frames (see drawTrails function)
 
         # Render components
         for ref, (x, y, rotation, w, h) in frame.components.items():
@@ -555,9 +540,10 @@ class PlacementVisualizer:
             cx, cy = tx(x), ty(y)
             hw, hh = ts(w/2), ts(h/2)
 
-            # Apply rotation transform with layer class
+            # Apply rotation transform with layer class and module type
+            module_class = f"module-{module_type.replace('_', '-')}" if module_type else "module-default"
             svg_parts.append(
-                f'<g class="{layer_class}" transform="rotate({-rotation} {cx} {cy})">'
+                f'<g class="{layer_class} {module_class}" transform="rotate({-rotation} {cx} {cy})">'
             )
 
             # Component body
@@ -597,7 +583,7 @@ class PlacementVisualizer:
                 f'<text x="{label_x}" y="{label_y}" '
                 f'font-family="monospace" font-size="{font_size}" '
                 f'fill="#dddddd" text-anchor="{anchor}" dominant-baseline="middle" '
-                f'class="ref-label {layer_class}">'
+                f'class="ref-label {layer_class} {module_class}">'
                 f'{ref}</text>'
             )
 
@@ -609,13 +595,17 @@ class PlacementVisualizer:
             comp_data = frame.components[ref]
             rotation = comp_data[2]
 
+            # Get module type for this component
+            pad_module_type = frame.modules.get(ref, "default")
+            pad_module_class = f"module-{pad_module_type.replace('_', '-')}" if pad_module_type else "module-default"
+
             # Determine layer class for this component's pads
-            pad_layer_class = "comp-top pad-element"  # Default to top
+            pad_layer_class = f"comp-top pad-element {pad_module_class}"  # Default to top
             if self.board and ref in self.board.components:
                 comp_obj = self.board.components[ref]
                 from ..board.abstraction import Layer
                 if comp_obj.layer == Layer.BOTTOM_COPPER:
-                    pad_layer_class = "comp-bottom pad-element"
+                    pad_layer_class = f"comp-bottom pad-element {pad_module_class}"
 
             for px, py, pw, ph, net in pad_list:
                 pcx, pcy = tx(px), ty(py)
@@ -697,43 +687,30 @@ class PlacementVisualizer:
         </defs>
         ''')
 
-        # Stats overlay
-        stats_y = 20
-        svg_parts.append(
-            f'<text x="10" y="{stats_y}" font-family="monospace" font-size="14" fill="#ffffff">'
-            f'{frame.label} ({frame.phase})</text>'
-        )
-        stats_y += 16
-        svg_parts.append(
-            f'<text x="10" y="{stats_y}" font-family="monospace" font-size="11" fill="#aaaaaa">'
-            f'Iter: {frame.iteration} | Energy: {frame.energy:.1f} | '
-            f'Overlaps: {frame.overlap_count}</text>'
-        )
-        stats_y += 14
-        svg_parts.append(
-            f'<text x="10" y="{stats_y}" font-family="monospace" font-size="11" fill="#aaaaaa">'
-            f'Wire Length: {frame.total_wire_length:.1f}mm | Max Move: {frame.max_move:.3f}mm</text>'
-        )
+        # Board name and dimensions label at bottom-left of board outline
+        if self.board:
+            board_name = self.board.name or (self.board.source_file.stem if self.board.source_file else "Board")
+            board_width_mm = self.max_x - self.min_x - 10  # Subtract margin
+            board_height_mm = self.max_y - self.min_y - 10
+            if self.board.outline and self.board.outline.has_outline:
+                board_width_mm = self.board.outline.width
+                board_height_mm = self.board.outline.height
 
-        # Legend
-        legend_x = svg_width - 150
-        legend_y = 20
-        svg_parts.append(
-            f'<text x="{legend_x}" y="{legend_y}" font-family="monospace" font-size="10" fill="#ffffff">'
-            f'Module Types:</text>'
-        )
+            # Position label at bottom-left corner, just outside the board edge
+            label_x = tx(self.min_x + 5)  # Slight offset from left edge
+            label_y = ty(self.min_y) + 12  # Just below bottom edge
 
-        # Get unique module types in this frame
-        unique_modules = set(frame.modules.values())
-        for i, module_type in enumerate(sorted(unique_modules)):
-            color = MODULE_COLORS.get(module_type, MODULE_COLORS["default"])
-            y = legend_y + 15 + i * 14
             svg_parts.append(
-                f'<rect x="{legend_x}" y="{y - 8}" width="10" height="10" fill="{color}"/>'
+                f'<text x="{label_x}" y="{label_y}" '
+                f'font-family="sans-serif" font-size="11" font-weight="bold" '
+                f'fill="#888888" text-anchor="start">'
+                f'{board_name}</text>'
             )
             svg_parts.append(
-                f'<text x="{legend_x + 15}" y="{y}" font-family="monospace" font-size="9" fill="#cccccc">'
-                f'{module_type}</text>'
+                f'<text x="{label_x}" y="{label_y + 12}" '
+                f'font-family="monospace" font-size="9" '
+                f'fill="#666666" text-anchor="start">'
+                f'{board_width_mm:.1f} x {board_height_mm:.1f} mm</text>'
             )
 
         svg_parts.append('</svg>')
@@ -766,6 +743,9 @@ class PlacementVisualizer:
             # Escape for JavaScript
             svg_escaped = svg.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '')
 
+            # Extract component positions for trail rendering
+            comp_positions = {ref: (x, y) for ref, (x, y, *_) in frame.components.items()}
+
             frames_js.append({
                 'index': frame.index,
                 'label': frame.label,
@@ -776,16 +756,20 @@ class PlacementVisualizer:
                 'overlap_count': frame.overlap_count,
                 'wire_length': frame.total_wire_length,
                 'svg': svg_escaped,
+                'positions': comp_positions,
             })
 
         # Build frames JavaScript array
+        import json
         frames_json = "[\n"
         for f in frames_js:
+            positions_json = json.dumps(f['positions'])
             frames_json += f"  {{'index': {f['index']}, 'label': '{f['label']}', "
             frames_json += f"'phase': '{f['phase']}', 'iteration': {f['iteration']}, "
             frames_json += f"'energy': {f['energy']:.4f}, 'max_move': {f['max_move']:.6f}, "
             frames_json += f"'overlap_count': {f['overlap_count']}, "
             frames_json += f"'wire_length': {f['wire_length']:.2f}, "
+            frames_json += f"'positions': {positions_json}, "
             frames_json += f"'svg': '{f['svg']}'}},\n"
         frames_json += "]"
 
@@ -795,12 +779,14 @@ class PlacementVisualizer:
             unique_modules.update(frame.modules.values())
         unique_modules = sorted(unique_modules)
 
-        # Generate module legend items HTML
+        # Generate module legend items HTML with checkboxes for toggling
         module_legend_items = ""
         for module_type in unique_modules:
             color = MODULE_COLORS.get(module_type, MODULE_COLORS["default"])
+            safe_id = module_type.replace("_", "-")
             module_legend_items += f'''
                 <div class="layer-item">
+                    <input type="checkbox" class="layer-checkbox" id="show-module-{safe_id}" checked onchange="updateModuleVisibility()">
                     <span class="color-swatch" style="background: {color};"></span>
                     <span class="layer-name">{module_type}</span>
                 </div>'''
@@ -970,48 +956,41 @@ class PlacementVisualizer:
             border-radius: 2px;
             font-family: monospace;
         }}
-        /* Controls */
+        /* Controls bar */
         .controls {{
-            margin: 4px 0;
             display: flex;
             align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
+            gap: 6px;
+            padding: 6px 8px;
+            background: #1a1a3e;
+            border-radius: 4px;
+            margin: 4px 0;
             flex-shrink: 0;
         }}
         .controls button {{
-            padding: 6px 12px;
+            padding: 5px 10px;
             font-size: 12px;
             cursor: pointer;
-            background: #1a1a3e;
+            background: #252550;
             color: #ffffff;
             border: 1px solid #3498db;
             border-radius: 4px;
             transition: background 0.2s;
+            min-width: 32px;
         }}
         .controls button:hover {{
-            background: #2a2a5e;
+            background: #3a3a6e;
         }}
-        .controls button:disabled {{
-            opacity: 0.5;
-            cursor: not-allowed;
-        }}
-        #slider {{
+        .controls-spacer {{
             flex: 1;
-            min-width: 150px;
-            max-width: 400px;
-            height: 8px;
-            -webkit-appearance: none;
-            background: #1a1a3e;
-            border-radius: 4px;
-            outline: none;
         }}
-        #slider::-webkit-slider-thumb {{
-            -webkit-appearance: none;
-            width: 18px;
-            height: 18px;
-            background: #00d4ff;
-            border-radius: 50%;
+        .speed-control select {{
+            padding: 5px 8px;
+            background: #252550;
+            color: #ffffff;
+            border: 1px solid #3498db;
+            border-radius: 4px;
+            font-size: 11px;
             cursor: pointer;
         }}
         .info {{
@@ -1077,36 +1056,26 @@ class PlacementVisualizer:
             min-width: 40px;
             text-align: center;
         }}
-        .phase-buttons {{
-            display: inline-flex;
-            gap: 4px;
-        }}
-        .phase-buttons button {{
-            padding: 5px 10px;
-            font-size: 11px;
-        }}
-        .phase-buttons button.active {{
-            background: #3498db;
-        }}
-        .speed-control select {{
-            padding: 4px;
-            background: #1a1a3e;
-            color: #ffffff;
-            border: 1px solid #3498db;
-            border-radius: 4px;
-            font-size: 11px;
-        }}
         .energy-graph {{
             margin: 4px 0;
             padding: 5px;
             background: #1a1a3e;
             border-radius: 4px;
-            height: 55px;
+            height: 70px;
             flex-shrink: 0;
+            cursor: pointer;
+            user-select: none;
+        }}
+        .energy-graph:hover {{
+            background: #1f1f4a;
+        }}
+        .energy-graph.seeking {{
+            cursor: grabbing;
         }}
         .energy-graph canvas {{
             width: 100%;
-            height: 35px;
+            height: 50px;
+            pointer-events: none;
         }}
         .graph-labels {{
             display: flex;
@@ -1183,32 +1152,25 @@ class PlacementVisualizer:
                 </div>
             </div>
             <div class="controls">
-                <div class="phase-buttons">
-                    <button onclick="jumpToPhase('initial')">Init</button>
-                    <button onclick="jumpToPhase('refinement')">Refine</button>
-                    <button onclick="jumpToPhase('legalization')">Legal</button>
-                    <button onclick="jumpToPhase('final')">Final</button>
-                </div>
-                <button onclick="firstFrame()">|&lt;</button>
-                <button onclick="prevFrame()">&lt;</button>
-                <button onclick="togglePlay()" id="play-btn">&#9658;</button>
-                <button onclick="nextFrame()">&gt;</button>
-                <button onclick="lastFrame()">&gt;|</button>
-                <input type="range" id="slider" min="0" max="{len(self.frames) - 1}" value="0"
-                       oninput="setFrame(this.value)">
+                <button onclick="firstFrame()" title="First frame">|&lt;</button>
+                <button onclick="prevFrame()" title="Previous frame">&lt;</button>
+                <button onclick="togglePlay()" id="play-btn" title="Play/Pause">&#9658;</button>
+                <button onclick="nextFrame()" title="Next frame">&gt;</button>
+                <button onclick="lastFrame()" title="Last frame">&gt;|</button>
                 <div class="speed-control">
-                    <select id="speed" onchange="updateSpeed()">
+                    <select id="speed" onchange="updateSpeed()" title="Playback speed">
                         <option value="500">0.5x</option>
                         <option value="200" selected>1x</option>
                         <option value="100">2x</option>
                         <option value="50">4x</option>
                     </select>
                 </div>
+                <div class="controls-spacer"></div>
                 <div class="zoom-controls">
-                    <button onclick="zoomOut()">-</button>
+                    <button onclick="zoomOut()" title="Zoom out">-</button>
                     <span class="zoom-level" id="zoom-level">100%</span>
-                    <button onclick="zoomIn()">+</button>
-                    <button onclick="resetView()">&#8634;</button>
+                    <button onclick="zoomIn()" title="Zoom in">+</button>
+                    <button onclick="resetView()" title="Reset view">&#8634;</button>
                 </div>
             </div>
 
@@ -1263,6 +1225,12 @@ class PlacementVisualizer:
                             <span class="color-swatch" style="background: #3498db;"></span>
                             <span class="layer-name">Bottom (B.Cu)</span>
                             <span class="layer-key">2</span>
+                        </div>
+                        <div class="layer-item">
+                            <input type="checkbox" class="layer-checkbox" id="show-edge" checked onchange="updateLayers()">
+                            <span class="color-swatch" style="background: #0f3460;"></span>
+                            <span class="layer-name">Edge.Cuts</span>
+                            <span class="layer-key">E</span>
                         </div>
                     </div>
                 </div>
@@ -1370,6 +1338,16 @@ class PlacementVisualizer:
         let playInterval = null;
         let playSpeed = 200;
 
+        // Board bounds for coordinate transformation (from Python)
+        const boardBounds = {{
+            minX: {self.min_x},
+            maxX: {self.max_x},
+            minY: {self.min_y},
+            maxY: {self.max_y},
+            padding: 50,
+            width: 800
+        }};
+
         // Zoom and pan state
         let zoom = 1;
         let panX = 0;
@@ -1398,7 +1376,6 @@ class PlacementVisualizer:
 
             document.getElementById('frame-container').innerHTML = frame.svg;
             applyTransform();
-            document.getElementById('slider').value = currentFrame;
 
             // Update stats in main info bar
             const frameNum = document.getElementById('frame-num');
@@ -1417,40 +1394,133 @@ class PlacementVisualizer:
             if (overlaps) overlaps.textContent = frame.overlap_count;
             if (wireLength) wireLength.textContent = frame.wire_length.toFixed(1) + 'mm';
 
-            // Update phase button highlights
-            document.querySelectorAll('.phase-buttons button').forEach(btn => {{
-                btn.classList.remove('active');
-                if (btn.textContent.toLowerCase().startsWith(frame.phase.substring(0, 4))) {{
-                    btn.classList.add('active');
-                }}
-            }});
 
             // Apply layer visibility
             updateLayers();
+
+            // Draw breadcrumb trails
+            drawTrails();
 
             // Update energy graph cursor
             drawEnergyGraph();
         }}
 
-        function updateLayers() {{
-            const showGrid = document.getElementById('show-grid')?.checked || false;
-            const showRatsnest = document.getElementById('show-ratsnest')?.checked || false;
+        // Draw breadcrumb trails showing component movement history
+        function drawTrails() {{
+            const svg = document.querySelector('#frame-container svg');
+            if (!svg || currentFrame < 1) return;
+
+            // Remove existing trails
+            svg.querySelectorAll('.movement-trail').forEach(el => el.remove());
+
+            // Get SVG dimensions for coordinate transformation
+            const svgWidth = parseFloat(svg.getAttribute('width')) || 800;
+            const svgHeight = parseFloat(svg.getAttribute('height')) || 600;
+            const boardWidth = boardBounds.maxX - boardBounds.minX;
+            const boardHeight = boardBounds.maxY - boardBounds.minY;
+            const scale = (svgWidth - 2 * boardBounds.padding) / boardWidth;
+
+            // Transform board coords to SVG coords
+            function tx(x) {{ return boardBounds.padding + (x - boardBounds.minX) * scale; }}
+            function ty(y) {{ return boardBounds.padding + (boardBounds.maxY - y) * scale; }}
+
+            // Check if trails should be visible
             const showTrails = document.getElementById('show-trails')?.checked || false;
-            const showForces = document.getElementById('show-forces')?.checked || false;
-            const showPads = document.getElementById('show-pads')?.checked || false;
-            const showLabels = document.getElementById('show-labels')?.checked || false;
-            const showGroups = document.getElementById('show-groups')?.checked || false;
-            const showTop = document.getElementById('show-top')?.checked || false;
-            const showBottom = document.getElementById('show-bottom')?.checked || false;
+            if (!showTrails) return;
+
+            // Create SVG group for trails
+            const trailGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+            trailGroup.setAttribute('class', 'movement-trail');
+
+            // Get all component refs from current frame
+            const currentPositions = frames[currentFrame].positions;
+
+            for (const ref of Object.keys(currentPositions)) {{
+                // Collect position history for this component
+                const history = [];
+                for (let i = 0; i <= currentFrame; i++) {{
+                    const pos = frames[i].positions[ref];
+                    if (pos) {{
+                        history.push({{ x: pos[0], y: pos[1], frame: i }});
+                    }}
+                }}
+
+                if (history.length < 2) continue;
+
+                // Check if component moved significantly
+                const start = history[0];
+                const end = history[history.length - 1];
+                const totalDist = Math.sqrt(Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2));
+                if (totalDist < 0.5) continue;
+
+                // Draw breadcrumb dots along the path
+                for (let i = 0; i < history.length; i++) {{
+                    const pos = history[i];
+                    // Fade older positions
+                    const age = (currentFrame - pos.frame) / Math.max(currentFrame, 1);
+                    const opacity = 0.2 + (1 - age) * 0.6;
+                    const radius = 1.5 + (1 - age) * 1.5;
+
+                    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    dot.setAttribute('cx', tx(pos.x));
+                    dot.setAttribute('cy', ty(pos.y));
+                    dot.setAttribute('r', radius);
+                    dot.setAttribute('fill', '#ff6b6b');
+                    dot.setAttribute('opacity', opacity);
+                    trailGroup.appendChild(dot);
+                }}
+
+                // Draw connecting line segments
+                if (history.length > 1) {{
+                    let pathD = `M ${{tx(history[0].x)}} ${{ty(history[0].y)}}`;
+                    for (let i = 1; i < history.length; i++) {{
+                        pathD += ` L ${{tx(history[i].x)}} ${{ty(history[i].y)}}`;
+                    }}
+                    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                    path.setAttribute('d', pathD);
+                    path.setAttribute('stroke', '#ff6b6b');
+                    path.setAttribute('stroke-width', '1');
+                    path.setAttribute('stroke-opacity', '0.4');
+                    path.setAttribute('fill', 'none');
+                    trailGroup.appendChild(path);
+                }}
+
+                // Mark initial position with a larger circle
+                const startDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                startDot.setAttribute('cx', tx(start.x));
+                startDot.setAttribute('cy', ty(start.y));
+                startDot.setAttribute('r', '3');
+                startDot.setAttribute('fill', 'none');
+                startDot.setAttribute('stroke', '#ff6b6b');
+                startDot.setAttribute('stroke-width', '1.5');
+                startDot.setAttribute('opacity', '0.7');
+                trailGroup.appendChild(startDot);
+            }}
+
+            // Insert trails before components (so they appear behind)
+            const firstG = svg.querySelector('g');
+            if (firstG) {{
+                svg.insertBefore(trailGroup, firstG);
+            }} else {{
+                svg.appendChild(trailGroup);
+            }}
+        }}
+
+        function updateLayers() {{
+            const showGrid = document.getElementById('show-grid')?.checked ?? false;
+            const showRatsnest = document.getElementById('show-ratsnest')?.checked ?? false;
+            const showTrails = document.getElementById('show-trails')?.checked ?? false;
+            const showForces = document.getElementById('show-forces')?.checked ?? false;
+            const showPads = document.getElementById('show-pads')?.checked ?? false;
+            const showLabels = document.getElementById('show-labels')?.checked ?? false;
+            const showGroups = document.getElementById('show-groups')?.checked ?? false;
+            const showTop = document.getElementById('show-top')?.checked ?? true;
+            const showBottom = document.getElementById('show-bottom')?.checked ?? true;
+            const showEdge = document.getElementById('show-edge')?.checked ?? true;
 
             // Toggle grid lines
             document.querySelectorAll('.grid-line').forEach(el => {{
                 el.style.display = showGrid ? '' : 'none';
-            }});
-
-            // Toggle reference labels
-            document.querySelectorAll('.ref-label').forEach(el => {{
-                el.style.display = showLabels ? '' : 'none';
             }});
 
             // Toggle ratsnest lines
@@ -1478,23 +1548,64 @@ class PlacementVisualizer:
                 el.style.display = showGroups ? '' : 'none';
             }});
 
-            // Toggle top layer components (body, labels, and pads)
+            // Toggle board outline (Edge.Cuts)
+            document.querySelectorAll('.board-outline').forEach(el => {{
+                el.style.display = showEdge ? '' : 'none';
+            }});
+
+            // Toggle top layer components
             document.querySelectorAll('.comp-top').forEach(el => {{
                 el.style.display = showTop ? '' : 'none';
             }});
 
-            // Toggle bottom layer components (body, labels, and pads)
+            // Toggle bottom layer components
             document.querySelectorAll('.comp-bottom').forEach(el => {{
                 el.style.display = showBottom ? '' : 'none';
             }});
 
-            // Also handle labels separately in case they need independent control
+            // Handle labels with layer visibility
             document.querySelectorAll('.ref-label').forEach(el => {{
-                // Check if label is on hidden layer first
                 const isTop = el.classList.contains('comp-top');
                 const isBottom = el.classList.contains('comp-bottom');
                 const layerVisible = (isTop && showTop) || (isBottom && showBottom) || (!isTop && !isBottom);
                 el.style.display = (showLabels && layerVisible) ? '' : 'none';
+            }});
+
+            // Apply module visibility after layer visibility
+            updateModuleVisibility();
+
+            // Redraw trails if visibility changed
+            if (showTrails) {{
+                drawTrails();
+            }}
+        }}
+
+        // Module visibility toggle - respects layer visibility
+        function updateModuleVisibility() {{
+            const showTop = document.getElementById('show-top')?.checked ?? true;
+            const showBottom = document.getElementById('show-bottom')?.checked ?? true;
+
+            // Find all module type checkboxes
+            document.querySelectorAll('[id^="show-module-"]').forEach(checkbox => {{
+                const moduleType = checkbox.id.replace('show-module-', '');
+                const moduleVisible = checkbox.checked;
+
+                // Toggle components with this module type
+                document.querySelectorAll('.module-' + moduleType).forEach(el => {{
+                    // Check layer visibility first
+                    const isTop = el.classList.contains('comp-top');
+                    const isBottom = el.classList.contains('comp-bottom');
+                    const isModuleGroup = el.classList.contains('module-group');
+
+                    // Module groups don't have layer class, always follow module visibility
+                    let layerVisible = true;
+                    if (isTop) layerVisible = showTop;
+                    else if (isBottom) layerVisible = showBottom;
+
+                    // Element visible only if both layer AND module are visible
+                    const shouldShow = layerVisible && moduleVisible;
+                    el.style.display = shouldShow ? '' : 'none';
+                }});
             }});
         }}
 
@@ -1655,18 +1766,23 @@ class PlacementVisualizer:
             }});
             ctx.stroke();
 
-            // Draw current frame indicator
+            // Draw playhead line
             const curX = (currentFrame / (frames.length - 1)) * w;
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 1;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.fillRect(curX - 1, 0, 3, h);
+
+            // Draw playhead handle
             ctx.beginPath();
-            ctx.moveTo(curX, 0);
-            ctx.lineTo(curX, h);
+            ctx.arc(curX, 5, 6, 0, Math.PI * 2);
+            ctx.fillStyle = '#00d4ff';
+            ctx.fill();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
             ctx.stroke();
 
             // Update range label
             document.getElementById('graph-range').textContent =
-                `E: 0-${{maxEnergy.toFixed(0)}} | WL: 0-${{maxWireLength.toFixed(0)}}mm`;
+                `Energy (blue): 0-${{maxEnergy.toFixed(0)}} | Wire Length (green): 0-${{maxWireLength.toFixed(0)}}mm`;
         }}
 
         function firstFrame() {{ showFrame(0); }}
@@ -1756,13 +1872,17 @@ class PlacementVisualizer:
                 const cb = document.getElementById('show-groups');
                 if (cb) {{ cb.checked = !cb.checked; updateLayers(); }}
             }}
-            // Layer shortcuts: 1 = top, 2 = bottom
+            // Layer shortcuts: 1 = top, 2 = bottom, E = edge
             if (e.key === '1') {{
                 const cb = document.getElementById('show-top');
                 if (cb) {{ cb.checked = !cb.checked; updateLayers(); }}
             }}
             if (e.key === '2') {{
                 const cb = document.getElementById('show-bottom');
+                if (cb) {{ cb.checked = !cb.checked; updateLayers(); }}
+            }}
+            if (e.key === 'e' || e.key === 'E') {{
+                const cb = document.getElementById('show-edge');
                 if (cb) {{ cb.checked = !cb.checked; updateLayers(); }}
             }}
             // Zoom keyboard shortcuts
@@ -1777,6 +1897,41 @@ class PlacementVisualizer:
         frameContainer.addEventListener('mousedown', handleMouseDown);
         document.addEventListener('mousemove', handleMouseMove);
         document.addEventListener('mouseup', handleMouseUp);
+
+        // Histogram seeking
+        let isSeekingHistogram = false;
+        const energyGraph = document.querySelector('.energy-graph');
+
+        function seekFromHistogram(e) {{
+            const rect = energyGraph.getBoundingClientRect();
+            const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+            const frameIndex = Math.round((x / rect.width) * (frames.length - 1));
+            showFrame(frameIndex);
+        }}
+
+        function histogramSeekStart(e) {{
+            if (e.button !== 0) return;
+            isSeekingHistogram = true;
+            energyGraph.classList.add('seeking');
+            seekFromHistogram(e);
+            e.preventDefault();
+        }}
+
+        function histogramSeekMove(e) {{
+            if (!isSeekingHistogram) return;
+            seekFromHistogram(e);
+        }}
+
+        function histogramSeekEnd(e) {{
+            if (isSeekingHistogram) {{
+                isSeekingHistogram = false;
+                energyGraph.classList.remove('seeking');
+            }}
+        }}
+
+        energyGraph.addEventListener('mousedown', histogramSeekStart);
+        document.addEventListener('mousemove', histogramSeekMove);
+        document.addEventListener('mouseup', histogramSeekEnd);
 
         // Draw initial graph on load
         window.addEventListener('load', () => {{

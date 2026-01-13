@@ -127,7 +127,7 @@ class ForceDirectedRefiner:
         self.constraints: List['PlacementConstraint'] = []
         self.visualizer = visualizer
         self.modules = modules or {}  # ref -> module_type mapping
-        self._viz_interval = 10  # Capture frame every N iterations
+        self._viz_interval = 2  # Capture frame every N iterations (lower = smoother playback)
 
         # Anchor components per layer (largest IC/component on each layer, locked at center)
         self._anchor_ref: Optional[str] = None  # Top layer anchor (legacy compat)
