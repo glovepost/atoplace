@@ -632,7 +632,9 @@ class ConfidenceScorer:
         ]
 
         # Differential pair suffixes (must be at end of net name)
-        diff_pair_suffixes = ['_P', '_N', '+', '-', 'P', 'N']
+        # NOTE: Avoid single-letter suffixes like 'P', 'N' which cause false positives
+        # (e.g., TEMP, EN, LOOP would incorrectly match). Use '_P', '_N' or '+', '-' instead.
+        diff_pair_suffixes = ['_P', '_N', '+', '-']
 
         for net_name in board.nets:
             name_upper = net_name.upper()

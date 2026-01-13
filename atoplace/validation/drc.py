@@ -71,12 +71,19 @@ class DRCChecker:
         board_clearance = self.board.default_clearance or 0.0
         base_clearance = max(dfm_clearance, board_clearance)
 
-        # Use layer-aware overlap detection with pad extents for accuracy
+        # Find the maximum net-class clearance across all nets
+        # This ensures we detect all potential violations, not just base clearance ones
+        max_net_clearance = base_clearance
+        for net in self.board.nets.values():
+            if net.clearance is not None and net.clearance > max_net_clearance:
+                max_net_clearance = net.clearance
+
+        # Use the maximum possible clearance for overlap detection to catch all violations
         # - check_layers: avoid false positives for components on opposite sides
         # - include_pads: catch overlaps where pads protrude beyond body
-        overlaps = self.board.find_overlaps(base_clearance, check_layers=True, include_pads=True)
+        overlaps = self.board.find_overlaps(max_net_clearance, check_layers=True, include_pads=True)
 
-        for ref1, ref2, dist in overlaps:
+        for ref1, ref2, penetration in overlaps:
             c1 = self.board.get_component(ref1)
             c2 = self.board.get_component(ref2)
 
@@ -85,11 +92,10 @@ class DRCChecker:
                 mid_x = (c1.x + c2.x) / 2
                 mid_y = (c1.y + c2.y) / 2
 
-                # Check for net-class clearance requirements on component pads
-                # Use the maximum clearance required by any net on these components
+                # Determine the required clearance for this specific component pair
+                # based on the nets connected to their pads
                 required_clearance = base_clearance
                 clearance_source = "board" if board_clearance > dfm_clearance else "DFM"
-                net_class_name = None
 
                 for pad in c1.pads + c2.pads:
                     if pad.net and pad.net in self.board.nets:
@@ -97,15 +103,22 @@ class DRCChecker:
                         if net.clearance is not None and net.clearance > required_clearance:
                             required_clearance = net.clearance
                             clearance_source = f"net-class '{net.net_class}'"
-                            net_class_name = net.net_class
 
-                self.violations.append(DRCViolation(
-                    rule="component_clearance",
-                    severity="error",
-                    message=f"Clearance violation: {ref1} and {ref2} ({dist:.2f}mm < {required_clearance}mm [{clearance_source}])",
-                    location=(mid_x, mid_y),
-                    items=[ref1, ref2],
-                ))
+                # Calculate actual spacing from penetration depth
+                # penetration is how much bb2 intrudes into bb1's clearance zone
+                # so actual_spacing = max_net_clearance - penetration
+                actual_spacing = max_net_clearance - penetration
+
+                # Only report violation if actual spacing is less than required clearance
+                # (we used max_net_clearance for detection, but each pair may have different requirements)
+                if actual_spacing < required_clearance:
+                    self.violations.append(DRCViolation(
+                        rule="component_clearance",
+                        severity="error",
+                        message=f"Clearance violation: {ref1} and {ref2} (spacing {actual_spacing:.2f}mm < {required_clearance:.2f}mm [{clearance_source}])",
+                        location=(mid_x, mid_y),
+                        items=[ref1, ref2],
+                    ))
 
     def _check_minimum_sizes(self):
         """Check that pads meet minimum size requirements.

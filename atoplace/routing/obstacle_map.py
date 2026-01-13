@@ -62,8 +62,24 @@ class ObstacleMapBuilder:
         self.board = board
         self.dfm = dfm_profile
 
-    def build(self) -> SpatialHashIndex:
+    def build(self, include_component_bodies: bool = False) -> SpatialHashIndex:
         """Build complete obstacle index from board.
+
+        Args:
+            include_component_bodies: If True, add component body outlines as obstacles.
+                This prevents traces from routing through SMD component areas.
+
+                Tradeoffs:
+                - True: Prevents unrealistic routes through component bodies, but may
+                  cause routing failures for designs where pads are at component edges
+                  and traces need to exit through the body area.
+                - False (default): Allows traces to route over component bodies as long
+                  as they don't cross pads. This is permissive and may produce
+                  unrealistic results for densely packed boards.
+
+                For realistic routing, enable this and ensure components have adequate
+                clearance for trace fanout. Future versions may support smarter
+                body-with-pad-cutout obstacles.
 
         Returns:
             SpatialHashIndex populated with all routing obstacles
@@ -71,10 +87,13 @@ class ObstacleMapBuilder:
         # Collect obstacle sizes for cell calibration
         obstacle_sizes = []
 
-        # First pass: collect sizes from pads only (not component bodies)
+        # First pass: collect sizes from pads and optionally component bodies
         for comp in self.board.components.values():
             for pad in comp.pads:
                 obstacle_sizes.append((pad.width, pad.height))
+            if include_component_bodies:
+                bbox = comp.get_bounding_box()
+                obstacle_sizes.append((bbox[2] - bbox[0], bbox[3] - bbox[1]))
 
         # Calibrate cell size
         cell_size = auto_calibrate_cell_size(obstacle_sizes, default=1.0)
@@ -82,16 +101,26 @@ class ObstacleMapBuilder:
 
         index = SpatialHashIndex(cell_size=cell_size)
 
-        # Add obstacles - NOTE: Component bodies are NOT added as obstacles
-        # because pads are inside component bounds, and adding bodies as
-        # obstacles would block routes starting from their own pads.
-        # Pads provide the actual routing constraints.
+        # Add obstacles - pads first (they have net_id for same-net filtering)
         pad_count = self._add_pad_obstacles(index)
         edge_count = self._add_edge_keepout(index)
 
+        # Component bodies block all routes through the component area.
+        # Note: This uses net_id=None which blocks ALL nets, including routes
+        # starting from pads on that component. For most SMD components where
+        # pads are on the component edge, this works fine. For components with
+        # pads inside the body area, this may cause routing failures.
+        body_count = 0
+        if include_component_bodies:
+            body_count = self._add_component_obstacles(index)
+            logger.debug(
+                f"Added {body_count} component body obstacles. "
+                "Traces cannot route through component areas."
+            )
+
         logger.info(
             f"Built obstacle map: "
-            f"{pad_count} pads, {edge_count} edge segments"
+            f"{pad_count} pads, {body_count} component bodies, {edge_count} edge segments"
         )
 
         stats = index.get_stats()

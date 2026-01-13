@@ -6,9 +6,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python Version">
+  <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status">
-  <img src="https://img.shields.io/badge/KiCad-6.0%2B-blue" alt="KiCad Support">
+  <img src="https://img.shields.io/badge/KiCad-8.0%2B-blue" alt="KiCad Support">
 </p>
 
 <p align="center">

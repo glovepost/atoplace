@@ -245,12 +245,14 @@ class AtopileProjectLoader:
 
     def _parse_simple_yaml(self, content: str) -> Dict:
         """
-        Simple YAML parser for basic key-value structures.
+        Simple YAML parser for nested key-value structures.
         Falls back to this when PyYAML is not available.
+
+        Supports up to 3 levels of nesting (sufficient for ato.yaml builds/paths).
         """
         result = {}
-        current_section = None
-        current_indent = 0
+        # Stack of (indent, dict_ref) to track nesting
+        stack = [(0, result)]
 
         for line in content.split('\n'):
             # Skip empty lines and comments
@@ -258,8 +260,14 @@ class AtopileProjectLoader:
             if not stripped or stripped.startswith('#'):
                 continue
 
-            # Calculate indent level
+            # Calculate indent level (spaces, 2 per level typically)
             indent = len(line) - len(line.lstrip())
+
+            # Pop stack until we find parent at lower indent
+            while len(stack) > 1 and stack[-1][0] >= indent:
+                stack.pop()
+
+            current_dict = stack[-1][1]
 
             # Handle key-value pairs
             if ':' in stripped:
@@ -272,11 +280,12 @@ class AtopileProjectLoader:
                     if (value.startswith('"') and value.endswith('"')) or \
                        (value.startswith("'") and value.endswith("'")):
                         value = value[1:-1]
-                    result[key] = value
+                    current_dict[key] = value
                 else:
-                    # This is a section header
-                    result[key] = {}
-                    current_section = key
+                    # This is a section header - create nested dict
+                    new_section = {}
+                    current_dict[key] = new_section
+                    stack.append((indent, new_section))
 
         return result
 
@@ -443,32 +452,38 @@ class AtopileProjectLoader:
         total_count = 0
 
         # Apply module info to components
-        for module in hierarchy.values():
-            # Build qualified paths for components in this module
-            # e.g., for module 'accel' with component 'c_hf', path is 'accel.c_hf'
-            module_prefix = module.name
+        for module_path, module in hierarchy.items():
+            # module_path is now the full qualified path (e.g., 'power.regulator')
+            # For each component in this module, build the full path
 
             for instance_name in module.components:
                 total_count += 1
                 kicad_ref = None
 
-                # Build potential qualified paths
-                qualified_path = f"{module_prefix}.{instance_name}"
+                # Build the full qualified path for this component
+                # e.g., for module path 'power.regulator' with component 'c1',
+                # full path is 'power.regulator.c1'
+                qualified_path = f"{module_path}.{instance_name}"
+
+                # Also try simpler paths for backward compatibility
+                simple_path = f"{module.name}.{instance_name}"
 
                 # Strategy 1: Look up atopile_address (primary - most reliable)
-                if qualified_path in address_to_ref:
-                    kicad_ref = address_to_ref[qualified_path]
-                elif instance_name in address_to_ref:
-                    kicad_ref = address_to_ref[instance_name]
+                # Try full path first, then simple path, then just instance name
+                for path in [qualified_path, simple_path, instance_name]:
+                    if path in address_to_ref:
+                        kicad_ref = address_to_ref[path]
+                        break
 
                 # Strategy 2: Lock file mapping
                 if not kicad_ref:
-                    if qualified_path in lock_ref_map:
-                        kicad_ref = lock_ref_map[qualified_path]
-                    elif instance_name in lock_ref_map:
-                        kicad_ref = lock_ref_map[instance_name]
-                    else:
-                        # Search for paths containing this instance name
+                    for path in [qualified_path, simple_path, instance_name]:
+                        if path in lock_ref_map:
+                            kicad_ref = lock_ref_map[path]
+                            break
+
+                    # Also search for paths containing this instance name
+                    if not kicad_ref:
                         for path, ref in lock_ref_map.items():
                             if path.endswith('.' + instance_name) or path == instance_name:
                                 kicad_ref = ref
@@ -484,7 +499,9 @@ class AtopileProjectLoader:
                 # Apply module info to the component
                 if kicad_ref and kicad_ref in board.components:
                     comp = board.components[kicad_ref]
-                    comp.properties["ato_module"] = module.name
+                    # Store the full module path for proper hierarchy
+                    comp.properties["ato_module"] = module_path
+                    comp.properties["ato_module_name"] = module.name  # local name
                     if module.module_type:
                         comp.properties["ato_module_type"] = module.module_type
                     if module.parent:
@@ -759,6 +776,21 @@ class AtopileModuleParser:
 
             indent = len(line) - len(line.lstrip())
 
+            # Helper to build full qualified path from indent stack
+            def get_full_path(stack: List[Tuple[int, ModuleHierarchy]], name: str) -> str:
+                """Build full qualified path from parent chain."""
+                if not stack:
+                    return name
+                parent_names = [m.name for _, m in stack]
+                return '.'.join(parent_names + [name])
+
+            def get_parent_path(stack: List[Tuple[int, ModuleHierarchy]]) -> Optional[str]:
+                """Get full path of the parent module."""
+                if not stack:
+                    return None
+                parent_names = [m.name for _, m in stack]
+                return '.'.join(parent_names)
+
             # Check for module definition
             module_match = self.MODULE_PATTERN.match(stripped)
             if module_match:
@@ -775,10 +807,13 @@ class AtopileModuleParser:
 
                 if indent_stack:
                     parent = indent_stack[-1][1]
-                    module.parent = parent.name
+                    # Store full parent path, not just immediate parent name
+                    module.parent = get_parent_path(indent_stack)
                     parent.submodules.append(module)
 
-                modules[name] = module
+                # Use full qualified path as key to avoid overwrites
+                full_path = get_full_path(indent_stack, name)
+                modules[full_path] = module
                 current_module = module
                 indent_stack.append((indent, module))
                 continue
@@ -793,17 +828,23 @@ class AtopileModuleParser:
                     if comp_type in self._imported_modules:
                         # This is a module instantiation - create a submodule entry
                         imported_module = self._imported_modules[comp_type]
+                        # Get full parent path for this submodule
+                        parent_path = get_full_path(indent_stack, "")[:-1] if indent_stack else None  # strip trailing dot
+                        if not parent_path and current_module:
+                            parent_path = current_module.name
                         submodule = ModuleHierarchy(
                             name=instance_name,  # Use instance name, not type name
                             module_type=imported_module.module_type or self._infer_module_type(comp_type),
-                            parent=current_module.name,
+                            parent=parent_path,
                             # Copy component list from imported module definition
                             components=list(imported_module.components),
                         )
                         current_module.submodules.append(submodule)
-                        modules[instance_name] = submodule
+                        # Use full qualified path as key
+                        full_instance_path = get_full_path(indent_stack, instance_name)
+                        modules[full_instance_path] = submodule
                         instance_types[instance_name] = comp_type
-                        logger.debug(f"Found module instance: {instance_name} of type {comp_type} with {len(imported_module.components)} components")
+                        logger.debug(f"Found module instance: {full_instance_path} of type {comp_type} with {len(imported_module.components)} components")
                     else:
                         # Regular component instantiation - store instance name
                         current_module.components.append(instance_name)

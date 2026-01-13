@@ -586,6 +586,9 @@ def place(
                 constraint = GroupingConstraint(
                     components=comp_refs,
                     max_spread=15.0,
+                    optimize_bbox=True,  # Enable tight module bounding box
+                    bbox_strength=1.0,
+                    min_clearance=0.25,  # Default clearance, updated after DFM profile
                     description=f"Group atopile module: {module_name}",
                 )
                 constraints_list.append(constraint)
@@ -857,6 +860,9 @@ def validate(
 def route(
     ctx: typer.Context,
     board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
+    output: Optional[Path] = typer.Option(
+        None, "-o", "--output", help="Output file (default: overwrites input)."
+    ),
     dfm: Optional[str] = typer.Option(
         None, "--dfm", help="DFM profile name (e.g., jlcpcb_standard)."
     ),
@@ -873,14 +879,20 @@ def route(
     visualize: bool = typer.Option(
         False, "--visualize", "-v", help="Generate routing visualization."
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Don't save routed traces to file."
+    ),
 ):
     """Route all nets on a board using A* pathfinding.
 
     Uses weighted A* (greedy multiplier) for fast routing with acceptable
     path quality. Supports multi-layer routing with vias.
 
+    Traces are saved to the output file (or input file if no output specified).
+
     Example:
         atoplace route board.kicad_pcb --greedy 2.5 --visualize
+        atoplace route board.kicad_pcb -o routed_board.kicad_pcb
     """
     from .routing import (
         AStarRouter,
@@ -937,7 +949,7 @@ def route(
         viz = create_visualizer_from_board(board_obj)
         console.print("Visualization: [cyan]enabled[/]")
 
-    # Configure router with board's layer count
+    # Configure router with board's layer count and default DFM values
     config = RouterConfig(
         greedy_weight=greedy,
         grid_size=grid,
@@ -945,6 +957,19 @@ def route(
         clearance=dfm_profile.min_spacing,
         layer_count=board_obj.layer_count,
     )
+
+    # Build lookup for per-net trace width and clearance from board's net definitions
+    # This allows respecting KiCad's net-class settings
+    net_trace_widths = {}
+    net_clearances = {}
+    for net_name, net_obj in board_obj.nets.items():
+        if net_obj.trace_width is not None:
+            net_trace_widths[net_name] = net_obj.trace_width
+        if net_obj.clearance is not None:
+            net_clearances[net_name] = net_obj.clearance
+
+    if net_trace_widths or net_clearances:
+        console.print(f"Per-net rules: [cyan]{len(net_trace_widths)} widths, {len(net_clearances)} clearances[/]")
 
     # Create router
     router = AStarRouter(obstacle_index, config, viz)
@@ -958,6 +983,7 @@ def route(
     success_count = 0
     total_length = 0.0
     total_vias = 0
+    net_id_to_name = {}  # For saving traces later
 
     with Progress(
         SpinnerColumn(),
@@ -970,11 +996,19 @@ def route(
         task = progress.add_task("Routing nets...", total=len(ordered_nets))
 
         for net in ordered_nets:
+            # Use per-net trace width and clearance if available, else DFM defaults
+            trace_width = net_trace_widths.get(net.net_name, config.trace_width)
+            net_clearance = net_clearances.get(net.net_name, config.clearance)
+
+            # Track net_id to name mapping for saving traces
+            net_id_to_name[net.net_id] = net.net_name
+
             result = router.route_net(
                 pads=net.pads,
                 net_name=net.net_name,
                 net_id=net.net_id,
-                trace_width=config.trace_width
+                trace_width=trace_width,
+                clearance=net_clearance
             )
             results[net.net_name] = result
 
@@ -1027,6 +1061,39 @@ def route(
         )
         report_path = viz.export_html_report("routing_result.html")
         console.print(Panel(f"Visualization: {report_path}", border_style="green"))
+
+    # Save routed traces to KiCad file
+    if not dry_run and success_count > 0:
+        from .board.kicad_adapter import save_routed_traces
+        import shutil
+
+        # Collect all successful traces and vias
+        all_segments = [seg for r in results.values() if r.success for seg in r.segments]
+        all_vias = [via for r in results.values() if r.success for via in r.vias]
+
+        # Determine output path
+        output_path = output if output else pcb_path
+        if output_path != pcb_path:
+            # Copy source to output first to preserve all elements
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(pcb_path, output_path)
+
+        try:
+            save_routed_traces(
+                output_path,
+                all_segments,
+                all_vias,
+                net_id_to_name,
+                board_obj.layer_count
+            )
+            console.print(Panel(
+                f"Saved {len(all_segments)} traces, {len(all_vias)} vias to {output_path}",
+                border_style="green"
+            ))
+        except Exception as e:
+            console.print(f"[red]Failed to save traces:[/] {e}")
+    elif dry_run:
+        console.print("[yellow]Dry run - traces not saved[/]")
 
     console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
 

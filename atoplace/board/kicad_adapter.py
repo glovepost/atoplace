@@ -291,6 +291,121 @@ def _update_edge_cuts_outline(kicad_board, outline: BoardOutline):
     )
 
 
+def save_routed_traces(
+    path: Path,
+    segments: List,
+    vias: List,
+    net_names: Dict[int, str],
+    layer_count: int = 2
+):
+    """Add routed traces and vias to a KiCad PCB file.
+
+    This function adds new traces and vias from the routing results to an
+    existing KiCad board file. It preserves all existing content.
+
+    Args:
+        path: Path to .kicad_pcb file
+        segments: List of RouteSegment objects (start, end, layer, width, net_id)
+        vias: List of Via objects (x, y, drill_diameter, pad_diameter, net_id)
+        net_names: Dict mapping net_id to net name string
+        layer_count: Number of copper layers (2, 4, 6, etc.)
+
+    Raises:
+        ImportError: If pcbnew is not available
+    """
+    check_pcbnew()
+    path = Path(path)
+
+    if not path.exists():
+        logger.error(f"Board file not found: {path}")
+        return
+
+    kicad_board = pcbnew.LoadBoard(str(path))
+
+    # Map layer indices to KiCad layer IDs
+    layer_map = {
+        0: pcbnew.F_Cu,
+        1: pcbnew.B_Cu,
+    }
+    # Add inner layers for 4+ layer boards
+    if layer_count >= 4:
+        layer_map[2] = pcbnew.In1_Cu
+        layer_map[3] = pcbnew.In2_Cu
+    if layer_count >= 6:
+        layer_map[4] = pcbnew.In3_Cu
+        layer_map[5] = pcbnew.In4_Cu
+
+    # Build net code lookup from existing board
+    net_code_map = {}
+    for net in kicad_board.GetNetsByName().items():
+        net_name = net[0]
+        net_info = net[1]
+        net_code_map[net_name] = net_info.GetNetCode()
+
+    # Add trace segments
+    trace_count = 0
+    for seg in segments:
+        track = pcbnew.PCB_TRACK(kicad_board)
+
+        # Set start and end points
+        track.SetStart(pcbnew.VECTOR2I(
+            pcbnew.FromMM(seg.start[0]),
+            pcbnew.FromMM(seg.start[1])
+        ))
+        track.SetEnd(pcbnew.VECTOR2I(
+            pcbnew.FromMM(seg.end[0]),
+            pcbnew.FromMM(seg.end[1])
+        ))
+
+        # Set layer
+        kicad_layer = layer_map.get(seg.layer, pcbnew.F_Cu)
+        track.SetLayer(kicad_layer)
+
+        # Set width
+        track.SetWidth(pcbnew.FromMM(seg.width))
+
+        # Set net if available
+        if seg.net_id is not None and seg.net_id in net_names:
+            net_name = net_names[seg.net_id]
+            if net_name in net_code_map:
+                track.SetNetCode(net_code_map[net_name])
+
+        kicad_board.Add(track)
+        trace_count += 1
+
+    # Add vias
+    via_count = 0
+    for via in vias:
+        kicad_via = pcbnew.PCB_VIA(kicad_board)
+
+        # Set position
+        kicad_via.SetPosition(pcbnew.VECTOR2I(
+            pcbnew.FromMM(via.x),
+            pcbnew.FromMM(via.y)
+        ))
+
+        # Set via type and size
+        kicad_via.SetViaType(pcbnew.VIATYPE_THROUGH)
+        kicad_via.SetDrill(pcbnew.FromMM(via.drill_diameter))
+        kicad_via.SetWidth(pcbnew.FromMM(via.pad_diameter))
+
+        # Set net if available
+        if via.net_id is not None and via.net_id in net_names:
+            net_name = net_names[via.net_id]
+            if net_name in net_code_map:
+                kicad_via.SetNetCode(net_code_map[net_name])
+
+        kicad_board.Add(kicad_via)
+        via_count += 1
+
+    # Save the updated board
+    pcbnew.SaveBoard(str(path), kicad_board)
+
+    logger.info(
+        f"Saved routing to {path}: {trace_count} traces, {via_count} vias"
+    )
+
+
 def _update_ref_des_text(fp, comp: Component, kicad_x: float, kicad_y: float):
     """Update reference designator text position in KiCad footprint.
 
@@ -770,8 +885,11 @@ def _extract_footprint_properties(fp, component: Component):
                             component.properties['atopile_address'] = value
 
     except Exception as e:
-        # Property extraction is non-critical - log and continue
-        logger.debug(f"Failed to extract properties from {component.reference}: {e}")
+        # Property extraction is non-critical - log exception type and message for debugging
+        logger.debug(
+            "Failed to extract properties from %s: %s: %s",
+            component.reference, type(e).__name__, e
+        )
 
 
 def _extract_ref_des_text(fp, fp_pos, fp_rotation: float,
@@ -1159,7 +1277,9 @@ def _extract_net(net_name, net_item, kicad_board, pad_net_map: dict = None) -> N
         for ref, pad_number in pad_net_map.get(net_name_str, []):
             net.add_connection(ref, pad_number)
     else:
-        # Legacy path - scan all footprints and pads
+        # Legacy path - only used when called from external code without pad_net_map
+        # This is O(footprints × pads) per net, so prefer passing pad_net_map
+        logger.debug("Using legacy pad scan for net %s (consider passing pad_net_map)", net_name_str)
         for fp in kicad_board.GetFootprints():
             ref = str(fp.GetReference())
             for pad in fp.Pads():

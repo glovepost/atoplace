@@ -147,6 +147,20 @@ class AStarRouter:
         # Track visualization state
         self._viz_obstacles_captured = False
 
+    def reset(self):
+        """Reset router state for a new routing session.
+
+        Clears routed traces, vias, and visualization caches to prevent
+        memory accumulation across multiple routing operations.
+        """
+        self.routed_segments = []
+        self.routed_vias = []
+        self._viz_obstacles_captured = False
+        if hasattr(self, '_viz_obstacles'):
+            del self._viz_obstacles
+        if hasattr(self, '_viz_pads'):
+            del self._viz_pads
+
     def _setup_neighbor_offsets(self):
         """Precompute valid movement directions based on config."""
         g = self.config.grid_size
@@ -218,7 +232,9 @@ class AStarRouter:
         for pad in pads:
             cx, cy = pad.center
             # Use pad layer, or default to layer 0 for through-hole (-1)
+            # Clamp to valid layer range to prevent out-of-bounds access
             layer = pad.layer if pad.layer >= 0 else 0
+            layer = min(layer, self.config.layer_count - 1)
             pad_nodes.append(RouteNode(cx, cy, layer))
 
         # Start with first pad as connected
@@ -499,15 +515,28 @@ class AStarRouter:
         clearance: float,
         net_id: Optional[int]
     ) -> bool:
-        """Check if path between two points is clear of obstacles."""
-        # For short moves, just check endpoint
-        dist = math.sqrt((x2-x1)**2 + (y2-y1)**2)
-        if dist < self.config.grid_size * 1.5:
-            return not self.obstacles.check_collision(x2, y2, layer, clearance, net_id)
+        """Check if path between two points is clear of obstacles.
 
-        # For longer moves, check segment
+        Args:
+            x1, y1, x2, y2: Segment endpoints
+            layer: Routing layer
+            clearance: Total clearance from trace center (trace_width/2 + net_clearance)
+            net_id: Net ID for same-net filtering
+
+        Uses consistent clearance for both endpoint and segment checks.
+        The 'clearance' parameter represents the required distance from the
+        trace centerline to any obstacle, which equals trace_width/2 + net_clearance.
+        """
+        # Always check the segment, not just the endpoint
+        # This ensures we don't miss obstacles along the path
+        # The trace width parameter is 2 * clearance because:
+        # - clearance = trace_width/2 + net_clearance (distance from center)
+        # - segment collision needs full trace width, then adds net_clearance internally
+        # But since obstacles have clearance=0, we pass 2*clearance as the width
+        # so that width/2 = clearance (our required center-to-edge distance)
+        trace_width = clearance * 2
         return not self.obstacles.check_segment_collision(
-            x1, y1, x2, y2, layer, clearance * 2, net_id
+            x1, y1, x2, y2, layer, trace_width, net_id
         )
 
     def _can_place_via(

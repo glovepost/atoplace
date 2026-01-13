@@ -13,6 +13,7 @@ Based on research in layout_rules_research.md:
 
 import logging
 import math
+import random
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Set, Callable
@@ -401,7 +402,11 @@ class ForceDirectedRefiner:
                 num_components = len(state.positions)
 
                 # Normalize variance by average energy to make threshold meaningful
-                normalized_variance = energy_variance / (avg_energy + 1e-6)
+                # Guard against zero/near-zero energy which would make variance meaningless
+                if avg_energy > 1e-6:
+                    normalized_variance = energy_variance / avg_energy
+                else:
+                    normalized_variance = 0.0  # Zero energy means converged
                 low_variance = normalized_variance < self.config.energy_variance_threshold
 
                 if logger.isEnabledFor(logging.DEBUG) and iteration % log_every == 0:
@@ -519,9 +524,13 @@ class ForceDirectedRefiner:
         return oscillation_ratio > 0.7
 
     def _calculate_variance(self, values: List[float]) -> float:
-        """Calculate variance of a list of values."""
+        """Calculate variance of a list of values.
+
+        Returns 0.0 for empty/single-element lists to avoid division issues
+        in callers that normalize by variance.
+        """
         if len(values) < 2:
-            return float('inf')
+            return 0.0  # Return 0 instead of inf to avoid division issues
         mean = sum(values) / len(values)
         return sum((v - mean) ** 2 for v in values) / len(values)
 
@@ -734,7 +743,6 @@ class ForceDirectedRefiner:
                     comp.y = target_y + dy * scale
                 else:
                     # Component at same position as center - add random offset
-                    import random
                     angle = random.uniform(0, 2 * math.pi)
                     comp.x = target_x + radius * 0.5 * math.cos(angle)
                     comp.y = target_y + radius * 0.5 * math.sin(angle)
@@ -970,7 +978,6 @@ class ForceDirectedRefiner:
 
                         if distance < 0.001:
                             # Identical positions - apply random jitter to break symmetry
-                            import random
                             dx = random.uniform(-0.5, 0.5)
                             dy = random.uniform(-0.5, 0.5)
                             distance = math.sqrt(dx*dx + dy*dy)
@@ -1050,7 +1057,7 @@ class ForceDirectedRefiner:
                             nearest_dist = dist
                             nearest_ic = ic_ref
 
-                    if nearest_ic and nearest_dist > 0.1:
+                    if nearest_ic and nearest_dist > 0.1 and nearest_ic in state.positions:
                         ic_x, ic_y = state.positions[nearest_ic]
                         dx = ic_x - cap_x
                         dy = ic_y - cap_y
@@ -1269,6 +1276,7 @@ class ForceDirectedRefiner:
                 ]
 
                 # Iteratively move toward center until all corners are inside
+                converged = False
                 for _ in range(20):  # Max iterations
                     all_inside = True
                     for cx, cy in corners:
@@ -1277,6 +1285,7 @@ class ForceDirectedRefiner:
                             break
 
                     if all_inside:
+                        converged = True
                         break
 
                     # Move 10% toward center
@@ -1292,6 +1301,14 @@ class ForceDirectedRefiner:
                         (x - half_w, y + half_h),
                         (x + half_w, y + half_h),
                     ]
+
+                # Fallback: if iterations exhausted and still outside, place at center
+                if not converged:
+                    x, y = center_x, center_y
+                    logger.debug(
+                        "Component %s could not be clamped to polygon boundary, "
+                        "placing at board center (%.1f, %.1f)", ref, x, y
+                    )
 
                 state.positions[ref] = (x, y)
             else:

@@ -110,7 +110,11 @@ def get_module_color(module_type: str) -> str:
 
     # Generate a deterministic color based on hash of module name
     # Use golden ratio to spread hues evenly
-    hash_val = hash(module_type)
+    # NOTE: Use hashlib instead of built-in hash() which is randomized per-process
+    # (PYTHONHASHSEED). This ensures consistent colors across runs.
+    import hashlib
+    hash_bytes = hashlib.md5(module_type.encode('utf-8')).digest()
+    hash_val = int.from_bytes(hash_bytes[:4], byteorder='little')
     # Generate hue from 0-360 using golden angle (137.5°) for good distribution
     hue = (hash_val * 137.508) % 360
     # Use fixed saturation (70%) and lightness (50%) for vibrant colors
@@ -407,8 +411,17 @@ class PlacementVisualizer:
         )
 
     def _transform_pad(self, comp, pad) -> Tuple[float, float]:
-        """Transform pad position from component-relative to board coordinates."""
-        px, py = pad.x, pad.y
+        """Transform pad position from component-relative to board coordinates.
+
+        Pad coordinates are stored relative to KiCad footprint origin, not centroid.
+        We must:
+        1. Subtract origin_offset to convert to centroid-relative
+        2. Apply rotation
+        3. Add component centroid position
+        """
+        # Convert from KiCad-origin-relative to centroid-relative
+        px = pad.x - comp.origin_offset_x
+        py = pad.y - comp.origin_offset_y
 
         if comp.rotation != 0:
             rad = math.radians(comp.rotation)
@@ -557,11 +570,11 @@ class PlacementVisualizer:
 
             if group_min_x < float('inf'):
                 # Add padding around the group
-                padding = 1.5  # mm
-                group_min_x -= padding
-                group_min_y -= padding
-                group_max_x += padding
-                group_max_y += padding
+                group_padding = 1.5  # mm
+                group_min_x -= group_padding
+                group_min_y -= group_padding
+                group_max_x += group_padding
+                group_max_y += group_padding
 
                 color = get_module_color(module_type)
 

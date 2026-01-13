@@ -273,14 +273,20 @@ class ZoneConstraint(PlacementConstraint):
 
 @dataclass
 class GroupingConstraint(PlacementConstraint):
-    """Keep a group of components together."""
+    """Keep a group of components together with optional bounding box optimization."""
     components: List[str] = field(default_factory=list)
     max_spread: float = 15.0  # mm maximum distance from centroid
+
+    # Bounding box optimization parameters
+    optimize_bbox: bool = False  # Enable bbox minimization
+    bbox_strength: float = 1.0   # Multiplier for bbox forces relative to centroid
+    min_clearance: float = 0.25  # Minimum clearance between components in group (mm)
 
     def __post_init__(self):
         self.constraint_type = ConstraintType.GROUPING
         if not self.description:
-            self.description = f"Group {len(self.components)} components together"
+            bbox_note = " (bbox optimized)" if self.optimize_bbox else ""
+            self.description = f"Group {len(self.components)} components together{bbox_note}"
 
     def is_satisfied(self, board: Board) -> Tuple[bool, float]:
         if len(self.components) < 2:
@@ -338,6 +344,197 @@ class GroupingConstraint(PlacementConstraint):
             return (0.0, 0.0)
 
         return (total_x / count, total_y / count)
+
+    def calculate_forces(self, state, board: Board,
+                         strength: float) -> Dict[str, Tuple[float, float]]:
+        """Calculate forces for all components in group.
+
+        Combines centroid-pull with optional bounding box optimization.
+        This method is called by ForceDirectedRefiner when the constraint
+        implements the state-aware interface.
+
+        Args:
+            state: PlacementState with current positions
+            board: Board instance
+            strength: Base force strength
+
+        Returns:
+            Dict mapping component refs to (fx, fy) force vectors
+        """
+        forces: Dict[str, Tuple[float, float]] = {}
+
+        if len(self.components) < 2:
+            return forces
+
+        # Get current positions from state
+        positions = {}
+        for ref in self.components:
+            if ref in state.positions:
+                positions[ref] = state.positions[ref]
+
+        if len(positions) < 2:
+            return forces
+
+        # 1. Calculate centroid forces (existing logic)
+        centroid_forces = self._calculate_centroid_forces(positions, board, strength)
+
+        # 2. Calculate bbox forces if enabled
+        bbox_forces: Dict[str, Tuple[float, float]] = {}
+        if self.optimize_bbox:
+            bbox_forces = self._calculate_bbox_forces(
+                positions, board, strength * self.bbox_strength
+            )
+
+        # 3. Combine forces (sum them)
+        for ref in self.components:
+            fx_c, fy_c = centroid_forces.get(ref, (0.0, 0.0))
+            fx_b, fy_b = bbox_forces.get(ref, (0.0, 0.0))
+            combined_fx = fx_c + fx_b
+            combined_fy = fy_c + fy_b
+            if combined_fx != 0 or combined_fy != 0:
+                forces[ref] = (combined_fx, combined_fy)
+
+        return forces
+
+    def _calculate_centroid_forces(self, positions: Dict[str, Tuple[float, float]],
+                                   board: Board,
+                                   strength: float) -> Dict[str, Tuple[float, float]]:
+        """Calculate forces pulling components toward group centroid."""
+        forces: Dict[str, Tuple[float, float]] = {}
+
+        if len(positions) < 2:
+            return forces
+
+        # Calculate centroid from positions
+        cx = sum(p[0] for p in positions.values()) / len(positions)
+        cy = sum(p[1] for p in positions.values()) / len(positions)
+
+        for ref, (x, y) in positions.items():
+            dx = cx - x
+            dy = cy - y
+            distance = math.sqrt(dx * dx + dy * dy)
+
+            if distance <= self.max_spread / 2 or distance < 0.1:
+                continue
+
+            # Pull toward centroid
+            force_mag = strength * (distance - self.max_spread / 2) / distance
+            forces[ref] = (force_mag * dx, force_mag * dy)
+
+        return forces
+
+    def _calculate_bbox_forces(self, positions: Dict[str, Tuple[float, float]],
+                               board: Board,
+                               strength: float) -> Dict[str, Tuple[float, float]]:
+        """Calculate inward forces to minimize module bounding box.
+
+        Algorithm:
+        1. Compute current AABB of the module (including component sizes)
+        2. Compute minimum feasible AABB based on total component area
+        3. For each component on the periphery, apply inward force
+        4. Scale force by excess bbox dimension and module size
+        """
+        forces: Dict[str, Tuple[float, float]] = {}
+
+        if len(positions) < 2:
+            return forces
+
+        # Get component sizes for accurate bbox calculation
+        comp_sizes: Dict[str, Tuple[float, float]] = {}  # ref -> (half_width, half_height)
+        for ref in positions:
+            comp = board.get_component(ref)
+            if comp:
+                bbox = comp.get_bounding_box()
+                half_w = (bbox[2] - bbox[0]) / 2
+                half_h = (bbox[3] - bbox[1]) / 2
+                comp_sizes[ref] = (half_w, half_h)
+            else:
+                comp_sizes[ref] = (1.0, 1.0)  # Default 2mm x 2mm
+
+        # 1. Calculate current module bounding box
+        min_x, min_y = float('inf'), float('inf')
+        max_x, max_y = float('-inf'), float('-inf')
+
+        for ref, (x, y) in positions.items():
+            hw, hh = comp_sizes.get(ref, (1.0, 1.0))
+            min_x = min(min_x, x - hw)
+            min_y = min(min_y, y - hh)
+            max_x = max(max_x, x + hw)
+            max_y = max(max_y, y + hh)
+
+        current_width = max_x - min_x
+        current_height = max_y - min_y
+
+        # Prevent division by zero
+        if current_width < 0.1 or current_height < 0.1:
+            return forces
+
+        # 2. Estimate minimum feasible dimensions
+        # Based on total component area + clearance overhead
+        total_area = sum(4 * hw * hh for hw, hh in comp_sizes.values())
+        clearance_overhead = len(positions) * self.min_clearance * 2
+
+        # Preserve current aspect ratio
+        aspect = current_width / current_height
+        min_height = math.sqrt(total_area / max(aspect, 0.1)) + clearance_overhead
+        min_width = aspect * min_height + clearance_overhead
+
+        # 3. Calculate excess dimensions
+        excess_width = max(0.0, current_width - min_width)
+        excess_height = max(0.0, current_height - min_height)
+
+        # Early exit if already compact
+        if excess_width < 0.1 and excess_height < 0.1:
+            return forces
+
+        # 4. Scale strength by module size (larger modules need more force)
+        n = len(positions)
+        if n <= 3:
+            size_mult = 0.3  # Small modules: light touch
+        elif n <= 9:
+            size_mult = 1.0  # Medium modules: standard
+        else:
+            size_mult = 1.5  # Large modules: stronger force to counter repulsion
+
+        effective_strength = strength * size_mult
+
+        # 5. Apply inward forces to peripheral components
+        edge_threshold = 0.5  # mm - component is "on edge" if within this distance
+
+        for ref, (x, y) in positions.items():
+            hw, hh = comp_sizes.get(ref, (1.0, 1.0))
+            fx, fy = 0.0, 0.0
+
+            # Distance from component edge to module bbox edge
+            dist_to_left = (x - hw) - min_x
+            dist_to_right = max_x - (x + hw)
+            dist_to_bottom = (y - hh) - min_y
+            dist_to_top = max_y - (y + hh)
+
+            # Cap excess to prevent overshooting (max 2mm force contribution)
+            capped_excess_w = min(excess_width, 2.0)
+            capped_excess_h = min(excess_height, 2.0)
+
+            # Pull components on left edge toward center (positive x)
+            if dist_to_left < edge_threshold and excess_width > 0:
+                fx += effective_strength * capped_excess_w * 0.5
+
+            # Pull components on right edge toward center (negative x)
+            if dist_to_right < edge_threshold and excess_width > 0:
+                fx -= effective_strength * capped_excess_w * 0.5
+
+            # Pull components on bottom edge toward center (positive y)
+            if dist_to_bottom < edge_threshold and excess_height > 0:
+                fy += effective_strength * capped_excess_h * 0.5
+
+            # Pull components on top edge toward center (negative y)
+            if dist_to_top < edge_threshold and excess_height > 0:
+                fy -= effective_strength * capped_excess_h * 0.5
+
+            if fx != 0 or fy != 0:
+                forces[ref] = (fx, fy)
+
+        return forces
 
 
 @dataclass
