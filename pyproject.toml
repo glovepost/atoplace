@@ -30,6 +30,8 @@ classifiers = [
 dependencies = [
     "numpy>=1.21.0",
     "PyYAML>=6.0.0",
+    "rich>=13.7.0",
+    "typer>=0.12.0",
 ]
 
 [project.optional-dependencies]

@@ -1,11 +1,73 @@
-"""Routing engine with Freerouting integration."""
+"""Routing engine for AtoPlace.
 
-# Lazy imports to avoid ModuleNotFoundError until implementation exists
-__all__ = ["FreeroutingRunner", "NetClassAssigner", "DiffPairDetector"]
+Phase 3A - Foundation components:
+- SpatialHashIndex: O(~1) collision detection using spatial hashing
+- ObstacleMapBuilder: Pre-compute all routing obstacles from board
+- RouteVisualizer: SVG/HTML visualization for debugging
+
+Phase 3B - Core router (implemented):
+- AStarRouter: A* pathfinder with greedy multiplier
+- NetOrderer: Route difficult nets first
+- route_board: Convenience function to route all nets
+
+Phase 3C - Integration (planned):
+- FreeroutingRunner: Fallback to Freerouting for complex boards
+"""
+
+# Phase 3A - Foundation
+from .spatial_index import SpatialHashIndex, Obstacle, auto_calibrate_cell_size
+from .obstacle_map import ObstacleMapBuilder, NetPads, build_obstacle_map
+from .visualizer import (
+    RouteVisualizer,
+    VisualizationFrame,
+    RouteSegment,
+    Via,
+    create_visualizer_from_board,
+)
+
+# Phase 3B - Core Router
+from .astar_router import (
+    AStarRouter,
+    RouterConfig,
+    RoutingResult,
+    RouteNode,
+    RouteDirection,
+    NetOrderer,
+    route_board,
+)
+
+__all__ = [
+    # Spatial indexing
+    "SpatialHashIndex",
+    "Obstacle",
+    "auto_calibrate_cell_size",
+    # Obstacle map
+    "ObstacleMapBuilder",
+    "NetPads",
+    "build_obstacle_map",
+    # Visualization
+    "RouteVisualizer",
+    "VisualizationFrame",
+    "RouteSegment",
+    "Via",
+    "create_visualizer_from_board",
+    # A* Router
+    "AStarRouter",
+    "RouterConfig",
+    "RoutingResult",
+    "RouteNode",
+    "RouteDirection",
+    "NetOrderer",
+    "route_board",
+    # Planned (lazy import)
+    "FreeroutingRunner",
+    "NetClassAssigner",
+    "DiffPairDetector",
+]
 
 
 def __getattr__(name):
-    """Lazy import routing components."""
+    """Lazy import for planned components."""
     if name == "FreeroutingRunner":
         try:
             from .freerouting import FreeroutingRunner
@@ -13,7 +75,7 @@ def __getattr__(name):
         except ImportError:
             raise ImportError(
                 "FreeroutingRunner not yet implemented. "
-                "See docs/PRODUCT_PLAN.md Phase 3 for implementation plan."
+                "See research/routing_implementation_plan.md for implementation plan."
             )
     elif name == "NetClassAssigner":
         try:
@@ -22,7 +84,7 @@ def __getattr__(name):
         except ImportError:
             raise ImportError(
                 "NetClassAssigner not yet implemented. "
-                "See docs/PRODUCT_PLAN.md Phase 3 for implementation plan."
+                "See research/routing_implementation_plan.md for implementation plan."
             )
     elif name == "DiffPairDetector":
         try:
@@ -31,6 +93,6 @@ def __getattr__(name):
         except ImportError:
             raise ImportError(
                 "DiffPairDetector not yet implemented. "
-                "See docs/PRODUCT_PLAN.md Phase 3 for implementation plan."
+                "See research/routing_implementation_plan.md for implementation plan."
             )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -276,7 +276,9 @@ class ConfidenceScorer:
         score = 1.0
 
         # Check for overlapping components
-        overlaps = board.find_overlaps(self.dfm_profile.min_spacing)
+        # - check_layers: ensure Top/Bottom components don't falsely conflict
+        # - include_pads: ensure pad-inclusive bounding boxes are used for accuracy
+        overlaps = board.find_overlaps(self.dfm_profile.min_spacing, check_layers=True, include_pads=True)
         for ref1, ref2, dist in overlaps:
             # Skip if either component is DNP
             c1 = board.get_component(ref1)

@@ -65,6 +65,7 @@ class RefinementConfig:
     boundary_strength: float = 200.0
     constraint_strength: float = 50.0
     alignment_strength: float = 10.0
+    center_strength: float = 5.0  # Attraction toward board center/anchor
 
     # Physics parameters
     damping: float = 0.85
@@ -77,11 +78,18 @@ class RefinementConfig:
     energy_window: int = 10  # Number of frames for rolling average
     energy_variance_threshold: float = 0.01  # Converge when variance < threshold
 
+    # Adaptive damping for oscillation control
+    adaptive_damping: bool = True  # Enable adaptive damping
+    damping_increase_rate: float = 0.02  # Rate to increase damping on oscillation
+    max_damping: float = 0.98  # Maximum damping value
+    velocity_decay_rate: float = 0.95  # Decay velocity clamp on oscillation
+
     # Spacing parameters
     min_clearance: float = 0.25  # mm between components
+    edge_clearance: float = 0.3  # mm from board edge (should match DFM min_trace_to_edge)
     preferred_clearance: float = 0.5  # mm preferred spacing
     max_attraction_distance: float = 50.0  # mm - cap attraction beyond this
-    repulsion_cutoff: float = 50.0  # mm - no repulsion beyond this distance
+    repulsion_cutoff: float = 20.0  # mm - no repulsion beyond this distance (reduced from 50)
 
     # Grid alignment
     grid_size: float = 0.0  # 0 = no grid snapping
@@ -89,6 +97,10 @@ class RefinementConfig:
 
     # Component-specific
     lock_placed: bool = False  # Don't move already-placed components
+
+    # Anchor/center mode
+    auto_anchor_largest_ic: bool = True  # Auto-lock largest IC at center as anchor
+    initial_radius: float = 30.0  # mm - move distant components within this radius at start
 
 
 class ForceDirectedRefiner:
@@ -103,10 +115,26 @@ class ForceDirectedRefiner:
     5. Alignment - optional grid snapping
     """
 
-    def __init__(self, board: Board, config: Optional[RefinementConfig] = None):
+    def __init__(
+        self,
+        board: Board,
+        config: Optional[RefinementConfig] = None,
+        visualizer: Optional['PlacementVisualizer'] = None,
+        modules: Optional[Dict[str, str]] = None,
+    ):
         self.board = board
         self.config = config or RefinementConfig()
         self.constraints: List['PlacementConstraint'] = []
+        self.visualizer = visualizer
+        self.modules = modules or {}  # ref -> module_type mapping
+        self._viz_interval = 10  # Capture frame every N iterations
+
+        # Anchor components per layer (largest IC/component on each layer, locked at center)
+        self._anchor_ref: Optional[str] = None  # Top layer anchor (legacy compat)
+        self._anchor_top: Optional[str] = None  # Top layer anchor
+        self._anchor_bottom: Optional[str] = None  # Bottom layer anchor
+        self._center_x: float = 0.0
+        self._center_y: float = 0.0
 
         # Precompute connectivity for attraction forces
         # Note: Connectivity matrix built but reserved for future enhancement
@@ -117,11 +145,85 @@ class ForceDirectedRefiner:
         # Track component sizes for collision detection
         self._component_sizes = self._compute_component_sizes()
 
+        # Find and setup anchor if enabled
+        if self.config.auto_anchor_largest_ic:
+            self._setup_anchor()
+
     def add_constraint(self, constraint: 'PlacementConstraint'):
         """Add a placement constraint."""
         self.constraints.append(constraint)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Added constraint: %s", getattr(constraint, "description", constraint))
+
+    def _capture_viz_frame(
+        self,
+        state: PlacementState,
+        forces: Dict[str, List[Force]],
+        label: str,
+        phase: str = "refinement",
+    ):
+        """Capture a visualization frame if visualizer is enabled."""
+        if not self.visualizer:
+            return
+
+        # Build component data
+        components = {}
+        pads = {}
+
+        for ref, (x, y) in state.positions.items():
+            comp = self.board.components.get(ref)
+            if not comp or comp.dnp:
+                continue
+
+            rot = state.rotations.get(ref, comp.rotation)
+            components[ref] = (x, y, rot, comp.width, comp.height)
+
+            # Extract pads
+            pad_list = []
+            for pad in comp.pads:
+                # Transform pad to board coordinates
+                px, py = pad.x, pad.y
+                if rot != 0:
+                    rad = math.radians(rot)
+                    cos_r = math.cos(rad)
+                    sin_r = math.sin(rad)
+                    px, py = px * cos_r - py * sin_r, px * sin_r + py * cos_r
+                pad_list.append((
+                    x + px,
+                    y + py,
+                    pad.width,
+                    pad.height,
+                    pad.net or "",
+                ))
+            pads[ref] = pad_list
+
+        # Build force data
+        force_data = {}
+        for ref, force_list in forces.items():
+            force_tuples = []
+            for f in force_list:
+                force_tuples.append((f.fx, f.fy, f.force_type.value))
+            force_data[ref] = force_tuples
+
+        # Find overlaps
+        overlap_pairs = self.board.find_overlaps(clearance=0.1)
+
+        self.visualizer.capture_frame(
+            label=label,
+            iteration=state.iteration,
+            phase=phase,
+            components=components,
+            pads=pads,
+            modules=self.modules,
+            forces=force_data,
+            overlaps=list(overlap_pairs),
+            energy=state.total_energy,
+            max_move=max(
+                (abs(vx) + abs(vy) for vx, vy in state.velocities.values()),
+                default=0.0
+            ),
+            overlap_count=len(overlap_pairs),
+        )
 
     def refine(self, callback: Optional[Callable[[PlacementState], None]] = None
                ) -> PlacementState:
@@ -132,6 +234,11 @@ class ForceDirectedRefiner:
         - Stable convergence (energy variance below threshold)
         - Oscillation (high energy but low variance = stuck in local minimum)
         - Stall (no significant movement but hasn't converged)
+
+        Implements adaptive damping to handle oscillation:
+        - Detects oscillation via energy pattern analysis
+        - Increases damping when oscillation detected
+        - Decays velocity clamp to encourage settling
 
         Args:
             callback: Optional function called each iteration with current state
@@ -159,10 +266,37 @@ class ForceDirectedRefiner:
                 self.config.alignment_strength,
             )
 
+            # Log active force types for clarity
+            active_forces = ["repulsion", "attraction"]
+            if self.board.outline.has_outline:
+                active_forces.append("boundary")
+            else:
+                logger.debug("  Note: No board outline - boundary forces disabled")
+            if self.constraints:
+                active_forces.append(f"constraint ({len(self.constraints)} constraints)")
+            else:
+                logger.debug("  Note: No constraints specified - constraint forces disabled (this is normal)")
+            if self.config.snap_to_grid and self.config.grid_size > 0:
+                active_forces.append(f"alignment (grid={self.config.grid_size}mm)")
+            else:
+                logger.debug("  Note: No grid snapping - alignment forces disabled (use --grid to enable)")
+            logger.debug("  Active force types: %s", ", ".join(active_forces))
+
         # Energy history for rolling average convergence detection
         energy_history: List[float] = []
+        movement_history: List[float] = []
+
+        # Adaptive damping state
+        current_damping = self.config.damping
+        current_max_velocity = self.config.max_velocity
+        oscillation_count = 0
 
         log_every = 10
+
+        # Capture initial state
+        if self.visualizer:
+            initial_forces = self._calculate_all_forces(state)
+            self._capture_viz_frame(state, initial_forces, "Initial", phase="initial")
 
         for iteration in range(self.config.max_iterations):
             state.iteration = iteration
@@ -170,8 +304,16 @@ class ForceDirectedRefiner:
             # Calculate forces on each component
             forces = self._calculate_all_forces(state)
 
-            # Update velocities and positions
-            max_movement = self._apply_forces(state, forces)
+            # Update velocities and positions with current damping
+            max_movement = self._apply_forces(
+                state, forces,
+                damping_override=current_damping,
+                max_velocity_override=current_max_velocity
+            )
+
+            # Apply hard boundary clamping to prevent components going off-board
+            # This is a safety net - boundary forces should normally keep components in
+            self._clamp_to_boundary(state)
 
             # Apply rotation constraints
             self._apply_rotation_constraints(state)
@@ -179,14 +321,42 @@ class ForceDirectedRefiner:
             # Calculate total system energy
             state.total_energy = self._calculate_energy(state, forces)
 
-            # Track energy history for convergence detection
+            # Track energy and movement history for convergence/oscillation detection
             energy_history.append(state.total_energy)
+            movement_history.append(max_movement)
             if len(energy_history) > self.config.energy_window:
                 energy_history.pop(0)
+            if len(movement_history) > self.config.energy_window:
+                movement_history.pop(0)
+
+            # Adaptive damping: detect and respond to oscillation
+            if self.config.adaptive_damping and len(energy_history) >= 4:
+                is_oscillating = self._detect_oscillation(energy_history, movement_history)
+                if is_oscillating:
+                    oscillation_count += 1
+                    # Increase damping to slow things down
+                    current_damping = min(
+                        current_damping + self.config.damping_increase_rate,
+                        self.config.max_damping
+                    )
+                    # Decay velocity clamp to encourage settling
+                    current_max_velocity *= self.config.velocity_decay_rate
+
+                    if logger.isEnabledFor(logging.DEBUG) and oscillation_count % 5 == 1:
+                        logger.debug(
+                            "Oscillation detected at iteration %d: damping=%.3f max_vel=%.3f",
+                            iteration, current_damping, current_max_velocity
+                        )
 
             # Optional callback for visualization/logging
             if callback:
                 callback(state)
+
+            # Capture visualization frame periodically
+            if self.visualizer and iteration % self._viz_interval == 0:
+                self._capture_viz_frame(
+                    state, forces, f"Iteration {iteration}", phase="refinement"
+                )
 
             if logger.isEnabledFor(logging.DEBUG) and iteration % log_every == 0:
                 summary = self._summarize_forces(forces)
@@ -250,10 +420,65 @@ class ForceDirectedRefiner:
                     )
                 break
 
+        # Log warning if max iterations reached without convergence
+        if not state.converged:
+            logger.warning(
+                "Refinement did not converge after %d iterations (energy=%.3f, oscillations=%d). "
+                "Consider increasing max_iterations or adjusting force strengths.",
+                self.config.max_iterations,
+                state.total_energy,
+                oscillation_count
+            )
+
         # Apply final positions to board
         self._apply_to_board(state)
 
+        # Capture final state
+        if self.visualizer:
+            final_forces = self._calculate_all_forces(state)
+            self._capture_viz_frame(
+                state, final_forces,
+                f"Final (iter {state.iteration})",
+                phase="final"
+            )
+
         return state
+
+    def _detect_oscillation(self, energy_history: List[float],
+                           movement_history: List[float]) -> bool:
+        """Detect if the system is oscillating rather than converging.
+
+        Oscillation indicators:
+        - Energy bouncing up and down (alternating increases/decreases)
+        - Movement staying high but not decreasing
+        - Low energy variance but high energy level
+
+        Returns:
+            True if oscillation is detected
+        """
+        if len(energy_history) < 4:
+            return False
+
+        # Check for alternating energy pattern (up-down-up or down-up-down)
+        diffs = [energy_history[i+1] - energy_history[i]
+                 for i in range(len(energy_history) - 1)]
+        sign_changes = sum(1 for i in range(len(diffs) - 1)
+                          if diffs[i] * diffs[i+1] < 0)
+
+        # High sign changes relative to history length indicates oscillation
+        oscillation_ratio = sign_changes / (len(diffs) - 1) if len(diffs) > 1 else 0
+
+        # Check if movement is staying high (not decreasing)
+        if len(movement_history) >= 4:
+            recent_avg = sum(movement_history[-2:]) / 2
+            older_avg = sum(movement_history[-4:-2]) / 2
+            movement_stuck = recent_avg > older_avg * 0.9 and recent_avg > self.config.min_movement * 5
+
+            if oscillation_ratio > 0.6 and movement_stuck:
+                return True
+
+        # Pure oscillation check: many direction changes
+        return oscillation_ratio > 0.7
 
     def _calculate_variance(self, values: List[float]) -> float:
         """Calculate variance of a list of values."""
@@ -308,29 +533,199 @@ class ForceDirectedRefiner:
 
     def _is_component_locked(self, ref: str) -> bool:
         """Check if a component should be treated as locked."""
+        # Anchors are always locked (top and bottom layers)
+        if ref == self._anchor_ref or ref == self._anchor_top or ref == self._anchor_bottom:
+            return True
+
         if not self.config.lock_placed:
             return False
         comp = self.board.components.get(ref)
         return comp.locked if comp else False
+
+    def _setup_anchor(self):
+        """Find largest component on each layer and set as anchors at board center.
+
+        The anchors act as fixed points that other components compact around.
+        This prevents the "explosion" effect where repulsion pushes everything
+        to the edges.
+
+        For two-layer boards:
+        - Top layer: largest IC (or component) anchored at center
+        - Bottom layer: largest component anchored at center
+        """
+        from ..board.abstraction import Layer
+
+        # Calculate board center
+        outline = self.board.outline
+        if outline.has_outline:
+            self._center_x = outline.origin_x + outline.width / 2
+            self._center_y = outline.origin_y + outline.height / 2
+        else:
+            # Fall back to centroid of all components
+            if self.board.components:
+                xs = [c.x for c in self.board.components.values() if not c.dnp]
+                ys = [c.y for c in self.board.components.values() if not c.dnp]
+                if xs and ys:
+                    self._center_x = sum(xs) / len(xs)
+                    self._center_y = sum(ys) / len(ys)
+
+        # Separate components by layer
+        top_components = []
+        bottom_components = []
+
+        for ref, comp in self.board.components.items():
+            if comp.dnp:
+                continue
+
+            if comp.layer == Layer.BOTTOM_COPPER:
+                bottom_components.append((ref, comp))
+            else:
+                # Default to top layer (TOP_COPPER or through-hole)
+                top_components.append((ref, comp))
+
+        # Find largest IC on top layer (prefer ICs, fall back to any largest)
+        def find_largest_anchor(components, prefer_ic=True):
+            largest_ic_area = 0.0
+            largest_ic_ref = None
+            largest_any_area = 0.0
+            largest_any_ref = None
+
+            for ref, comp in components:
+                area = comp.width * comp.height
+
+                # Check if it's an IC (U prefix)
+                is_ic = ref.upper().startswith('U')
+
+                if is_ic and area > largest_ic_area:
+                    largest_ic_area = area
+                    largest_ic_ref = ref
+
+                if area > largest_any_area:
+                    largest_any_area = area
+                    largest_any_ref = ref
+
+            # Prefer IC if found and prefer_ic is True
+            if prefer_ic and largest_ic_ref:
+                return largest_ic_ref
+            return largest_any_ref
+
+        # Setup top layer anchor (prefer ICs)
+        self._anchor_top = find_largest_anchor(top_components, prefer_ic=True)
+        if self._anchor_top:
+            comp = self.board.components[self._anchor_top]
+            comp.x = self._center_x
+            comp.y = self._center_y
+            logger.info(
+                f"Top layer anchor: {self._anchor_top} ({comp.width:.1f}x{comp.height:.1f}mm) "
+                f"at center ({self._center_x:.1f}, {self._center_y:.1f})"
+            )
+
+        # Setup bottom layer anchor (any largest component)
+        self._anchor_bottom = find_largest_anchor(bottom_components, prefer_ic=False)
+        if self._anchor_bottom:
+            comp = self.board.components[self._anchor_bottom]
+            comp.x = self._center_x
+            comp.y = self._center_y
+            logger.info(
+                f"Bottom layer anchor: {self._anchor_bottom} ({comp.width:.1f}x{comp.height:.1f}mm) "
+                f"at center ({self._center_x:.1f}, {self._center_y:.1f})"
+            )
+
+        # Legacy compatibility - set _anchor_ref to top layer anchor
+        self._anchor_ref = self._anchor_top
+
+        # Initial compaction: move distant components closer (per layer)
+        self._compact_distant_components()
+
+    def _compact_distant_components(self):
+        """Move components outside initial_radius closer to the center.
+
+        This gives the force-directed algorithm a better starting point
+        by ensuring all components are within reach of the center attraction.
+        Components are placed at the edge of the initial_radius, preserving
+        their relative direction from the center.
+
+        Works per-layer: components compact toward their respective layer's anchor.
+        """
+        from ..board.abstraction import Layer
+
+        if self.config.initial_radius <= 0:
+            return
+
+        center_x = self._center_x
+        center_y = self._center_y
+        radius = self.config.initial_radius
+        moved_top = 0
+        moved_bottom = 0
+
+        for ref, comp in self.board.components.items():
+            # Skip anchors and DNP components
+            if ref == self._anchor_top or ref == self._anchor_bottom or comp.dnp:
+                continue
+
+            # Determine which anchor this component relates to based on layer
+            is_bottom = comp.layer == Layer.BOTTOM_COPPER
+            anchor_ref = self._anchor_bottom if is_bottom else self._anchor_top
+
+            # If no anchor for this layer, use the board center
+            if anchor_ref and anchor_ref in self.board.components:
+                anchor_comp = self.board.components[anchor_ref]
+                target_x, target_y = anchor_comp.x, anchor_comp.y
+            else:
+                target_x, target_y = center_x, center_y
+
+            # Calculate distance from the target (layer's anchor or center)
+            dx = comp.x - target_x
+            dy = comp.y - target_y
+            distance = math.sqrt(dx * dx + dy * dy)
+
+            if distance > radius:
+                # Move to edge of radius, preserving direction
+                if distance > 0.01:
+                    # Place at 80% of radius to leave room for spreading
+                    new_distance = radius * 0.8
+                    scale = new_distance / distance
+                    comp.x = target_x + dx * scale
+                    comp.y = target_y + dy * scale
+                else:
+                    # Component at same position as center - add random offset
+                    import random
+                    angle = random.uniform(0, 2 * math.pi)
+                    comp.x = target_x + radius * 0.5 * math.cos(angle)
+                    comp.y = target_y + radius * 0.5 * math.sin(angle)
+
+                if is_bottom:
+                    moved_bottom += 1
+                else:
+                    moved_top += 1
+
+        if moved_top > 0 or moved_bottom > 0:
+            logger.info(
+                f"Compacted distant components within {radius}mm radius: "
+                f"top={moved_top}, bottom={moved_bottom}"
+            )
 
     def _calculate_all_forces(self, state: PlacementState
                               ) -> Dict[str, List[Force]]:
         """Calculate all forces on each component."""
         forces: Dict[str, List[Force]] = {ref: [] for ref in state.positions}
 
-        # 1. Repulsion forces
+        # 1. Repulsion forces (prevent overlap)
         self._add_repulsion_forces(state, forces)
 
         # 2. Attraction forces (net connectivity)
         self._add_attraction_forces(state, forces)
 
-        # 3. Boundary forces
+        # 3. Center attraction (compaction toward anchor/center)
+        self._add_center_forces(state, forces)
+
+        # 4. Boundary forces
         self._add_boundary_forces(state, forces)
 
-        # 4. Constraint forces
+        # 5. Constraint forces
         self._add_constraint_forces(state, forces)
 
-        # 5. Alignment forces (optional)
+        # 6. Alignment forces (optional)
         if self.config.snap_to_grid and self.config.grid_size > 0:
             self._add_alignment_forces(state, forces)
 
@@ -364,6 +759,22 @@ class ForceDirectedRefiner:
                 # Skip if both locked (neither can move)
                 if locked1 and locked2:
                     continue
+
+                # Layer check to avoid unnecessary repulsion between Top/Bottom
+                # Retrieve components to check layers/through-hole status
+                comp1 = self.board.components[ref1]
+                comp2 = self.board.components[ref2]
+                
+                if not (comp1.is_through_hole or comp2.is_through_hole):
+                    from ..board.abstraction import Layer
+                    
+                    is_top1 = comp1.layer == Layer.TOP_COPPER
+                    is_bottom1 = comp1.layer == Layer.BOTTOM_COPPER
+                    is_top2 = comp2.layer == Layer.TOP_COPPER
+                    is_bottom2 = comp2.layer == Layer.BOTTOM_COPPER
+                    
+                    if (is_top1 and is_bottom2) or (is_bottom1 and is_top2):
+                        continue
 
                 # Calculate center-to-center distance and direction
                 dx = x1 - x2
@@ -429,21 +840,9 @@ class ForceDirectedRefiner:
                         if not locked2:
                             forces[ref2].append(Force(-fx * mult2, -fy * mult2, ForceType.REPULSION,
                                                       f"space_{ref1}"))
-                else:
-                    # Weak inverse-distance for distant components
-                    force_mag = self.config.repulsion_strength * 0.1 / distance
-
-                    fx = force_mag * dx / distance
-                    fy = force_mag * dy / distance
-
-                    mult1 = 2.0 if locked2 else 1.0
-                    mult2 = 2.0 if locked1 else 1.0
-                    if not locked1:
-                        forces[ref1].append(Force(fx * mult1, fy * mult1, ForceType.REPULSION,
-                                                  f"space_{ref2}"))
-                    if not locked2:
-                        forces[ref2].append(Force(-fx * mult2, -fy * mult2, ForceType.REPULSION,
-                                                  f"space_{ref1}"))
+                # NOTE: Removed weak inverse-distance repulsion for distant components
+                # This was causing components to drift to board edges. Now components
+                # only repel when overlapping or within preferred clearance.
 
     def _add_attraction_forces(self, state: PlacementState,
                                forces: Dict[str, List[Force]]):
@@ -477,13 +876,28 @@ class ForceDirectedRefiner:
             if num_refs < 2:
                 continue
 
-            # Base strength, boosted for power/ground nets
+            # Base strength, significantly boosted for power/ground nets
+            # Decoupling capacitors need to stay close to ICs for good PDN
             base_strength = self.config.attraction_strength
-            if net.is_power or net.is_ground:
-                base_strength *= 2.0
+            is_power_net = net.is_power or net.is_ground
+            if is_power_net:
+                # 10x boost for power nets to keep decoupling caps close
+                base_strength *= 10.0
 
             # Cap effective distance to prevent unbounded attraction on long nets
             max_dist = self.config.max_attraction_distance
+
+            # For power nets, identify capacitor-IC pairs for extra strong attraction
+            # Decoupling caps should be within 10mm of their target IC
+            cap_refs = []
+            ic_refs = []
+            if is_power_net:
+                for ref in refs:
+                    first_char = ref[0].upper() if ref else ''
+                    if first_char == 'C':
+                        cap_refs.append(ref)
+                    elif first_char == 'U':
+                        ic_refs.append(ref)
 
             if num_refs <= 3:
                 # Small nets: use pairwise attraction with pin-count weighting
@@ -498,6 +912,13 @@ class ForceDirectedRefiner:
                         dx = x2 - x1
                         dy = y2 - y1
                         distance = math.sqrt(dx*dx + dy*dy)
+
+                        if distance < 0.001:
+                            # Identical positions - apply random jitter to break symmetry
+                            import random
+                            dx = random.uniform(-0.5, 0.5)
+                            dy = random.uniform(-0.5, 0.5)
+                            distance = math.sqrt(dx*dx + dy*dy)
 
                         if distance < 0.1:
                             continue
@@ -551,6 +972,109 @@ class ForceDirectedRefiner:
                     forces[ref].append(Force(fx, fy, ForceType.ATTRACTION,
                                              f"net_{net_name}_star"))
 
+            # Extra strong attraction for decoupling capacitors to nearest IC
+            # This ensures caps stay close to their target IC for good PDN
+            # Best practice: decoupling caps should be within 5mm of IC power pins
+            if cap_refs and ic_refs:
+                decoupling_strength = self.config.attraction_strength * 100.0  # Very strong
+                decoupling_target_dist = 5.0  # Target distance in mm (tighter than before)
+                decoupling_max_dist = 10.0  # Maximum acceptable distance
+
+                for cap_ref in cap_refs:
+                    cap_x, cap_y = state.positions[cap_ref]
+
+                    # Find nearest IC on this net
+                    nearest_ic = None
+                    nearest_dist = float('inf')
+                    for ic_ref in ic_refs:
+                        ic_x, ic_y = state.positions[ic_ref]
+                        dx = ic_x - cap_x
+                        dy = ic_y - cap_y
+                        dist = math.sqrt(dx*dx + dy*dy)
+                        if dist < nearest_dist:
+                            nearest_dist = dist
+                            nearest_ic = ic_ref
+
+                    if nearest_ic and nearest_dist > 0.1:
+                        ic_x, ic_y = state.positions[nearest_ic]
+                        dx = ic_x - cap_x
+                        dy = ic_y - cap_y
+
+                        # Apply attraction if cap is further than target distance
+                        # Force increases quadratically as distance exceeds target
+                        if nearest_dist > decoupling_target_dist:
+                            # Quadratic force for stronger pull when far away
+                            excess_dist = nearest_dist - decoupling_target_dist
+                            # Extra urgency if exceeding max acceptable distance
+                            if nearest_dist > decoupling_max_dist:
+                                excess_dist *= 2.0  # Double the urgency
+                            force_mag = decoupling_strength * excess_dist * (1 + excess_dist / decoupling_target_dist)
+
+                            fx = force_mag * dx / nearest_dist
+                            fy = force_mag * dy / nearest_dist
+
+                            forces[cap_ref].append(Force(fx, fy, ForceType.ATTRACTION,
+                                                         f"decoupling_{cap_ref}_to_{nearest_ic}"))
+
+    def _add_center_forces(self, state: PlacementState,
+                           forces: Dict[str, List[Force]]):
+        """Add center attraction forces for compaction.
+
+        Pulls all non-anchor components toward their layer's anchor (or board center).
+        This counteracts repulsion and keeps the placement compact instead
+        of spreading to the edges.
+
+        The force is weak but constant, creating a gentle inward pressure
+        that balances repulsion at equilibrium.
+
+        Layer-aware: Components are attracted to their layer's anchor, ensuring
+        top and bottom layer components compact around their respective anchors.
+        """
+        from ..board.abstraction import Layer
+
+        if self.config.center_strength <= 0:
+            return
+
+        for ref, (x, y) in state.positions.items():
+            # Skip anchors themselves
+            if ref == self._anchor_top or ref == self._anchor_bottom:
+                continue
+
+            # Skip locked components
+            if self._is_component_locked(ref):
+                continue
+
+            # Determine which anchor to attract toward based on layer
+            comp = self.board.components.get(ref)
+            if not comp:
+                continue
+
+            is_bottom = comp.layer == Layer.BOTTOM_COPPER
+            anchor_ref = self._anchor_bottom if is_bottom else self._anchor_top
+
+            # Get the target center point for this component
+            if anchor_ref and anchor_ref in state.positions:
+                center_x, center_y = state.positions[anchor_ref]
+            else:
+                # Fall back to board center
+                center_x, center_y = self._center_x, self._center_y
+
+            dx = center_x - x
+            dy = center_y - y
+            distance = math.sqrt(dx * dx + dy * dy)
+
+            if distance < 0.1:
+                continue
+
+            # Linear attraction toward center - stronger when further away
+            # This creates gentle compaction pressure
+            force_mag = self.config.center_strength * min(distance, 50.0) / 10.0
+
+            fx = force_mag * dx / distance
+            fy = force_mag * dy / distance
+
+            forces[ref].append(Force(fx, fy, ForceType.ATTRACTION, "center"))
+
     def _add_boundary_forces(self, state: PlacementState,
                              forces: Dict[str, List[Force]]):
         """Add forces to keep components within board boundaries.
@@ -574,7 +1098,8 @@ class ForceDirectedRefiner:
         for ref, (x, y) in state.positions.items():
             # Get component dimensions (accounting for rotation)
             half_w, half_h = self._component_sizes[ref]
-            clearance = self.config.min_clearance
+            # Use edge_clearance to match validator's min_trace_to_edge
+            clearance = self.config.edge_clearance
 
             fx, fy = 0.0, 0.0
 
@@ -602,6 +1127,50 @@ class ForceDirectedRefiner:
 
             if fx != 0 or fy != 0:
                 forces[ref].append(Force(fx, fy, ForceType.BOUNDARY, "boundary"))
+
+    def _clamp_to_boundary(self, state: PlacementState):
+        """Hard clamp components to stay within board boundaries.
+
+        This is a safety net to ensure components never go off-board,
+        even if repulsion forces are stronger than boundary forces.
+        Boundary forces are the soft constraint; this is the hard constraint.
+
+        Uses edge_clearance to match DFM min_trace_to_edge requirement.
+
+        Skipped when board has no explicit outline defined.
+        """
+        outline = self.board.outline
+
+        if not outline.has_outline:
+            return
+
+        # Use edge_clearance to match validator's min_trace_to_edge
+        clearance = self.config.edge_clearance
+
+        for ref, (x, y) in state.positions.items():
+            # Get component dimensions (accounting for rotation)
+            half_w, half_h = self._component_sizes.get(ref, (1.0, 1.0))
+
+            # Calculate valid position range
+            min_x = outline.origin_x + half_w + clearance
+            max_x = outline.origin_x + outline.width - half_w - clearance
+            min_y = outline.origin_y + half_h + clearance
+            max_y = outline.origin_y + outline.height - half_h - clearance
+
+            # Ensure there's valid space (board might be too small)
+            if max_x < min_x:
+                # Board too narrow - center the component
+                x = outline.origin_x + outline.width / 2
+            else:
+                x = max(min_x, min(max_x, x))
+
+            if max_y < min_y:
+                # Board too short - center the component
+                y = outline.origin_y + outline.height / 2
+            else:
+                y = max(min_y, min(max_y, y))
+
+            state.positions[ref] = (x, y)
 
     def _add_constraint_forces(self, state: PlacementState,
                                forces: Dict[str, List[Force]]):
@@ -645,12 +1214,25 @@ class ForceDirectedRefiner:
                 forces[ref].append(Force(fx, fy, ForceType.ALIGNMENT, "grid"))
 
     def _apply_forces(self, state: PlacementState,
-                      forces: Dict[str, List[Force]]) -> float:
+                      forces: Dict[str, List[Force]],
+                      damping_override: Optional[float] = None,
+                      max_velocity_override: Optional[float] = None) -> float:
         """Apply forces to update velocities and positions.
 
         Respects lock_placed config: locked components don't move.
+
+        Args:
+            state: Current placement state
+            forces: Forces to apply
+            damping_override: Override damping value (for adaptive damping)
+            max_velocity_override: Override max velocity (for adaptive damping)
+
+        Returns:
+            Maximum movement of any component this iteration
         """
         max_movement = 0.0
+        damping = damping_override if damping_override is not None else self.config.damping
+        max_vel = max_velocity_override if max_velocity_override is not None else self.config.max_velocity
 
         for ref in state.positions:
             # Skip locked components
@@ -670,13 +1252,13 @@ class ForceDirectedRefiner:
 
             # Update velocity with damping and mass scaling (F = ma -> a = F/m)
             vx, vy = state.velocities[ref]
-            vx = (vx + (total_fx / mass) * self.config.time_step) * self.config.damping
-            vy = (vy + (total_fy / mass) * self.config.time_step) * self.config.damping
+            vx = (vx + (total_fx / mass) * self.config.time_step) * damping
+            vy = (vy + (total_fy / mass) * self.config.time_step) * damping
 
             # Clamp velocity
             speed = math.sqrt(vx*vx + vy*vy)
-            if speed > self.config.max_velocity:
-                scale = self.config.max_velocity / speed
+            if speed > max_vel:
+                scale = max_vel / speed
                 vx *= scale
                 vy *= scale
 

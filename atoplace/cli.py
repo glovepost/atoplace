@@ -3,32 +3,69 @@
 AtoPlace CLI
 
 Command-line interface for the AI-powered PCB placement and routing tool.
-
-Usage:
-    atoplace place <board.kicad_pcb> [options]
-    atoplace validate <board.kicad_pcb> [options]
-    atoplace report <board.kicad_pcb>
 """
 
-import argparse
+from __future__ import annotations
+
 import io
 import logging
+import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-_LOG_FILE_HANDLE = None
+import typer
+from rich import box
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
+from rich.prompt import Prompt
+from rich.rule import Rule
+from rich.table import Table
+
+
+app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    help="AtoPlace - AI-powered PCB placement and validation CLI.",
+)
+
+_LOG_FILE_HANDLE: Optional[io.TextIOBase] = None
 logger = logging.getLogger(__name__)
 
 
-class _Tee(io.TextIOBase):
-    def __init__(self, *streams):
+@dataclass
+class CLIContext:
+    console: Console
+    verbose: bool
+    log_path: Optional[Path]
+
+
+class _AnsiStrippingTee(io.TextIOBase):
+    def __init__(self, *streams: io.TextIOBase):
         self._streams = streams
 
     def write(self, data):
+        if not data:
+            return 0
+        # Handle both str and bytes (click sometimes writes bytes)
+        if isinstance(data, bytes):
+            data = data.decode("utf-8", errors="replace")
         for stream in self._streams:
-            stream.write(data)
+            if stream is _LOG_FILE_HANDLE:
+                stream.write(_strip_ansi(data))
+            else:
+                stream.write(data)
         return len(data)
 
     def flush(self):
@@ -36,8 +73,21 @@ class _Tee(io.TextIOBase):
             stream.flush()
 
 
-def _configure_logging(args) -> Path:
-    log_path = Path(args.log_file) if args.log_file else Path(args.log_dir) / (
+_ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_PATTERN.sub("", text)
+
+
+def _configure_logging(
+    *,
+    verbose: bool,
+    log_file: Optional[Path],
+    log_dir: Path,
+    console: Console,
+) -> Path:
+    log_path = log_file if log_file else log_dir / (
         f"atoplace-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
     )
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,407 +103,200 @@ def _configure_logging(args) -> Path:
     )
     root.addHandler(file_handler)
 
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.DEBUG if getattr(args, "verbose", False) else logging.INFO)
-    console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    console_handler = RichHandler(
+        console=console,
+        show_time=False,
+        show_path=False,
+        show_level=True,
+        rich_tracebacks=verbose,
+    )
+    console_handler.setLevel(logging.DEBUG if verbose else logging.WARNING)
     root.addHandler(console_handler)
 
     global _LOG_FILE_HANDLE
     _LOG_FILE_HANDLE = log_path.open("a", encoding="utf-8")
-    sys.stdout = _Tee(sys.stdout, _LOG_FILE_HANDLE)
-    sys.stderr = _Tee(sys.stderr, _LOG_FILE_HANDLE)
+    sys.stdout = _AnsiStrippingTee(sys.stdout, _LOG_FILE_HANDLE)
+    sys.stderr = _AnsiStrippingTee(sys.stderr, _LOG_FILE_HANDLE)
 
     return log_path
 
 
-def check_pcbnew():
-    """Check if pcbnew is available."""
-    try:
-        import pcbnew
-        return True
-    except ImportError:
-        return False
+def _get_context(ctx: typer.Context) -> CLIContext:
+    return ctx.obj  # type: ignore[return-value]
 
 
-def load_board_from_path(board_arg: str, build: Optional[str] = None):
-    """
-    Load a board from a path, auto-detecting atopile projects.
-
-    Args:
-        board_arg: Path to .kicad_pcb file or atopile project directory
-        build: Optional build name for atopile projects
-
-    Returns:
-        Tuple of (board, source_path, is_atopile)
-    """
-    from .board.atopile_adapter import (
-        AtopileProjectLoader,
-        detect_board_source,
-    )
-    from .board.kicad_adapter import load_kicad_board
-
-    path = Path(board_arg)
-
-    # Check if this is an atopile project
-    if path.is_dir() and (path / "ato.yaml").exists():
-        print(f"Detected atopile project: {path}")
-        loader = AtopileProjectLoader(path)
-        build_name = build or "default"
-
-        try:
-            board_path = loader.get_board_path(build_name)
-            print(f"  Build: {build_name}")
-            print(f"  Board: {board_path}")
-
-            if not board_path.exists():
-                print(f"Error: Board file not found: {board_path}")
-                print("Run 'ato build' first to generate the board.")
-                return None, None, True
-
-            board = loader.load_board(build_name)
-            return board, board_path, True
-
-        except ValueError as e:
-            print(f"Error: {e}")
-            return None, None, True
-
-    # Check for project root if path doesn't exist directly
-    if not path.exists():
-        project_root = AtopileProjectLoader.find_project_root(path)
-        if project_root:
-            return load_board_from_path(str(project_root), build)
-
-        print(f"Error: Path not found: {path}")
-        return None, None, False
-
-    # Direct .kicad_pcb file
-    if path.suffix == ".kicad_pcb":
-        print(f"Loading KiCad board: {path}")
-        board = load_kicad_board(path)
-        return board, path, False
-
-    # Directory without ato.yaml - look for .kicad_pcb files
-    if path.is_dir():
-        kicad_files = sorted(path.glob("*.kicad_pcb"))  # Sort for deterministic selection
-        if kicad_files:
-            if len(kicad_files) > 1:
-                print(f"Found {len(kicad_files)} KiCad boards - using first alphabetically:")
-                for f in kicad_files:
-                    print(f"  - {f.name}")
-            board_path = kicad_files[0]
-            print(f"Loading KiCad board: {board_path}")
-            board = load_kicad_board(board_path)
-            return board, board_path, False
-
-    print(f"Error: Cannot load board from: {path}")
-    return None, None, False
+def _render_board_summary(console: Console, board, outline_note: Optional[str]):
+    table = Table(box=box.SIMPLE, show_header=False)
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    table.add_row("Components", str(len(board.components)))
+    table.add_row("Nets", str(len(board.nets)))
+    table.add_row("Layers", str(board.layer_count))
+    if outline_note:
+        table.add_row("Outline", outline_note)
+    console.print(Panel(table, title="Board", border_style="cyan"))
 
 
-def cmd_place(args):
-    """Run placement optimization."""
-    from .board.abstraction import Board
-    from .board.kicad_adapter import save_kicad_board
-    from .placement.force_directed import ForceDirectedRefiner, RefinementConfig
-    from .placement.legalizer import PlacementLegalizer, LegalizerConfig
-    from .placement.module_detector import ModuleDetector
-    from .nlp.constraint_parser import ConstraintParser
-    from .validation.confidence import ConfidenceScorer
-    from .dfm.profiles import get_profile, get_profile_for_layers
-
-    # Load board with auto-detection
-    build_name = getattr(args, 'build', None)
-    board, pcb_path, is_atopile = load_board_from_path(args.board, build_name)
-
-    if board is None:
-        return 1
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(
-            "Board loaded: path=%s components=%d nets=%d layers=%d atopile=%s",
-            pcb_path,
-            len(board.components),
-            len(board.nets),
-            board.layer_count,
-            is_atopile,
-        )
-    print(f"  Components: {len(board.components)}")
-    print(f"  Nets: {len(board.nets)}")
-    print(f"  Layers: {board.layer_count}")
-
-    # Check for missing outline and handle auto-generation
-    if not board.outline.has_outline:
-        if getattr(args, 'auto_outline', False):
-            margin = getattr(args, 'outline_margin', 5.0)
-            board.outline = board.generate_outline_from_components(margin=margin)
-            print(f"  Auto-generated outline: {board.outline.width:.1f}mm x {board.outline.height:.1f}mm (margin={margin}mm)")
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Auto-generated outline: width=%.3f height=%.3f margin=%.3f",
-                    board.outline.width,
-                    board.outline.height,
-                    margin,
-                )
-        else:
-            print("  Warning: No board outline defined. Boundary checks will be skipped.")
-            print("           Use --auto-outline to generate one from component positions.")
-
-    # Detect modules
-    print("\nDetecting functional modules...")
-    detector = ModuleDetector(board)
-    modules = detector.detect()
-
-    # Aggregate modules by type for cleaner output
+def _render_module_summary(console: Console, modules) -> None:
     module_type_counts: Dict[str, int] = {}
     module_type_components: Dict[str, int] = {}
     for module in modules:
         if module.components:
             mtype = module.module_type.value
             module_type_counts[mtype] = module_type_counts.get(mtype, 0) + 1
-            module_type_components[mtype] = module_type_components.get(mtype, 0) + len(module.components)
-
-    for mtype, count in sorted(module_type_counts.items()):
-        comp_count = module_type_components[mtype]
-        if count == 1:
-            print(f"  {mtype}: {comp_count} components")
-        else:
-            print(f"  {mtype}: {comp_count} components ({count} modules)")
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("Module detection summary: %s", module_type_counts)
-
-    # Parse constraints if provided
-    constraints = []
-    if args.constraints:
-        print(f"\nParsing constraints: {args.constraints}")
-        parser = ConstraintParser(board)
-        parsed, summary = parser.parse_interactive(args.constraints)
-        constraints = parsed
-        print(summary)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "Parsed constraints: count=%d descriptions=%s",
-                len(constraints),
-                [c.description for c in constraints],
+            module_type_components[mtype] = (
+                module_type_components.get(mtype, 0) + len(module.components)
             )
 
-    # Add atopile module grouping constraints if requested
-    if getattr(args, 'use_ato_modules', False) and is_atopile:
-        from .placement.constraints import GroupingConstraint
-        print("\nApplying atopile module grouping constraints...")
+    if not module_type_counts:
+        console.print(Panel("No modules detected", border_style="yellow"))
+        return
 
-        # Collect components by their ato_module property
-        modules_to_components: Dict[str, List[str]] = {}
-        for ref, comp in board.components.items():
-            ato_module = comp.properties.get("ato_module")
-            if ato_module:
-                if ato_module not in modules_to_components:
-                    modules_to_components[ato_module] = []
-                modules_to_components[ato_module].append(ref)
+    table = Table(title="Detected Modules", box=box.SIMPLE, header_style="bold")
+    table.add_column("Module")
+    table.add_column("Components", justify="right")
+    table.add_column("Groups", justify="right")
 
-        # Create grouping constraints for modules with 2+ components
-        for module_name, comp_refs in modules_to_components.items():
-            if len(comp_refs) >= 2:
-                constraint = GroupingConstraint(
-                    components=comp_refs,
-                    max_spread=15.0,  # 15mm max spread for module grouping
-                    description=f"Group atopile module: {module_name}"
-                )
-                constraints.append(constraint)
-                print(f"  {module_name}: {len(comp_refs)} components")
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Added atopile grouping constraints: %d", len(modules_to_components))
-
-    # Get DFM profile for spacing rules
-    # Auto-select based on layer count if not specified
-    if args.dfm:
-        try:
-            dfm_profile = get_profile(args.dfm)
-        except ValueError as e:
-            print(f"Error: Invalid DFM profile '{args.dfm}'. {e}")
-            from .dfm.profiles import list_profiles
-            print(f"Available profiles: {', '.join(list_profiles())}")
-            return 1
-    else:
-        dfm_profile = get_profile_for_layers(board.layer_count)
-        print(f"\nAuto-selected DFM profile: {dfm_profile.name}")
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("DFM profile: %s", dfm_profile.name)
-
-    # Configure refinement with DFM-aware spacing
-    config = RefinementConfig(
-        max_iterations=args.iterations or 500,
-        min_movement=0.01,
-        damping=0.85,
-        min_clearance=dfm_profile.min_spacing,
-        preferred_clearance=dfm_profile.min_spacing * 2,  # 2x min for comfort
-        lock_placed=True,  # Respect locked components from KiCad
-    )
-
-    if args.grid:
-        config.snap_to_grid = True
-        config.grid_size = args.grid
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(
-            "Refinement configured: iterations=%d grid=%s snap=%s min_clearance=%.3f preferred=%.3f",
-            config.max_iterations,
-            f"{config.grid_size:.3f}mm" if config.grid_size else "none",
-            config.snap_to_grid,
-            config.min_clearance,
-            config.preferred_clearance,
+    for mtype in sorted(module_type_counts):
+        table.add_row(
+            mtype,
+            str(module_type_components[mtype]),
+            str(module_type_counts[mtype]),
         )
 
-    # Run force-directed refinement
-    print("\nRunning force-directed placement refinement...")
-    refiner = ForceDirectedRefiner(board, config)
+    console.print(table)
+
+
+def _render_constraint_summary(console: Console, constraints) -> None:
+    if not constraints:
+        console.print(Panel("No constraints provided", border_style="yellow"))
+        return
+
+    table = Table(title="Constraints", box=box.SIMPLE, header_style="bold")
+    table.add_column("Description")
+    table.add_column("Priority", justify="right")
 
     for constraint in constraints:
-        refiner.add_constraint(constraint)
-
-    def progress_callback(state):
-        if state.iteration % 50 == 0:
-            print(f"  Iteration {state.iteration}: energy={state.total_energy:.2f}")
-
-    result = refiner.refine(callback=progress_callback if args.verbose else None)
-
-    if result.converged:
-        print(f"  Converged after {result.iteration} iterations")
-    else:
-        print(f"  Stopped after {result.iteration} iterations (max reached)")
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(
-            "Refinement result: converged=%s iterations=%d energy=%.3f",
-            result.converged,
-            result.iteration,
-            result.total_energy,
+        table.add_row(
+            getattr(constraint, "description", "(unnamed)"),
+            getattr(constraint, "priority", "preferred"),
         )
 
-    # Run legalization pass (Manhattan aesthetics)
-    if not getattr(args, 'skip_legalization', False):
-        print("\nRunning legalization pass...")
-        legalize_config = LegalizerConfig(
-            primary_grid=args.grid if args.grid else 0.5,
-            snap_rotation=True,
-            align_passives_only=True,
-            # Use DFM profile spacing to avoid reintroducing violations
-            min_clearance=dfm_profile.min_spacing,
-            row_spacing=dfm_profile.min_spacing * 1.5,  # Comfortable row spacing
+    console.print(table)
+
+
+def _render_legalization_summary(console: Console, legal_result) -> None:
+    table = Table(title="Legalization", box=box.SIMPLE, show_header=False)
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+    table.add_row("Grid snapped", str(legal_result.grid_snapped))
+    table.add_row("Rows formed", str(legal_result.rows_formed))
+    table.add_row("Components aligned", str(legal_result.components_aligned))
+    table.add_row("Overlaps resolved", str(legal_result.overlaps_resolved))
+    table.add_row("Overlap iterations", str(legal_result.iterations_used))
+    table.add_row("Final overlaps", str(legal_result.final_overlaps))
+    console.print(table)
+
+    if legal_result.locked_conflicts:
+        conflicts = "\n".join(
+            f"- {ref1} overlaps {ref2}"
+            for ref1, ref2 in legal_result.locked_conflicts[:5]
         )
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "Legalizer configured: grid=%.3f snap_rotation=%s align_passives=%s min_clearance=%.3f row_spacing=%.3f",
-                legalize_config.primary_grid,
-                legalize_config.snap_rotation,
-                legalize_config.align_passives_only,
-                legalize_config.min_clearance,
-                legalize_config.row_spacing,
-            )
-        # Pass constraints to legalizer so it respects FixedConstraints
-        legalizer = PlacementLegalizer(board, legalize_config, constraints=constraints)
-        legal_result = legalizer.legalize()
-
-        print(f"  Grid snapped: {legal_result.grid_snapped} components")
-        print(f"  Rows formed: {legal_result.rows_formed} ({legal_result.components_aligned} components aligned)")
-        print(f"  Overlaps resolved: {legal_result.overlaps_resolved} in {legal_result.iterations_used} iterations")
-        if legal_result.final_overlaps > 0:
-            print(f"  Warning: {legal_result.final_overlaps} overlaps remaining")
-        if legal_result.locked_conflicts:
-            print(f"  Warning: {len(legal_result.locked_conflicts)} locked component conflicts (cannot resolve):")
-            for ref1, ref2 in legal_result.locked_conflicts[:5]:  # Show first 5
-                print(f"    - {ref1} overlaps {ref2}")
-            if len(legal_result.locked_conflicts) > 5:
-                print(f"    - ... and {len(legal_result.locked_conflicts) - 5} more")
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "Legalizer result: snapped=%d rows=%d aligned=%d overlaps_resolved=%d final_overlaps=%d",
-                legal_result.grid_snapped,
-                legal_result.rows_formed,
-                legal_result.components_aligned,
-                legal_result.overlaps_resolved,
-                legal_result.final_overlaps,
-            )
-
-    # Validate result
-    print("\nValidating placement...")
-    scorer = ConfidenceScorer(dfm_profile)
-    report = scorer.assess(board)
-
-    print(report.summary())
-
-    # Save result
-    if args.output:
-        output_path = Path(args.output)
-    else:
-        output_path = pcb_path.with_suffix('.placed.kicad_pcb')
-
-    if not args.dry_run:
-        print(f"\nSaving to: {output_path}")
-        save_kicad_board(board, output_path)
-        print("Done!")
-    else:
-        print("\nDry run - not saving changes")
-
-    return 0 if report.overall_score >= 0.7 else 1
+        if len(legal_result.locked_conflicts) > 5:
+            conflicts += f"\n- ... and {len(legal_result.locked_conflicts) - 5} more"
+        console.print(Panel(conflicts, title="Locked Conflicts", border_style="yellow"))
 
 
-def cmd_validate(args):
-    """Validate board placement."""
-    from .validation.confidence import ConfidenceScorer
-    from .validation.pre_route import PreRouteValidator
-    from .validation.drc import DRCChecker
-    from .dfm.profiles import get_profile, get_profile_for_layers
+def _render_validation_summary(console: Console, report) -> None:
+    console.print(Panel(report.summary(), title="Confidence", border_style="green"))
 
-    # Load board with auto-detection
-    build_name = getattr(args, 'build', None)
-    board, pcb_path, is_atopile = load_board_from_path(args.board, build_name)
 
-    if board is None:
-        return 1
+def _render_drc_summary(console: Console, drc) -> None:
+    console.print(Panel(drc.get_summary(), title="DRC", border_style="magenta"))
 
-    # Auto-select DFM profile based on layer count if not specified
-    if args.dfm:
+
+def _render_pre_route_summary(console: Console, pre_validator) -> None:
+    console.print(Panel(pre_validator.get_summary(), title="Pre-Route", border_style="magenta"))
+
+
+def check_pcbnew() -> bool:
+    """Check if pcbnew is available."""
+    try:
+        import pcbnew  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def load_board_from_path(
+    board_arg: str,
+    build: Optional[str] = None,
+    console: Optional[Console] = None,
+) -> Tuple[Optional[object], Optional[Path], bool]:
+    """
+    Load a board from a path, auto-detecting atopile projects.
+
+    Returns:
+        Tuple of (board, source_path, is_atopile)
+    """
+    from .board.atopile_adapter import AtopileProjectLoader
+    from .board.kicad_adapter import load_kicad_board
+
+    emit = console.print if console else print
+    path = Path(board_arg)
+
+    if path.is_dir() and (path / "ato.yaml").exists():
+        emit(f"Detected atopile project: [bold]{path}[/bold]")
+        loader = AtopileProjectLoader(path)
+        build_name = build or "default"
+
         try:
-            dfm_profile = get_profile(args.dfm)
-        except ValueError as e:
-            print(f"Error: Invalid DFM profile '{args.dfm}'. {e}")
-            from .dfm.profiles import list_profiles
-            print(f"Available profiles: {', '.join(list_profiles())}")
-            return 1
-    else:
-        dfm_profile = get_profile_for_layers(board.layer_count)
-        print(f"Auto-selected DFM profile: {dfm_profile.name}")
+            board_path = loader.get_board_path(build_name)
+            emit(f"  Build: [bold]{build_name}[/bold]")
+            emit(f"  Board: [bold]{board_path}[/bold]")
 
-    # Run pre-route validation
-    print("\nRunning pre-route validation...")
-    pre_validator = PreRouteValidator(board, dfm_profile)
-    can_proceed, issues = pre_validator.validate()
-    print(pre_validator.get_summary())
+            if not board_path.exists():
+                emit(f"[red]Error:[/red] Board file not found: {board_path}")
+                emit("Run 'ato build' first to generate the board.")
+                return None, None, True
 
-    # Run DRC
-    print("\nRunning DRC checks...")
-    drc = DRCChecker(board, dfm_profile)
-    passed, violations = drc.run_checks()
-    print(drc.get_summary())
+            board = loader.load_board(build_name)
+            return board, board_path, True
 
-    # Run confidence scoring
-    print("\nGenerating confidence report...")
-    scorer = ConfidenceScorer(dfm_profile)
-    report = scorer.assess(board)
+        except ValueError as exc:
+            emit(f"[red]Error:[/red] {exc}")
+            return None, None, True
 
-    if args.output:
-        # Save comprehensive markdown report including pre-route and DRC results
-        output_path = Path(args.output)
-        # Ensure parent directory exists
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        full_report = _generate_full_validation_report(
-            report, pre_validator, drc, can_proceed, passed
-        )
-        output_path.write_text(full_report)
-        print(f"\nReport saved to: {output_path}")
-    else:
-        print("\n" + "=" * 60)
-        print(report.summary())
+    if not path.exists():
+        project_root = AtopileProjectLoader.find_project_root(path)
+        if project_root:
+            return load_board_from_path(str(project_root), build, console)
 
-    # Include confidence score in exit code decision (consistent with place command)
-    confidence_ok = report.overall_score >= 0.7
-    return 0 if passed and can_proceed and confidence_ok else 1
+        emit(f"[red]Error:[/red] Path not found: {path}")
+        return None, None, False
+
+    if path.suffix == ".kicad_pcb":
+        emit(f"Loading KiCad board: [bold]{path}[/bold]")
+        board = load_kicad_board(path)
+        return board, path, False
+
+    if path.is_dir():
+        kicad_files = sorted(path.glob("*.kicad_pcb"))
+        if kicad_files:
+            if len(kicad_files) > 1:
+                emit(
+                    f"Found {len(kicad_files)} KiCad boards - using first alphabetically:"
+                )
+                for kicad in kicad_files:
+                    emit(f"  - {kicad.name}")
+            board_path = kicad_files[0]
+            emit(f"Loading KiCad board: [bold]{board_path}[/bold]")
+            board = load_kicad_board(board_path)
+            return board, board_path, False
+
+    emit(f"[red]Error:[/red] Cannot load board from: {path}")
+    return None, None, False
 
 
 def _generate_full_validation_report(report, pre_validator, drc, pre_route_passed, drc_passed):
@@ -467,13 +310,14 @@ def _generate_full_validation_report(report, pre_validator, drc, pre_route_passe
         "",
     ]
 
-    # Pre-route issues
     if pre_validator.issues:
         lines.append("### Issues")
         lines.append("")
         for issue in pre_validator.issues:
             severity_emoji = {"error": "X", "warning": "!", "info": "i"}
-            lines.append(f"- [{severity_emoji.get(issue.severity, '?')}] [{issue.category}] {issue.message}")
+            lines.append(
+                f"- [{severity_emoji.get(issue.severity, '?')}] [{issue.category}] {issue.message}"
+            )
             if issue.location:
                 lines.append(f"  - Location: {issue.location}")
         lines.append("")
@@ -481,15 +325,16 @@ def _generate_full_validation_report(report, pre_validator, drc, pre_route_passe
         lines.append("No pre-route issues found.")
         lines.append("")
 
-    # DRC section
-    lines.extend([
-        "## DRC Checks",
-        "",
-        f"**Status:** {'PASSED' if drc_passed else 'FAILED'}",
-        "",
-    ])
+    lines.extend(
+        [
+            "## DRC Checks",
+            "",
+            f"**Status:** {'PASSED' if drc_passed else 'FAILED'}",
+            "",
+        ]
+    )
 
-    violations = drc.violations if hasattr(drc, 'violations') else []
+    violations = drc.violations if hasattr(drc, "violations") else []
     if violations:
         lines.append("### Violations")
         lines.append("")
@@ -502,100 +347,720 @@ def _generate_full_validation_report(report, pre_validator, drc, pre_route_passe
         lines.append("No DRC violations found.")
         lines.append("")
 
-    # Confidence report (reuse existing markdown)
-    lines.extend([
-        "---",
-        "",
-        report.to_markdown(),
-    ])
-
+    lines.extend(["---", "", report.to_markdown()])
     return "\n".join(lines)
 
 
-def cmd_report(args):
-    """Generate detailed report for a board including all validation results."""
+@app.callback()
+def _app_callback(
+    ctx: typer.Context,
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logs."),
+    log_file: Optional[Path] = typer.Option(
+        None, "--log-file", help="Write debug logs to this file."
+    ),
+    log_dir: Path = typer.Option(
+        Path("logs"),
+        "--log-dir",
+        help="Directory for debug logs.",
+    ),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable colored output."),
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        help="Show version and exit.",
+        callback=lambda value: _version_callback(value),
+        is_eager=True,
+    ),
+):
+    """AtoPlace - AI-powered PCB placement tool."""
+    console = Console(no_color=no_color)
+    log_path = _configure_logging(
+        verbose=verbose,
+        log_file=log_file,
+        log_dir=log_dir,
+        console=console,
+    )
+    ctx.obj = CLIContext(console=console, verbose=verbose, log_path=log_path)
+
+
+def _version_callback(value: Optional[bool]) -> None:
+    if value:
+        typer.echo("atoplace 0.1.0")
+        raise typer.Exit()
+
+
+@app.command()
+def place(
+    ctx: typer.Context,
+    board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
+    constraints: Optional[str] = typer.Option(
+        None, "--constraints", "-c", help="Placement constraints (natural language)."
+    ),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o", help="Output path for placed board."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Do not save output."),
+    dfm: Optional[str] = typer.Option(
+        None, "--dfm", help="DFM profile name (e.g., jlcpcb_standard)."
+    ),
+    iterations: Optional[int] = typer.Option(
+        None, "--iterations", "-i", help="Max refinement iterations."
+    ),
+    grid: Optional[float] = typer.Option(
+        None, "--grid", help="Snap-to-grid size in mm."
+    ),
+    skip_legalization: bool = typer.Option(
+        False,
+        "--skip-legalization",
+        help="Skip legalization pass (grid snap, alignment).",
+    ),
+    use_ato_modules: bool = typer.Option(
+        False,
+        "--use-ato-modules",
+        help="Use atopile module grouping constraints.",
+    ),
+    build: Optional[str] = typer.Option(
+        None,
+        "--build",
+        help="Atopile build name (default: default).",
+    ),
+    auto_outline: bool = typer.Option(
+        False,
+        "--auto-outline",
+        help="Auto-generate outline when missing (component bounding box).",
+    ),
+    outline_margin: float = typer.Option(
+        5.0,
+        "--outline-margin",
+        help="Margin for auto-generated outline in mm.",
+    ),
+    compact_outline: bool = typer.Option(
+        False,
+        "--compact-outline",
+        help="Iteratively compact outline to minimum feasible size.",
+    ),
+    outline_clearance: float = typer.Option(
+        0.25,
+        "--outline-clearance",
+        help="Clearance used when compacting outline in mm.",
+    ),
+    visualize: bool = typer.Option(
+        False,
+        "--visualize",
+        help="Generate interactive HTML visualization for debugging.",
+    ),
+):
+    """Run placement optimization."""
+    from .board.kicad_adapter import save_kicad_board
+    from .placement.force_directed import ForceDirectedRefiner, RefinementConfig
+    from .placement.legalizer import PlacementLegalizer, LegalizerConfig
+    from .placement.module_detector import ModuleDetector
+    from .placement.visualizer import PlacementVisualizer
+    from .nlp.constraint_parser import ConstraintParser
+    from .validation.confidence import ConfidenceScorer
+    from .dfm.profiles import get_profile, get_profile_for_layers
+
+    context = _get_context(ctx)
+    console = context.console
+
+    console.print(Rule("Load Board", style="cyan"))
+    board_obj, pcb_path, is_atopile = load_board_from_path(
+        str(board), build, console
+    )
+    if board_obj is None or pcb_path is None:
+        raise typer.Exit(code=1)
+
+    outline_note = "present" if board_obj.outline.has_outline else "missing"
+    if not board_obj.outline.has_outline:
+        if compact_outline:
+            board_obj.outline = board_obj.compact_outline(
+                initial_margin=10.0,
+                min_margin=1.0,
+                clearance=outline_clearance,
+                shrink_step=0.5,
+            )
+            outline_note = (
+                f"compacted to {board_obj.outline.width:.1f}x"
+                f"{board_obj.outline.height:.1f}mm"
+            )
+        elif auto_outline:
+            board_obj.outline = board_obj.generate_outline_from_components(
+                margin=outline_margin
+            )
+            outline_note = (
+                f"auto {board_obj.outline.width:.1f}x"
+                f"{board_obj.outline.height:.1f}mm"
+            )
+        else:
+            outline_note = "missing (boundary checks disabled)"
+
+    _render_board_summary(console, board_obj, outline_note)
+
+    logger.debug(
+        "Board loaded: path=%s components=%d nets=%d layers=%d atopile=%s",
+        pcb_path,
+        len(board_obj.components),
+        len(board_obj.nets),
+        board_obj.layer_count,
+        is_atopile,
+    )
+
+    console.print(Rule("Detect Modules", style="cyan"))
+    detector = ModuleDetector(board_obj)
+    modules = detector.detect()
+    _render_module_summary(console, modules)
+
+    # Create visualizer if requested
+    visualizer = None
+    module_map = {}  # ref -> module_type
+    if visualize:
+        visualizer = PlacementVisualizer(board_obj)
+        # Build module map from detected modules
+        for module in modules:
+            for ref in module.components:
+                module_map[ref] = module.module_type.value
+
+    constraints_list = []
+    if constraints:
+        console.print(Rule("Constraints", style="cyan"))
+        parser = ConstraintParser(board_obj)
+        parsed, summary = parser.parse_interactive(constraints)
+        constraints_list = parsed
+        console.print(Panel(summary, border_style="blue"))
+        _render_constraint_summary(console, constraints_list)
+
+    if use_ato_modules and is_atopile:
+        from .placement.constraints import GroupingConstraint
+
+        console.print(Rule("Atopile Module Grouping", style="cyan"))
+        modules_to_components: Dict[str, List[str]] = {}
+        for ref, comp in board_obj.components.items():
+            ato_module = comp.properties.get("ato_module")
+            if ato_module:
+                modules_to_components.setdefault(ato_module, []).append(ref)
+
+        table = Table(box=box.SIMPLE, header_style="bold")
+        table.add_column("Module")
+        table.add_column("Components", justify="right")
+        for module_name, comp_refs in modules_to_components.items():
+            if len(comp_refs) >= 2:
+                constraint = GroupingConstraint(
+                    components=comp_refs,
+                    max_spread=15.0,
+                    description=f"Group atopile module: {module_name}",
+                )
+                constraints_list.append(constraint)
+                table.add_row(module_name, str(len(comp_refs)))
+        console.print(table)
+
+    console.print(Rule("DFM Profile", style="cyan"))
+    if dfm:
+        try:
+            dfm_profile = get_profile(dfm)
+        except ValueError as exc:
+            from .dfm.profiles import list_profiles
+
+            console.print(
+                Panel(
+                    f"[red]Invalid DFM profile[/red]: {exc}\n"
+                    f"Available: {', '.join(list_profiles())}",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(code=1)
+    else:
+        dfm_profile = get_profile_for_layers(board_obj.layer_count)
+
+    dfm_table = Table(box=box.SIMPLE, show_header=False)
+    dfm_table.add_column("Field", style="bold")
+    dfm_table.add_column("Value")
+    dfm_table.add_row("Profile", dfm_profile.name)
+    dfm_table.add_row("Min spacing", f"{dfm_profile.min_spacing:.3f} mm")
+    console.print(Panel(dfm_table, border_style="cyan"))
+
+    config = RefinementConfig(
+        max_iterations=iterations or 500,
+        min_movement=0.01,
+        damping=0.85,
+        min_clearance=dfm_profile.min_spacing,
+        edge_clearance=dfm_profile.min_trace_to_edge,
+        preferred_clearance=dfm_profile.min_spacing * 2,
+        lock_placed=True,
+    )
+    if grid:
+        config.snap_to_grid = True
+        config.grid_size = grid
+
+    logger.debug(
+        "Refinement configured: iterations=%d grid=%s snap=%s min_clearance=%.3f preferred=%.3f",
+        config.max_iterations,
+        f"{config.grid_size:.3f}mm" if config.grid_size else "none",
+        config.snap_to_grid,
+        config.min_clearance,
+        config.preferred_clearance,
+    )
+
+    console.print(Rule("Refinement", style="cyan"))
+    refiner = ForceDirectedRefiner(
+        board_obj, config,
+        visualizer=visualizer,
+        modules=module_map,
+    )
+    for constraint in constraints_list:
+        refiner.add_constraint(constraint)
+
+    result = None
+    if context.verbose:
+        with console.status("Running force-directed refinement..."):
+            result = refiner.refine()
+    else:
+        progress_columns = [
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeRemainingColumn(),
+        ]
+        with Progress(*progress_columns, console=console) as progress:
+            task_id = progress.add_task(
+                "Refining placement", total=config.max_iterations
+            )
+            last_update = -1
+
+            def progress_callback(state):
+                nonlocal last_update
+                if state.iteration - last_update >= 5 or state.iteration == 0:
+                    progress.update(
+                        task_id,
+                        completed=state.iteration,
+                        description=f"Refining (E={state.total_energy:.1f})",
+                    )
+                    last_update = state.iteration
+
+            result = refiner.refine(callback=progress_callback)
+            progress.update(task_id, completed=result.iteration)
+
+    if result is None:
+        raise typer.Exit(code=1)
+
+    refinement_table = Table(box=box.SIMPLE, show_header=False)
+    refinement_table.add_column("Metric", style="bold")
+    refinement_table.add_column("Value", justify="right")
+    refinement_table.add_row("Converged", "yes" if result.converged else "no")
+    refinement_table.add_row("Iterations", str(result.iteration))
+    refinement_table.add_row("Energy", f"{result.total_energy:.2f}")
+    if config.snap_to_grid:
+        refinement_table.add_row("Grid", f"{config.grid_size:.2f} mm")
+    console.print(Panel(refinement_table, title="Refinement Summary", border_style="green"))
+
+    logger.debug(
+        "Refinement result: converged=%s iterations=%d energy=%.3f",
+        result.converged,
+        result.iteration,
+        result.total_energy,
+    )
+
+    if not skip_legalization:
+        console.print(Rule("Legalization", style="cyan"))
+        # Use STRICT overlap prevention settings
+        # Use at least 0.35mm clearance, or DFM profile if stricter
+        strict_clearance = max(0.35, dfm_profile.min_spacing)
+        legalize_config = LegalizerConfig(
+            primary_grid=grid if grid else 0.5,
+            snap_rotation=True,
+            align_passives_only=True,
+            min_clearance=strict_clearance,  # Strict clearance to prevent any overlaps
+            edge_clearance=max(0.4, dfm_profile.min_trace_to_edge),
+            row_spacing=strict_clearance * 2,
+            guarantee_zero_overlaps=True,  # CRITICAL: Ensure no overlapping components
+            max_displacement_iterations=1000,  # More iterations for thorough resolution
+            overlap_retry_passes=50,  # More passes to guarantee resolution
+            escalation_factor=1.3,  # Gentler escalation for better results
+        )
+        legalizer = PlacementLegalizer(
+            board_obj, legalize_config, constraints=constraints_list
+        )
+        with console.status("Running legalization pass..."):
+            legal_result = legalizer.legalize()
+        _render_legalization_summary(console, legal_result)
+        logger.debug(
+            "Legalizer result: snapped=%d rows=%d aligned=%d overlaps_resolved=%d final_overlaps=%d",
+            legal_result.grid_snapped,
+            legal_result.rows_formed,
+            legal_result.components_aligned,
+            legal_result.overlaps_resolved,
+            legal_result.final_overlaps,
+        )
+
+        # Capture legalization result frame
+        if visualizer:
+            visualizer.capture_from_board(
+                label="After Legalization",
+                iteration=0,
+                phase="legalization",
+                modules=module_map,
+            )
+
+    console.print(Rule("Validation", style="cyan"))
+    scorer = ConfidenceScorer(dfm_profile)
+    report = scorer.assess(board_obj)
+    _render_validation_summary(console, report)
+
+    output_path = output if output else pcb_path.with_suffix(".placed.kicad_pcb")
+
+    if dry_run:
+        console.print(Panel("Dry run - output not saved", border_style="yellow"))
+    else:
+        with console.status("Saving placement..."):
+            save_kicad_board(board_obj, output_path)
+        console.print(Panel(f"Saved to {output_path}", border_style="green"))
+
+    # Export visualization if enabled
+    if visualizer:
+        viz_path = visualizer.export_html_report(
+            filename="placement_debug.html",
+            output_dir="placement_debug",
+        )
+        console.print(Panel(f"Visualization: {viz_path}", border_style="magenta"))
+
+    console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
+    raise typer.Exit(code=0 if report.overall_score >= 0.7 else 1)
+
+
+@app.command()
+def validate(
+    ctx: typer.Context,
+    board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o", help="Write markdown report to file."
+    ),
+    dfm: Optional[str] = typer.Option(
+        None, "--dfm", help="DFM profile name (e.g., jlcpcb_standard)."
+    ),
+    build: Optional[str] = typer.Option(
+        None, "--build", help="Atopile build name (default: default)."
+    ),
+):
+    """Validate board placement."""
+    from .validation.confidence import ConfidenceScorer
+    from .validation.pre_route import PreRouteValidator
+    from .validation.drc import DRCChecker
+    from .dfm.profiles import get_profile, get_profile_for_layers
+
+    context = _get_context(ctx)
+    console = context.console
+
+    console.print(Rule("Load Board", style="cyan"))
+    board_obj, _, _ = load_board_from_path(str(board), build, console)
+    if board_obj is None:
+        raise typer.Exit(code=1)
+
+    if dfm:
+        try:
+            dfm_profile = get_profile(dfm)
+        except ValueError as exc:
+            from .dfm.profiles import list_profiles
+
+            console.print(
+                Panel(
+                    f"[red]Invalid DFM profile[/red]: {exc}\n"
+                    f"Available: {', '.join(list_profiles())}",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(code=1)
+    else:
+        dfm_profile = get_profile_for_layers(board_obj.layer_count)
+
+    console.print(Rule("Pre-Route Validation", style="cyan"))
+    pre_validator = PreRouteValidator(board_obj, dfm_profile)
+    can_proceed, _ = pre_validator.validate()
+    _render_pre_route_summary(console, pre_validator)
+
+    console.print(Rule("DRC", style="cyan"))
+    drc = DRCChecker(board_obj, dfm_profile)
+    drc_passed, _ = drc.run_checks()
+    _render_drc_summary(console, drc)
+
+    console.print(Rule("Confidence", style="cyan"))
+    scorer = ConfidenceScorer(dfm_profile)
+    report = scorer.assess(board_obj)
+    _render_validation_summary(console, report)
+
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        full_report = _generate_full_validation_report(
+            report, pre_validator, drc, can_proceed, drc_passed
+        )
+        output.write_text(full_report)
+        console.print(Panel(f"Report saved to {output}", border_style="green"))
+
+    console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
+    confidence_ok = report.overall_score >= 0.7
+    raise typer.Exit(code=0 if drc_passed and can_proceed and confidence_ok else 1)
+
+
+@app.command()
+def route(
+    ctx: typer.Context,
+    board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
+    dfm: Optional[str] = typer.Option(
+        None, "--dfm", help="DFM profile name (e.g., jlcpcb_standard)."
+    ),
+    build: Optional[str] = typer.Option(
+        None, "--build", help="Atopile build name (default: default)."
+    ),
+    greedy: float = typer.Option(
+        2.0, "--greedy", "-g",
+        help="A* greedy multiplier (1=optimal, 2-3=fast). Default: 2.0"
+    ),
+    grid: float = typer.Option(
+        0.1, "--grid", help="Routing grid size in mm. Default: 0.1"
+    ),
+    visualize: bool = typer.Option(
+        False, "--visualize", "-v", help="Generate routing visualization."
+    ),
+):
+    """Route all nets on a board using A* pathfinding.
+
+    Uses weighted A* (greedy multiplier) for fast routing with acceptable
+    path quality. Supports multi-layer routing with vias.
+
+    Example:
+        atoplace route board.kicad_pcb --greedy 2.5 --visualize
+    """
+    from .routing import (
+        AStarRouter,
+        RouterConfig,
+        ObstacleMapBuilder,
+        NetOrderer,
+        create_visualizer_from_board,
+    )
+    from .dfm.profiles import get_profile, get_profile_for_layers
+
+    context: CLIContext = ctx.obj
+    console = context.console
+
+    console.print(Rule("Routing"))
+
+    # Load board
+    board_obj, pcb_path, _ = load_board_from_path(str(board), build, console)
+    if board_obj is None:
+        raise typer.Exit(code=1)
+
+    # Get DFM profile
+    if dfm:
+        try:
+            dfm_profile = get_profile(dfm)
+        except ValueError as e:
+            from .dfm.profiles import list_profiles
+            console.print(f"[red]Error:[/] {e}")
+            console.print(f"Available profiles: {', '.join(list_profiles())}")
+            raise typer.Exit(code=1)
+    else:
+        dfm_profile = get_profile_for_layers(board_obj.layer_count)
+
+    console.print(f"DFM Profile: [cyan]{dfm_profile.name}[/]")
+
+    # Build obstacle map
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        progress.add_task("Building obstacle map...", total=None)
+        builder = ObstacleMapBuilder(board_obj, dfm_profile)
+        obstacle_index = builder.build()
+        nets = builder.get_net_pads()
+
+    stats = builder.get_routing_stats()
+    console.print(f"Nets to route: [cyan]{len(nets)}[/] ({stats['total_pads']} pads)")
+    console.print(f"Routing difficulty: [cyan]{stats['estimated_difficulty']}[/]")
+
+    # Create visualizer if requested
+    viz = None
+    if visualize:
+        viz = create_visualizer_from_board(board_obj)
+        console.print("Visualization: [cyan]enabled[/]")
+
+    # Configure router
+    config = RouterConfig(
+        greedy_weight=greedy,
+        grid_size=grid,
+        trace_width=dfm_profile.min_trace_width,
+        clearance=dfm_profile.min_spacing,
+    )
+
+    # Create router
+    router = AStarRouter(obstacle_index, config, viz)
+
+    # Order nets by difficulty
+    orderer = NetOrderer(obstacle_index)
+    ordered_nets = orderer.order_nets(nets)
+
+    # Route each net
+    results = {}
+    success_count = 0
+    total_length = 0.0
+    total_vias = 0
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Routing nets...", total=len(ordered_nets))
+
+        for net in ordered_nets:
+            result = router.route_net(
+                pads=net.pads,
+                net_name=net.net_name,
+                net_id=net.net_id,
+                trace_width=config.trace_width
+            )
+            results[net.net_name] = result
+
+            if result.success:
+                success_count += 1
+                total_length += result.total_length
+                total_vias += result.via_count
+
+                # Add routed traces as obstacles for subsequent nets
+                for seg in result.segments:
+                    seg.net_id = net.net_id
+                    router.add_routed_trace(seg)
+                for via in result.vias:
+                    via.net_id = net.net_id
+                    router.add_routed_via(via)
+
+            progress.update(task, advance=1)
+
+    # Display results
+    console.print()
+    table = Table(title="Routing Results", box=box.ROUNDED)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+
+    table.add_row("Nets routed", f"{success_count}/{len(nets)}")
+    table.add_row("Success rate", f"{100*success_count/max(len(nets),1):.1f}%")
+    table.add_row("Total trace length", f"{total_length:.1f}mm")
+    table.add_row("Total vias", str(total_vias))
+
+    console.print(table)
+
+    # Show failed nets
+    failed = [name for name, r in results.items() if not r.success]
+    if failed:
+        console.print(f"\n[yellow]Failed nets ({len(failed)}):[/]")
+        for name in failed[:10]:  # Show first 10
+            console.print(f"  - {name}: {results[name].failure_reason}")
+        if len(failed) > 10:
+            console.print(f"  ... and {len(failed) - 10} more")
+
+    # Export visualization
+    if viz:
+        # Capture final state
+        viz.capture_frame(
+            obstacles=[],
+            pads=[],
+            completed_traces=[seg for r in results.values() for seg in r.segments],
+            completed_vias=[v for r in results.values() for v in r.vias],
+            label="Final routing"
+        )
+        report_path = viz.export_html_report("routing_result.html")
+        console.print(Panel(f"Visualization: {report_path}", border_style="green"))
+
+    console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
+
+    # Exit code: 0 if >80% routed, 1 otherwise
+    success_rate = success_count / max(len(nets), 1)
+    raise typer.Exit(code=0 if success_rate >= 0.8 else 1)
+
+
+@app.command()
+def report(
+    ctx: typer.Context,
+    board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
+    dfm: Optional[str] = typer.Option(
+        None, "--dfm", help="DFM profile name (e.g., jlcpcb_standard)."
+    ),
+    build: Optional[str] = typer.Option(
+        None, "--build", help="Atopile build name (default: default)."
+    ),
+):
+    """Generate a detailed report for a board."""
     from .placement.module_detector import ModuleDetector
     from .validation.confidence import ConfidenceScorer
     from .validation.pre_route import PreRouteValidator
     from .validation.drc import DRCChecker
     from .dfm.profiles import get_profile, get_profile_for_layers
 
-    # Load board with auto-detection
-    build_name = getattr(args, 'build', None)
-    board, pcb_path, is_atopile = load_board_from_path(args.board, build_name)
+    context = _get_context(ctx)
+    console = context.console
 
-    if board is None:
-        return 1
+    console.print(Rule("Load Board", style="cyan"))
+    board_obj, _, _ = load_board_from_path(str(board), build, console)
+    if board_obj is None:
+        raise typer.Exit(code=1)
 
-    # Detect modules
-    detector = ModuleDetector(board)
+    detector = ModuleDetector(board_obj)
     modules = detector.detect()
 
-    # Auto-select DFM profile based on layer count if not specified
-    if args.dfm:
+    if dfm:
         try:
-            dfm_profile = get_profile(args.dfm)
-        except ValueError as e:
-            print(f"Error: Invalid DFM profile '{args.dfm}'. {e}")
+            dfm_profile = get_profile(dfm)
+        except ValueError as exc:
             from .dfm.profiles import list_profiles
-            print(f"Available profiles: {', '.join(list_profiles())}")
-            return 1
+
+            console.print(
+                Panel(
+                    f"[red]Invalid DFM profile[/red]: {exc}\n"
+                    f"Available: {', '.join(list_profiles())}",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(code=1)
     else:
-        dfm_profile = get_profile_for_layers(board.layer_count)
+        dfm_profile = get_profile_for_layers(board_obj.layer_count)
 
-    # Run all validation checks for detailed report
-    print("=" * 60)
-    print("DETAILED BOARD REPORT")
-    print("=" * 60)
-    print(f"\nDFM Profile: {dfm_profile.name}\n")
+    console.print(Rule("Pre-Route Validation", style="cyan"))
+    pre_validator = PreRouteValidator(board_obj, dfm_profile)
+    can_proceed, _ = pre_validator.validate()
+    _render_pre_route_summary(console, pre_validator)
 
-    # Pre-route validation
-    print("-" * 60)
-    print("PRE-ROUTE VALIDATION")
-    print("-" * 60)
-    pre_validator = PreRouteValidator(board, dfm_profile)
-    can_proceed, pre_issues = pre_validator.validate()
-    print(pre_validator.get_summary())
+    console.print(Rule("DRC", style="cyan"))
+    drc = DRCChecker(board_obj, dfm_profile)
+    drc_passed, _ = drc.run_checks()
+    _render_drc_summary(console, drc)
 
-    # DRC checks
-    print("\n" + "-" * 60)
-    print("DRC CHECKS")
-    print("-" * 60)
-    drc = DRCChecker(board, dfm_profile)
-    drc_passed, violations = drc.run_checks()
-    print(drc.get_summary())
-
-    # Confidence scoring
-    print("\n" + "-" * 60)
-    print("CONFIDENCE ASSESSMENT")
-    print("-" * 60)
+    console.print(Rule("Confidence", style="cyan"))
     scorer = ConfidenceScorer(dfm_profile)
-    report = scorer.assess(board)
-    print(report.summary())
+    report_obj = scorer.assess(board_obj)
+    _render_validation_summary(console, report_obj)
 
-    # Module summary
-    print("\n" + "-" * 60)
-    print("DETECTED MODULES")
-    print("-" * 60)
-    for module in modules:
-        if module.components:
-            print(f"  {module.module_type.value}: {len(module.components)} components")
+    console.print(Rule("Modules", style="cyan"))
+    _render_module_summary(console, modules)
 
-    # Full markdown output at the end (includes all sections)
-    print("\n" + "=" * 60)
-    print("MARKDOWN REPORT")
-    print("=" * 60)
-    full_report = _generate_full_validation_report(
-        report, pre_validator, drc, can_proceed, drc_passed
-    )
-    print(full_report)
-
-    # Return non-zero exit code on failures for CI integration
-    confidence_ok = report.overall_score >= 0.7
-    return 0 if drc_passed and can_proceed and confidence_ok else 1
+    console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
+    confidence_ok = report_obj.overall_score >= 0.7
+    raise typer.Exit(code=0 if drc_passed and can_proceed and confidence_ok else 1)
 
 
-def cmd_interactive(args):
+@app.command()
+def interactive(
+    ctx: typer.Context,
+    board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
+    dfm: Optional[str] = typer.Option(
+        None, "--dfm", help="DFM profile name (e.g., jlcpcb_standard)."
+    ),
+    build: Optional[str] = typer.Option(
+        None, "--build", help="Atopile build name (default: default)."
+    ),
+):
     """Run interactive constraint session."""
     from .board.kicad_adapter import save_kicad_board
     from .nlp.constraint_parser import ConstraintParser, ModificationHandler
@@ -604,49 +1069,59 @@ def cmd_interactive(args):
     from .validation.confidence import ConfidenceScorer
     from .dfm.profiles import get_profile, get_profile_for_layers
 
-    # Load board with auto-detection
-    build_name = getattr(args, 'build', None)
-    board, pcb_path, is_atopile = load_board_from_path(args.board, build_name)
+    context = _get_context(ctx)
+    console = context.console
 
-    if board is None:
-        return 1
+    console.print(Rule("Load Board", style="cyan"))
+    board_obj, pcb_path, _ = load_board_from_path(str(board), build, console)
+    if board_obj is None or pcb_path is None:
+        raise typer.Exit(code=1)
 
-    parser = ConstraintParser(board)
-    modifier = ModificationHandler(board)
-
-    # Auto-select DFM profile based on layer count if not specified
-    if args.dfm:
+    if dfm:
         try:
-            dfm_profile = get_profile(args.dfm)
-        except ValueError as e:
-            print(f"Error: Invalid DFM profile '{args.dfm}'. {e}")
+            dfm_profile = get_profile(dfm)
+        except ValueError as exc:
             from .dfm.profiles import list_profiles
-            print(f"Available profiles: {', '.join(list_profiles())}")
-            return 1
+
+            console.print(
+                Panel(
+                    f"[red]Invalid DFM profile[/red]: {exc}\n"
+                    f"Available: {', '.join(list_profiles())}",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(code=1)
     else:
-        dfm_profile = get_profile_for_layers(board.layer_count)
+        dfm_profile = get_profile_for_layers(board_obj.layer_count)
 
-    print(f"Components: {len(board.components)}")
-    print(f"Enter constraints or modifications. Type 'help' for commands, 'quit' to exit.")
-    print()
+    parser = ConstraintParser(board_obj)
+    modifier = ModificationHandler(board_obj)
+    constraints_list = []
 
-    constraints = []
+    console.print(
+        Panel(
+            "Enter constraints or modifications. Type 'help' for commands, 'quit' to exit.",
+            border_style="cyan",
+        )
+    )
 
     while True:
         try:
-            user_input = input("atoplace> ").strip()
+            user_input = Prompt.ask("atoplace").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nExiting...")
+            console.print("\nExiting...")
             break
 
         if not user_input:
             continue
 
-        if user_input.lower() == 'quit':
+        if user_input.lower() == "quit":
             break
 
-        if user_input.lower() == 'help':
-            print("""
+        if user_input.lower() == "help":
+            console.print(
+                Panel(
+                    """
 Commands:
   help          Show this help
   quit          Exit interactive mode
@@ -666,227 +1141,108 @@ Modification examples:
   "Move U1 left"
   "Rotate J1 90 degrees"
   "Swap C1 and C2"
-            """)
+                    """,
+                    border_style="blue",
+                )
+            )
             continue
 
-        if user_input.lower() == 'list':
-            if constraints:
-                print("Current constraints:")
-                for c in constraints:
-                    print(f"  - {c.description}")
-            else:
-                print("No constraints defined.")
+        if user_input.lower() == "list":
+            _render_constraint_summary(console, constraints_list)
             continue
 
-        if user_input.lower() == 'clear':
-            constraints = []
-            print("Constraints cleared.")
+        if user_input.lower() == "clear":
+            constraints_list = []
+            console.print(Panel("Constraints cleared", border_style="yellow"))
             continue
 
-        if user_input.lower() == 'apply':
-            if not constraints:
-                print("No constraints to apply.")
+        if user_input.lower() == "apply":
+            if not constraints_list:
+                console.print(Panel("No constraints to apply", border_style="yellow"))
                 continue
 
-            print("Applying constraints...")
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Interactive apply: constraints=%d descriptions=%s",
-                    len(constraints),
-                    [c.description for c in constraints],
-                )
-            # Use DFM-aware config with lock support
+            console.print(Rule("Refinement", style="cyan"))
             config = RefinementConfig(
                 min_clearance=dfm_profile.min_spacing,
+                edge_clearance=dfm_profile.min_trace_to_edge,
                 preferred_clearance=dfm_profile.min_spacing * 2,
-                lock_placed=True,  # Respect locked components in interactive mode
+                lock_placed=True,
             )
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Interactive refinement config: min_clearance=%.3f preferred=%.3f",
-                    config.min_clearance,
-                    config.preferred_clearance,
-                )
-            refiner = ForceDirectedRefiner(board, config)
-            for c in constraints:
+            refiner = ForceDirectedRefiner(board_obj, config)
+            for c in constraints_list:
                 refiner.add_constraint(c)
-            result = refiner.refine()
-            print(f"Refinement complete ({result.iteration} iterations)")
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Interactive refinement result: converged=%s iterations=%d energy=%.3f",
-                    result.converged,
-                    result.iteration,
-                    result.total_energy,
+            with console.status("Running refinement..."):
+                result = refiner.refine()
+            console.print(
+                Panel(
+                    f"Refinement complete ({result.iteration} iterations)",
+                    border_style="green",
                 )
+            )
 
-            # Run legalization pass (consistent with place command)
-            print("Running legalization...")
+            console.print(Rule("Legalization", style="cyan"))
             legalize_config = LegalizerConfig(
                 primary_grid=0.5,
                 snap_rotation=True,
                 align_passives_only=True,
                 min_clearance=dfm_profile.min_spacing,
+                edge_clearance=dfm_profile.min_trace_to_edge,
                 row_spacing=dfm_profile.min_spacing * 1.5,
             )
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Interactive legalizer config: grid=%.3f min_clearance=%.3f row_spacing=%.3f",
-                    legalize_config.primary_grid,
-                    legalize_config.min_clearance,
-                    legalize_config.row_spacing,
-                )
-            legalizer = PlacementLegalizer(board, legalize_config, constraints=constraints)
-            legal_result = legalizer.legalize()
-            print(f"  Grid snapped: {legal_result.grid_snapped}, Aligned: {legal_result.components_aligned}")
-            if legal_result.final_overlaps > 0:
-                print(f"  Warning: {legal_result.final_overlaps} overlaps remaining")
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Interactive legalizer result: snapped=%d aligned=%d final_overlaps=%d",
-                    legal_result.grid_snapped,
-                    legal_result.components_aligned,
-                    legal_result.final_overlaps,
-                )
+            legalizer = PlacementLegalizer(
+                board_obj, legalize_config, constraints=constraints_list
+            )
+            with console.status("Running legalization..."):
+                legal_result = legalizer.legalize()
+            _render_legalization_summary(console, legal_result)
 
             scorer = ConfidenceScorer(dfm_profile)
-            report = scorer.assess(board)
-            print(f"Confidence: {report.overall_score:.0%}")
+            report_obj = scorer.assess(board_obj)
+            _render_validation_summary(console, report_obj)
             continue
 
-        if user_input.lower().startswith('save'):
+        if user_input.lower().startswith("save"):
             parts = user_input.split(maxsplit=1)
             if len(parts) > 1:
                 save_path = Path(parts[1])
             else:
-                save_path = pcb_path.with_suffix('.placed.kicad_pcb')
-            save_kicad_board(board, save_path)
-            print(f"Saved to: {save_path}")
+                save_path = pcb_path.with_suffix(".placed.kicad_pcb")
+            save_kicad_board(board_obj, save_path)
+            console.print(Panel(f"Saved to {save_path}", border_style="green"))
             continue
 
-        if user_input.lower() == 'report':
+        if user_input.lower() == "report":
             scorer = ConfidenceScorer(dfm_profile)
-            report = scorer.assess(board)
-            print(report.summary())
+            report_obj = scorer.assess(board_obj)
+            _render_validation_summary(console, report_obj)
             continue
 
-        # Try parsing as constraint
         parsed, summary = parser.parse_interactive(user_input)
         if parsed:
-            constraints.extend(parsed)
-        # Always print summary to show warnings even if no constraints found
+            constraints_list.extend(parsed)
         if summary and summary != "No constraints found.":
-            print(summary)
+            console.print(Panel(summary, border_style="blue"))
         if not parsed:
-            # Try parsing as modification
             mod = modifier.parse_modification(user_input)
             if mod:
                 if modifier.apply_modification(mod):
-                    print(f"Applied: {mod['type']} on {mod.get('component', 'components')}")
+                    console.print(
+                        Panel(
+                            f"Applied: {mod['type']} on {mod.get('component', 'components')}",
+                            border_style="green",
+                        )
+                    )
                 else:
-                    print("Could not apply modification.")
+                    console.print(Panel("Could not apply modification", border_style="red"))
             else:
-                print(f"Could not parse: {user_input}")
-                print("Try 'help' for examples.")
+                console.print(Panel(f"Could not parse: {user_input}", border_style="red"))
 
-    return 0
+    console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
 
 
 def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="AtoPlace - AI-Powered PCB Placement Tool",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # KiCad board files
-  atoplace place board.kicad_pcb
-  atoplace place board.kicad_pcb --constraints "USB on left edge"
-
-  # Atopile projects (auto-detected)
-  atoplace place .                              # Uses default build
-  atoplace place ~/projects/my-sensor --build custom
-  atoplace place . --use-ato-modules            # Use atopile hierarchy
-
-  # Validation and reports
-  atoplace validate board.kicad_pcb --dfm jlcpcb_standard
-  atoplace interactive .
-        """,
-    )
-
-    parser.add_argument('--version', action='version', version='atoplace 0.1.0')
-    parser.add_argument('--log-file', help='Write debug logs to this file')
-    parser.add_argument('--log-dir', default='logs', help='Directory for debug logs (default: logs)')
-
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
-
-    # Place command
-    place_parser = subparsers.add_parser('place', help='Run placement optimization')
-    place_parser.add_argument('board', help='Path to KiCad PCB file or atopile project directory')
-    place_parser.add_argument('-o', '--output', help='Output file path')
-    place_parser.add_argument('-c', '--constraints', help='Natural language constraints')
-    place_parser.add_argument('--dfm', help='DFM profile (default: jlcpcb_standard)')
-    place_parser.add_argument('--build', help='Build name for atopile projects (default: default)')
-    place_parser.add_argument('--iterations', type=int, help='Max iterations (default: 500)')
-    place_parser.add_argument('--grid', type=float, help='Grid size for snapping (mm)')
-    place_parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
-    place_parser.add_argument('--dry-run', action='store_true', help="Don't save changes")
-    place_parser.add_argument('--use-ato-modules', action='store_true',
-                              help='Use atopile module hierarchy for grouping constraints')
-    place_parser.add_argument('--auto-outline', action='store_true',
-                              help='Auto-generate board outline from component positions when none exists')
-    place_parser.add_argument('--outline-margin', type=float, default=5.0,
-                              help='Margin (mm) for auto-generated outline (default: 5.0)')
-    place_parser.add_argument('--skip-legalization', action='store_true',
-                              help='Skip the legalization pass (grid snapping, alignment)')
-
-    # Validate command
-    validate_parser = subparsers.add_parser('validate', help='Validate board placement')
-    validate_parser.add_argument('board', help='Path to KiCad PCB file or atopile project directory')
-    validate_parser.add_argument('--dfm', help='DFM profile (default: jlcpcb_standard)')
-    validate_parser.add_argument('--build', help='Build name for atopile projects (default: default)')
-    validate_parser.add_argument('-o', '--output', help='Save report to file')
-
-    # Report command
-    report_parser = subparsers.add_parser('report', help='Generate detailed report')
-    report_parser.add_argument('board', help='Path to KiCad PCB file or atopile project directory')
-    report_parser.add_argument('--dfm', help='DFM profile (default: jlcpcb_standard)')
-    report_parser.add_argument('--build', help='Build name for atopile projects (default: default)')
-
-    # Interactive command
-    interactive_parser = subparsers.add_parser('interactive',
-                                                help='Interactive constraint session')
-    interactive_parser.add_argument('board', help='Path to KiCad PCB file or atopile project directory')
-    interactive_parser.add_argument('--dfm', help='DFM profile (default: jlcpcb_standard)')
-    interactive_parser.add_argument('--build', help='Build name for atopile projects (default: default)')
-
-    args = parser.parse_args()
-
-    if not args.command:
-        parser.print_help()
-        return 1
-
-    log_path = _configure_logging(args)
-    if log_path:
-        print(f"Debug log: {log_path}")
-
-    # Check for pcbnew
-    if not check_pcbnew():
-        print("Error: pcbnew not available.")
-        print("Run with KiCad's Python interpreter:")
-        print("  /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 -m atoplace ...")
-        return 1
-
-    # Dispatch command
-    commands = {
-        'place': cmd_place,
-        'validate': cmd_validate,
-        'report': cmd_report,
-        'interactive': cmd_interactive,
-    }
-
-    return commands[args.command](args)
+    app()
 
 
-if __name__ == '__main__':
-    sys.exit(main())
+if __name__ == "__main__":
+    main()

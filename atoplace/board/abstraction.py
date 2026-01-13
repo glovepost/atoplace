@@ -112,6 +112,14 @@ class Component:
     # Metadata
     properties: Dict[str, str] = field(default_factory=dict)
 
+    @property
+    def is_through_hole(self) -> bool:
+        """Check if component has through-hole pads."""
+        # Heuristic: Battery holders with "TH" in name might be SMD on bottom
+        if self.footprint and ("BAT-TH" in self.footprint or "CR2032" in self.footprint):
+            return False
+        return any(p.drill is not None and p.drill > 0 for p in self.pads)
+
     def get_bounding_box(self) -> Tuple[float, float, float, float]:
         """
         Get axis-aligned bounding box of component body considering rotation.
@@ -569,14 +577,16 @@ class Board:
 
                 # Skip if on opposite layers (top vs bottom)
                 if check_layers:
-                    layer1_is_top = c1.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
-                                                  Layer.TOP_MASK, Layer.TOP_PASTE,
-                                                  Layer.TOP_COURTYARD)
-                    layer2_is_top = c2.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
-                                                  Layer.TOP_MASK, Layer.TOP_PASTE,
-                                                  Layer.TOP_COURTYARD)
-                    if layer1_is_top != layer2_is_top:
-                        continue  # Components on opposite sides, skip
+                    # Treat through-hole as existing on all layers
+                    if not (c1.is_through_hole or c2.is_through_hole):
+                        layer1_is_top = c1.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
+                                                      Layer.TOP_MASK, Layer.TOP_PASTE,
+                                                      Layer.TOP_COURTYARD)
+                        layer2_is_top = c2.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
+                                                      Layer.TOP_MASK, Layer.TOP_PASTE,
+                                                      Layer.TOP_COURTYARD)
+                        if layer1_is_top != layer2_is_top:
+                            continue  # Components on opposite sides, skip
 
                 if include_pads:
                     bb2 = c2.get_bounding_box_with_pads()
@@ -730,6 +740,122 @@ class Board:
             has_outline=True,
             auto_generated=True,
         )
+
+    def compact_outline(
+        self,
+        initial_margin: float = 10.0,
+        min_margin: float = 1.0,
+        clearance: float = 0.25,
+        shrink_step: float = 0.5,
+        max_iterations: int = 100,
+    ) -> BoardOutline:
+        """Generate a compacted board outline by iteratively shrinking until infeasible.
+
+        This method:
+        1. Generates an initial bounding box with initial_margin
+        2. Iteratively shrinks the outline
+        3. Checks if placement is still feasible (no boundary violations)
+        4. Reverts to last feasible size when placement becomes infeasible
+
+        Args:
+            initial_margin: Starting margin around components (mm)
+            min_margin: Minimum margin to maintain (mm)
+            clearance: Minimum clearance from board edge (mm)
+            shrink_step: Amount to shrink each iteration (mm)
+            max_iterations: Maximum shrink iterations
+
+        Returns:
+            Compacted BoardOutline at the smallest feasible size
+        """
+        if not self.components:
+            return self.generate_outline_from_components(margin=initial_margin)
+
+        # Find component bounds (ignoring DNP)
+        comp_min_x = float('inf')
+        comp_min_y = float('inf')
+        comp_max_x = float('-inf')
+        comp_max_y = float('-inf')
+
+        for comp in self.components.values():
+            if comp.dnp:
+                continue
+            bbox = comp.get_bounding_box_with_pads()
+            comp_min_x = min(comp_min_x, bbox[0])
+            comp_min_y = min(comp_min_y, bbox[1])
+            comp_max_x = max(comp_max_x, bbox[2])
+            comp_max_y = max(comp_max_y, bbox[3])
+
+        # Minimum required dimensions (components + clearance on each side)
+        min_width = (comp_max_x - comp_min_x) + 2 * clearance
+        min_height = (comp_max_y - comp_min_y) + 2 * clearance
+
+        # Start with initial margin
+        current_margin = initial_margin
+        last_feasible_margin = initial_margin
+
+        for _ in range(max_iterations):
+            # Calculate outline at current margin
+            test_outline = BoardOutline(
+                width=(comp_max_x - comp_min_x) + 2 * current_margin,
+                height=(comp_max_y - comp_min_y) + 2 * current_margin,
+                origin_x=comp_min_x - current_margin,
+                origin_y=comp_min_y - current_margin,
+                has_outline=True,
+                auto_generated=True,
+            )
+
+            # Check feasibility: all components within bounds with clearance
+            feasible = self._check_outline_feasibility(test_outline, clearance)
+
+            if feasible:
+                last_feasible_margin = current_margin
+                # Try shrinking further
+                current_margin -= shrink_step
+                if current_margin < min_margin:
+                    break
+            else:
+                # Infeasible - stop and use last feasible
+                break
+
+        # Return the last feasible outline
+        return BoardOutline(
+            width=(comp_max_x - comp_min_x) + 2 * last_feasible_margin,
+            height=(comp_max_y - comp_min_y) + 2 * last_feasible_margin,
+            origin_x=comp_min_x - last_feasible_margin,
+            origin_y=comp_min_y - last_feasible_margin,
+            has_outline=True,
+            auto_generated=True,
+        )
+
+    def _check_outline_feasibility(
+        self, outline: BoardOutline, clearance: float
+    ) -> bool:
+        """Check if all components fit within the given outline with clearance.
+
+        Args:
+            outline: The board outline to test
+            clearance: Minimum distance from board edge
+
+        Returns:
+            True if all non-DNP components fit within the outline
+        """
+        for comp in self.components.values():
+            if comp.dnp:
+                continue
+
+            bbox = comp.get_bounding_box_with_pads()
+
+            # Check if component is within outline bounds with clearance
+            if bbox[0] < outline.origin_x + clearance:
+                return False
+            if bbox[1] < outline.origin_y + clearance:
+                return False
+            if bbox[2] > outline.origin_x + outline.width - clearance:
+                return False
+            if bbox[3] > outline.origin_y + outline.height - clearance:
+                return False
+
+        return True
 
     def to_kicad(self, path: Path):
         """Save board to KiCad file."""

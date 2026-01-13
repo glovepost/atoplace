@@ -40,3 +40,6 @@
 ## Environment & Configuration Tips
 - KiCad’s Python API (`pcbnew`) is required for real board IO; run the CLI with
   KiCad’s bundled Python when needed.
+- On macOS, KiCad’s Python requires a logged-in GUI session on the main display
+  (headless/SSH runs will fail with the screen access error). Use the
+  `scripts/atoplace-kicad` wrapper for convenience.

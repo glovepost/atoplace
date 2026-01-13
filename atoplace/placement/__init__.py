@@ -9,6 +9,11 @@ from .legalizer import (
     LegalizationResult,
     legalize_placement,
 )
+from .visualizer import (
+    PlacementVisualizer,
+    PlacementFrame,
+    create_visualizer_from_board,
+)
 
 __all__ = [
     "ForceDirectedRefiner",
@@ -19,4 +24,7 @@ __all__ = [
     "LegalizerConfig",
     "LegalizationResult",
     "legalize_placement",
+    "PlacementVisualizer",
+    "PlacementFrame",
+    "create_visualizer_from_board",
 ]

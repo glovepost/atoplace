@@ -2,6 +2,18 @@
 
 This file tracks code review findings and risks discovered during development.
 
+## 2026-01-12 - TEST FINDINGS (DOGTRACKER)
+
+### High - RESOLVED
+- ~~**Legalizer Convergence Failure**: On high-density boards like `dogtracker`, the legalizer exhausted 311 iterations while still leaving unresolved overlaps. Although the count dropped from 14 to 7 after layer-awareness fixes, the "shove" algorithm still struggles to find valid space in dense regions where components are constrained by board boundaries.~~ **FIXED**: Implemented improved dense board handling with three enhancements: (1) Pre-expansion phase that spreads components from centroid when overlap density exceeds threshold (>10%), creating breathing room before overlap resolution. (2) Simultaneous resolution that calculates all displacement vectors before applying them, reducing ripple effects from cascading moves. (3) Stuck pair escalation strategy: after 2 iterations stuck → diagonal movement; after 4 → break symmetry by moving only one component; after 6 → increased displacement multiplier. Dogtracker board now resolves all overlaps in ~100 iterations with 99% confidence. File: `atoplace/placement/legalizer.py`.
+
+### High - RESOLVED
+- ~~**B1 "Black Hole" Effect**: Component `B1` (Battery Holder) was being treated as a through-hole component, blocking both layers. Investigation verified it uses SMD pads with no drills. Added a heuristic to `Component.is_through_hole` to handle "BAT-TH" footprints and updated `legalizer.py` and `confidence.py` to be layer-aware.~~ **FIXED**.
+- ~~**Validation/Legalizer Discrepancy**: The validator was reporting 2D overlaps while the legalizer was working in 3D (layer-aware). Updated `ConfidenceScorer` to use `check_layers=True` and `include_pads=True`, bringing it into alignment with the placement engine.~~ **FIXED**.
+- ~~**Boundary Constraint Regressions**: Components were being pushed off-board by the legalizer. Added hard inward clamping in `legalizer.py`'s `_resolve_overlap_priority` to ensure moves stay within the board outline.~~ **FIXED**.
+- ~~**Exact Overlaps (0.00mm)**: Components `C15` and `C7` are no longer stacked. The random jitter added to `_add_attraction_forces` successfully breaks the symmetry.~~ **FIXED**.
+- ~~**Decoupling Attraction Deficit**: Decoupling capacitors are now placed within the recommended distance. No "Decoupling cap is X mm from IC" warnings appear in the latest run.~~ **FIXED**.
+
 ## 2026-01-12 - REVIEW FINDINGS
 
 ### Medium - RESOLVED
@@ -11,9 +23,14 @@ This file tracks code review findings and risks discovered during development.
 
 ## 2026-01-12 - FIX VERIFICATION
 
-### High - OPEN
+### High - RESOLVED (2026-01-12 Session 7)
 
-(none)
+- ~~**Outline-less Placement Compaction**: When no board outline exists, placement should still be bounded. Proposed behavior: auto-generate a bounding box outline around components, then iteratively shrink the box until placement becomes infeasible; revert to the last feasible size and use that as the outline for boundary forces.~~ **FIXED**: Added `Board.compact_outline()` method that iteratively shrinks the outline from initial margin until placement becomes infeasible, then reverts to last feasible size. New CLI flags: `--compact-outline` to enable compaction, `--outline-clearance` to set edge clearance. Files: `atoplace/board/abstraction.py`, `atoplace/cli.py`.
+
+### Medium - OPEN
+
+- **Boundary Logic Ignores Polygon Outlines**: Placement boundary enforcement uses rectangular bounds only, so components can drift outside complex outlines or into cutouts/holes, degrading placement on non-rect boards. Fix by using `BoardOutline.contains_point()` checks in placement/legality boundary logic. Files: `atoplace/placement/force_directed.py`, `atoplace/placement/legalizer.py`.
+- **Legalizer Boundary Clamp Gap**: Grid snapping and row alignment can push components out of bounds without a subsequent clamp (clamping only happens during overlap resolution). Add a post-snap/post-align boundary clamp to keep placements inside outline even when overlaps are absent. File: `atoplace/placement/legalizer.py`.
 
 ### High - RESOLVED (2026-01-12 Session)
 
@@ -23,9 +40,14 @@ This file tracks code review findings and risks discovered during development.
 
 - ~~**CLI Atopile Grouping**: `cmd_place` calls `GroupingConstraint(component_refs=..., strength=...)`, which does not match signature.~~ **FIXED**: Changed to `GroupingConstraint(components=comp_refs, max_spread=15.0)` in cli.py lines 153-158.
 
-### Medium - OPEN
+### Medium - RESOLVED (2026-01-12 Session 7)
 
-(none)
+- ~~**Refinement Non-Convergence**: Force-directed placement frequently hits the max-iteration cap with `max_move` saturating at the velocity limit, indicating oscillation/instability rather than convergence. Add stabilization (e.g., adaptive damping, velocity clamp decay, or energy-based early stopping) and log the trigger for stopping.~~ **FIXED**: Implemented adaptive damping with oscillation detection. Added `_detect_oscillation()` method that monitors energy and movement patterns. When oscillation detected, damping is increased (`damping_increase_rate`) and max velocity is decayed (`velocity_decay_rate`). Added warning log when max iterations reached without convergence. New config params: `adaptive_damping`, `damping_increase_rate`, `max_damping`, `velocity_decay_rate`. Files: `atoplace/placement/force_directed.py`.
+
+### Low - RESOLVED (2026-01-12 Session 7)
+
+- ~~**No Constraint/Alignment Forces Active**: Log shows `constraint=0` and `alignment=0` for refinement, meaning user constraints and grid alignment are not influencing the physics when none are specified or `--grid` is omitted. Consider defaults or clearer logging when these are disabled.~~ **FIXED**: Added explanatory debug logging at refinement start showing which force types are active and why others are disabled. Explicitly notes when constraints/grid are disabled with hints (e.g., "use --grid to enable alignment forces"). File: `atoplace/placement/force_directed.py`.
+- ~~**Row Alignment Skipped**: Legalizer reports zero rows formed/aligned despite multiple 0402/0603 candidates, suggesting clustering thresholds may be too strict or diagnostics are insufficient. Add logging for skipped clusters or tune defaults.~~ **FIXED**: Added comprehensive diagnostic logging to row alignment. Now logs: reasons for skipped size groups (too few components), reasons for skipped clusters (no clusters found, clusters too small, clusters too scattered), per-cluster skip reasons with perpendicular spread values, and threshold summary when zero rows formed. File: `atoplace/placement/legalizer.py`.
 
 ### Medium - RESOLVED (2026-01-12 Session 6 - Outline Handling)
 

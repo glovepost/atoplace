@@ -113,23 +113,28 @@ Marketing and product vision live in `README.md`.
 
 ### Phase 3: Routing Integration (Planned)
 
-**Phase 3A - Basic Freerouting:**
-- [ ] FreeroutingRunner with JAR execution
-- [ ] DSN export via pcbnew API
-- [ ] SES import back to KiCad
+**Implementation Reference:** See `research/routing_implementation_plan.md` for detailed architecture based on @seveibar's autorouter lessons (tscircuit). Key principles:
+- A* with Greedy Multiplier (w=2-3 for speed vs optimality tradeoff)
+- Spatial Hash Indexing (O(~1) collision detection, not QuadTrees)
+- Visualization-First Development (debug tools before algorithms)
+- Aggressive Caching of obstacle maps and routing patterns
+- Iterative, Non-Recursive Design for debuggability
+
+**Phase 3A - Foundation (Visualization + Data Structures):**
+- [ ] RouteVisualizer - SVG/HTML export, animation support
+- [ ] SpatialHashIndex - O(~1) collision queries
+- [ ] ObstacleMapBuilder - pre-compute all obstacles from board
+
+**Phase 3B - Core A* Router:**
+- [ ] AStarRouter - A* with greedy multiplier
+- [ ] NetOrderer - route difficult nets first (spatial probability of failure)
+- [ ] RoutingCache - cache successful routing patterns
 - [ ] CLI command `atoplace route`
 
-**Phase 3B - Smart Routing:**
-- [ ] NetClassAssigner - automatic net classification
-- [ ] DiffPairDetector - USB, LVDS, Ethernet pairs
-- [ ] Pre-route net class assignment
-- [ ] Post-route DRC integration
-
-**Phase 3C - Advanced Routing:**
-- [ ] Docker execution mode
-- [ ] Freerouting JAR bundling and auto-install
-- [ ] Progress streaming for long routes
-- [ ] `place-and-route` combined workflow
+**Phase 3C - Integration & Fallback:**
+- [ ] Freerouting fallback for failed nets
+- [ ] DSN export/SES import via pcbnew API
+- [ ] Combined `place-and-route` workflow
 
 **Phase 3D - Full MCP Integration:**
 - [ ] `route_board` MCP tool
@@ -288,10 +293,11 @@ atoplace/
 │   │   ├── abstraction.py
 │   │   ├── kicad_adapter.py
 │   │   └── atopile_adapter.py    # Atopile project integration
-│   ├── placement/          # Placement algorithms
-│   │   ├── force_directed.py
-│   │   ├── module_detector.py
-│   │   └── constraints.py
+├── placement/          # Placement algorithms
+│   ├── force_directed.py
+│   ├── legalizer.py        # Manhattan legalization
+│   ├── module_detector.py
+│   └── constraints.py
 │   ├── routing/            # Routing integration (stubs only)
 │   │   └── __init__.py
 │   ├── validation/         # Quality checks

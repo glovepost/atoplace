@@ -92,16 +92,29 @@ class LegalizerConfig:
     min_row_components: int = 2  # minimum components to form a row
     row_spacing: float = 1.0  # mm - spacing between aligned components
 
-    # Overlap removal (Phase 3: Shove)
-    min_clearance: float = 0.25  # mm - minimum spacing between components
-    max_displacement_iterations: int = 50  # max iterations for overlap removal
+    # Overlap removal (Phase 3: Shove) - STRICT SETTINGS
+    min_clearance: float = 0.35  # mm - minimum spacing between components (stricter than DFM)
+    edge_clearance: float = 0.4  # mm - clearance from board edge
+    max_displacement_iterations: int = 1000  # max iterations per pass for overlap removal
     manhattan_shove: bool = True  # constrain displacement to X/Y axes only
-    overlap_retry_passes: int = 3  # number of retry passes with escalating displacement
-    escalation_factor: float = 1.5  # multiply displacement by this factor on retry
+    overlap_retry_passes: int = 50  # number of retry passes with escalating displacement
+    escalation_factor: float = 1.3  # multiply displacement by this factor on retry (gentler escalation)
+    guarantee_zero_overlaps: bool = True  # keep iterating until all overlaps resolved
+
+    # Dense board handling
+    expansion_threshold: float = 0.10  # if >10% components overlap, try expansion first
+    expansion_factor: float = 1.08  # expand positions by 8% from centroid
+    max_expansion_passes: int = 5  # max times to try expansion
+    simultaneous_resolution: bool = True  # resolve all overlaps at once vs one-by-one
+    stuck_pair_diagonal_move: bool = True  # use diagonal moves for persistently stuck pairs
 
     # Component filtering
     align_passives_only: bool = True  # only align R/C/L components
     skip_locked: bool = True  # don't move locked components
+
+    # Board outline compaction
+    compact_outline: bool = True  # shrink board outline to fit components
+    outline_margin: float = 2.0  # mm - margin around components for new outline
 
 
 @dataclass
@@ -114,6 +127,8 @@ class LegalizationResult:
     iterations_used: int = 0  # iterations for overlap removal
     final_overlaps: int = 0  # remaining overlaps (if any)
     locked_conflicts: List[Tuple[str, str]] = field(default_factory=list)  # unresolvable overlaps with locked components
+    outline_compacted: bool = False  # whether board outline was compacted
+    new_outline_size: Optional[Tuple[float, float]] = None  # (width, height) after compaction
 
 
 class PlacementLegalizer:
@@ -221,14 +236,21 @@ class PlacementLegalizer:
         result.final_overlaps = overlap_result[2]
         result.locked_conflicts = overlap_result[3]
 
+        # Phase 4: Board outline compaction (optional)
+        if self.config.compact_outline:
+            compact_result = self._compact_board_outline()
+            result.outline_compacted = compact_result[0]
+            result.new_outline_size = compact_result[1]
+
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                "Legalization done: snapped=%d rows=%d aligned=%d overlaps_resolved=%d final_overlaps=%d",
+                "Legalization done: snapped=%d rows=%d aligned=%d overlaps_resolved=%d final_overlaps=%d compacted=%s",
                 result.grid_snapped,
                 result.rows_formed,
                 result.components_aligned,
                 result.overlaps_resolved,
                 result.final_overlaps,
+                result.outline_compacted,
             )
         return result
 
@@ -354,10 +376,13 @@ class PlacementLegalizer:
 
         rows_formed = 0
         components_aligned = 0
+        skipped_reasons: Dict[str, int] = {}
 
         # For each size group, find and form rows
         for size, refs in passives_by_size.items():
             if len(refs) < self.config.min_row_components:
+                reason = f"too_few_{size.value}"
+                skipped_reasons[reason] = skipped_reasons.get(reason, 0) + len(refs)
                 continue
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("Row alignment: size=%s candidates=%d", size.value, len(refs))
@@ -368,8 +393,22 @@ class PlacementLegalizer:
             # Find clusters of nearby components within cluster_radius
             clusters = self._find_alignment_clusters(refs)
 
+            if not clusters:
+                reason = f"no_clusters_{size.value}"
+                skipped_reasons[reason] = skipped_reasons.get(reason, 0) + len(refs)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "  No clusters found for %s (radius=%.1fmm). Components too spread out.",
+                        size.value, self.config.cluster_radius
+                    )
+                continue
+
+            clusters_too_small = 0
+            clusters_too_scattered = 0
+
             for cluster in clusters:
                 if len(cluster) < self.config.min_row_components:
+                    clusters_too_small += 1
                     continue
 
                 # Use PCA to determine row vs column, then align
@@ -377,6 +416,33 @@ class PlacementLegalizer:
                 if aligned > 0:
                     rows_formed += 1
                     components_aligned += aligned
+                else:
+                    clusters_too_scattered += 1
+
+            if logger.isEnabledFor(logging.DEBUG):
+                if clusters_too_small > 0:
+                    logger.debug(
+                        "  Skipped %d clusters with < %d components",
+                        clusters_too_small, self.config.min_row_components
+                    )
+                if clusters_too_scattered > 0:
+                    logger.debug(
+                        "  Skipped %d clusters too scattered (tolerance=%.1fmm)",
+                        clusters_too_scattered, self.config.alignment_tolerance
+                    )
+
+        # Log summary if no rows formed
+        if rows_formed == 0 and logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Row alignment: 0 rows formed. Reasons: %s",
+                skipped_reasons if skipped_reasons else "no passive candidates"
+            )
+            logger.debug(
+                "  Thresholds: cluster_radius=%.1fmm, alignment_tolerance=%.1fmm, min_components=%d",
+                self.config.cluster_radius,
+                self.config.alignment_tolerance,
+                self.config.min_row_components
+            )
 
         return (rows_formed, components_aligned)
 
@@ -486,12 +552,22 @@ class PlacementLegalizer:
             y_spread = max(ys) - min(ys)
             if y_spread > tolerance:
                 # Components are too scattered vertically to align into a row
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "    Cluster skipped: y-spread=%.2fmm > tolerance=%.2fmm (horizontal row)",
+                        y_spread, tolerance
+                    )
                 return 0
         else:
             # For vertical alignment, check x-spread (perpendicular to column)
             x_spread = max(xs) - min(xs)
             if x_spread > tolerance:
                 # Components are too scattered horizontally to align into a column
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "    Cluster skipped: x-spread=%.2fmm > tolerance=%.2fmm (vertical column)",
+                        x_spread, tolerance
+                    )
                 return 0
 
         aligned = 0
@@ -611,11 +687,11 @@ class PlacementLegalizer:
         """
         Phase 3: Shove - Remove overlaps using priority-based displacement.
 
-        Iteratively resolves collisions by pushing lower-priority components.
-        Uses Minimum Translation Vector (MTV) for efficient separation.
-
-        If overlaps persist after initial pass, retries with escalating
-        displacement factors and eventually non-Manhattan movement.
+        Enhanced algorithm for dense boards:
+        1. If overlap density exceeds threshold, apply expansion from centroid first
+        2. Use simultaneous resolution (calculate all moves, then apply) to reduce ripple effects
+        3. Track "stuck pairs" and use diagonal movement for them
+        4. Fall back to escalating displacement only when needed
 
         Priority order: Locked > Large ICs > Connectors > Small ICs > Passives
 
@@ -629,6 +705,35 @@ class PlacementLegalizer:
         # Compute priorities once
         priorities = {ref: self._get_component_priority(ref)
                       for ref in self.board.components}
+
+        # Track stuck pairs across iterations (pairs that fail to resolve)
+        stuck_pairs: Dict[Tuple[str, str], int] = {}  # pair -> consecutive failure count
+
+        # Check initial overlap density and apply expansion if needed
+        initial_overlaps = self._find_overlaps()
+        overlap_density = len(initial_overlaps) / max(len(self.board.components), 1)
+
+        if overlap_density >= self.config.expansion_threshold and len(initial_overlaps) > 3:
+            # Dense board - try expansion first
+            for expansion_pass in range(self.config.max_expansion_passes):
+                expansion_applied = self._apply_centroid_expansion()
+                if expansion_applied:
+                    new_overlaps = self._find_overlaps()
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Expansion pass %d: overlaps %d -> %d",
+                            expansion_pass + 1, len(initial_overlaps), len(new_overlaps)
+                        )
+                    if len(new_overlaps) == 0:
+                        break
+                    if len(new_overlaps) <= len(initial_overlaps) * 0.7:
+                        # Good progress, continue
+                        initial_overlaps = new_overlaps
+                    else:
+                        # Expansion not helping much, stop
+                        break
+                else:
+                    break
 
         # Track escalation state
         escalation_multiplier = 1.0
@@ -662,43 +767,69 @@ class PlacementLegalizer:
                 # Sort overlaps by combined priority (resolve high-priority first)
                 overlaps.sort(key=lambda o: -(priorities[o[0]].value + priorities[o[1]].value))
 
-                made_progress = False
-
-                # Resolve each overlap
-                for ref1, ref2, _, _ in overlaps:
-                    # Recompute current overlap values since earlier resolutions may have
-                    # changed positions, making the initial overlap values stale
-                    current_overlap = self._get_overlap_values(ref1, ref2)
-                    if current_overlap is None:
-                        # No longer overlapping after earlier resolutions
-                        continue
-
-                    overlap_x, overlap_y = current_overlap
-
-                    # Apply escalation multiplier to increase displacement on retries
-                    scaled_overlap_x = overlap_x * escalation_multiplier
-                    scaled_overlap_y = overlap_y * escalation_multiplier
-
-                    resolved = self._resolve_overlap_priority(
-                        ref1, ref2, scaled_overlap_x, scaled_overlap_y,
-                        priorities[ref1], priorities[ref2],
-                        use_manhattan=use_manhattan
+                if self.config.simultaneous_resolution:
+                    # SIMULTANEOUS RESOLUTION: Calculate all moves first, then apply
+                    moves = self._calculate_all_moves(
+                        overlaps, priorities, escalation_multiplier,
+                        use_manhattan, stuck_pairs
                     )
-                    if resolved:
-                        # Verify the overlap is actually resolved after displacement
-                        # (grid snapping can sometimes re-introduce overlap)
-                        if not self._check_overlap(ref1, ref2):
+
+                    # Apply all moves at once
+                    made_progress = self._apply_moves_simultaneously(moves, locked_conflicts)
+                    if made_progress:
+                        overlaps_resolved += len([m for m in moves.values() if m != (0, 0)])
+                        pass_resolved += len([m for m in moves.values() if m != (0, 0)])
+
+                    # Update stuck pair tracking
+                    new_overlaps_set = set()
+                    for o in self._find_overlaps():
+                        key = (o[0], o[1]) if o[0] < o[1] else (o[1], o[0])
+                        new_overlaps_set.add(key)
+
+                    for ref1, ref2, _, _ in overlaps:
+                        key = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
+                        if key in new_overlaps_set:
+                            # Still overlapping - increment stuck count
+                            stuck_pairs[key] = stuck_pairs.get(key, 0) + 1
+                        else:
+                            # Resolved - clear stuck count
+                            stuck_pairs.pop(key, None)
+                else:
+                    # SEQUENTIAL RESOLUTION (original algorithm)
+                    made_progress = False
+                    for ref1, ref2, _, _ in overlaps:
+                        current_overlap = self._get_overlap_values(ref1, ref2)
+                        if current_overlap is None:
+                            continue
+
+                        overlap_x, overlap_y = current_overlap
+                        scaled_overlap_x = overlap_x * escalation_multiplier
+                        scaled_overlap_y = overlap_y * escalation_multiplier
+
+                        pair_key = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
+                        use_diagonal = (
+                            self.config.stuck_pair_diagonal_move and
+                            stuck_pairs.get(pair_key, 0) >= 2
+                        )
+
+                        resolved = self._resolve_overlap_priority(
+                            ref1, ref2, scaled_overlap_x, scaled_overlap_y,
+                            priorities[ref1], priorities[ref2],
+                            use_manhattan=not use_diagonal and use_manhattan
+                        )
+                        if resolved and not self._check_overlap(ref1, ref2):
                             overlaps_resolved += 1
                             pass_resolved += 1
                             made_progress = True
-                    elif (priorities[ref1] == ComponentPriority.LOCKED and
-                          priorities[ref2] == ComponentPriority.LOCKED):
-                        # Both components locked - record unresolvable conflict
-                        conflict = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
-                        if conflict not in locked_conflicts:
-                            locked_conflicts.append(conflict)
+                            stuck_pairs.pop(pair_key, None)
+                        elif resolved:
+                            stuck_pairs[pair_key] = stuck_pairs.get(pair_key, 0) + 1
+                        elif (priorities[ref1] == ComponentPriority.LOCKED and
+                              priorities[ref2] == ComponentPriority.LOCKED):
+                            conflict = pair_key
+                            if conflict not in locked_conflicts:
+                                locked_conflicts.append(conflict)
 
-                # If no progress was made this iteration, break early
                 if not made_progress:
                     break
 
@@ -714,8 +845,166 @@ class PlacementLegalizer:
             if retry_pass == self.config.overlap_retry_passes - 2:
                 use_manhattan = False
 
-        # Count remaining overlaps
+        # Count remaining overlaps using the same method as validation
+        # Refresh component sizes to ensure accuracy
+        self._compute_component_sizes()
         final_overlaps = len(self._find_overlaps())
+
+        # Also check using board.find_overlaps() to catch any geometry mismatches
+        # Use check_layers=True to ignore cross-layer overlaps (TOP vs BOTTOM)
+        board_overlaps = self.board.find_overlaps(self.config.min_clearance, check_layers=True)
+        board_overlaps = [
+            (r1, r2, d) for r1, r2, d in board_overlaps
+            if not (self.board.components.get(r1, None) and self.board.components[r1].dnp)
+            and not (self.board.components.get(r2, None) and self.board.components[r2].dnp)
+        ]
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Pre-guarantee check: internal=%d board=%d guarantee_enabled=%s",
+                final_overlaps,
+                len(board_overlaps),
+                self.config.guarantee_zero_overlaps,
+            )
+
+        # Use the higher count to catch any overlaps either method detects
+        if len(board_overlaps) > final_overlaps:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Overlap count mismatch: internal=%d board=%d (using board count)",
+                    final_overlaps,
+                    len(board_overlaps),
+                )
+            final_overlaps = len(board_overlaps)
+
+        # Also update if board finds overlaps that internal doesn't
+        # This catches edge cases where calculation methods differ
+        if len(board_overlaps) > 0 and final_overlaps == 0:
+            final_overlaps = len(board_overlaps)
+
+        # GUARANTEE ZERO OVERLAPS: If enabled and overlaps remain, use aggressive resolution
+        if self.config.guarantee_zero_overlaps and final_overlaps > 0:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Guarantee zero overlaps: %d remaining, starting aggressive resolution",
+                    final_overlaps,
+                )
+
+            # More aggressive resolution passes
+            aggressive_passes = 50
+            aggressive_escalation = 3.0  # Start with larger displacement
+
+            for aggressive_pass in range(aggressive_passes):
+                overlaps = self._find_overlaps()
+                if not overlaps:
+                    break
+
+                total_iterations += 1
+
+                # Sort by severity (larger overlap = higher priority to fix)
+                overlaps.sort(key=lambda o: -(o[2] * o[3]))  # overlap_x * overlap_y
+
+                for ref1, ref2, overlap_x, overlap_y in overlaps:
+                    current_overlap = self._get_overlap_values(ref1, ref2)
+                    if current_overlap is None:
+                        continue
+
+                    overlap_x, overlap_y = current_overlap
+
+                    # Very aggressive displacement with no Manhattan constraint
+                    scaled_overlap_x = overlap_x * aggressive_escalation
+                    scaled_overlap_y = overlap_y * aggressive_escalation
+
+                    p1 = priorities[ref1]
+                    p2 = priorities[ref2]
+
+                    # Skip locked-locked conflicts
+                    if p1 == ComponentPriority.LOCKED and p2 == ComponentPriority.LOCKED:
+                        conflict = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
+                        if conflict not in locked_conflicts:
+                            locked_conflicts.append(conflict)
+                        continue
+
+                    # Force resolution: move the lower priority component completely away
+                    self._force_separate_components(
+                        ref1, ref2, scaled_overlap_x, scaled_overlap_y,
+                        p1, p2
+                    )
+
+                    if not self._check_overlap(ref1, ref2):
+                        overlaps_resolved += 1
+
+                # Increase escalation for next pass
+                aggressive_escalation *= 1.2
+
+                # Check progress
+                remaining = len(self._find_overlaps())
+                if remaining == 0:
+                    final_overlaps = 0
+                    break
+
+                if aggressive_pass % 10 == 9:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Aggressive pass %d: %d overlaps remaining",
+                            aggressive_pass + 1, remaining
+                        )
+
+            # Final check - must recount overlaps after loop
+            final_overlaps = len(self._find_overlaps())
+
+            # If still overlaps after aggressive passes, try with finer grid
+            if final_overlaps > 0:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Still %d overlaps after aggressive passes, trying finer resolution",
+                        final_overlaps
+                    )
+
+                # Use very fine grid for final resolution
+                fine_grid = self.config.secondary_grid / 2  # 0.05mm
+
+                for final_pass in range(20):
+                    overlaps = self._find_overlaps()
+                    if not overlaps:
+                        final_overlaps = 0
+                        break
+
+                    for ref1, ref2, overlap_x, overlap_y in overlaps:
+                        p1 = priorities[ref1]
+                        p2 = priorities[ref2]
+
+                        if p1 == ComponentPriority.LOCKED and p2 == ComponentPriority.LOCKED:
+                            continue
+
+                        # Direct displacement with fine grid
+                        comp1 = self.board.components.get(ref1)
+                        comp2 = self.board.components.get(ref2)
+                        if not comp1 or not comp2:
+                            continue
+
+                        # Move the lower priority component by exact overlap amount + small buffer
+                        move_dist = max(overlap_x, overlap_y) + 0.1
+                        dx = comp2.x - comp1.x
+                        dy = comp2.y - comp1.y
+                        dist = math.sqrt(dx * dx + dy * dy)
+                        if dist < 0.001:
+                            dx, dy, dist = 1.0, 0.0, 1.0
+
+                        if p1.value >= p2.value and p2 != ComponentPriority.LOCKED:
+                            # Move comp2
+                            comp2.x += move_dist * dx / dist
+                            comp2.y += move_dist * dy / dist
+                            comp2.x = round(comp2.x / fine_grid) * fine_grid
+                            comp2.y = round(comp2.y / fine_grid) * fine_grid
+                        elif p1 != ComponentPriority.LOCKED:
+                            # Move comp1
+                            comp1.x -= move_dist * dx / dist
+                            comp1.y -= move_dist * dy / dist
+                            comp1.x = round(comp1.x / fine_grid) * fine_grid
+                            comp1.y = round(comp1.y / fine_grid) * fine_grid
+
+                final_overlaps = len(self._find_overlaps())
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -726,6 +1015,230 @@ class PlacementLegalizer:
                 len(locked_conflicts),
             )
         return (overlaps_resolved, total_iterations, final_overlaps, locked_conflicts)
+
+    def _apply_centroid_expansion(self) -> bool:
+        """
+        Apply expansion from centroid to create breathing room on dense boards.
+
+        Moves all non-locked components slightly away from the board centroid.
+        Uses the configured expansion_factor (e.g., 1.05 = 5% expansion).
+
+        Returns:
+            True if expansion was applied, False if skipped (e.g., all locked)
+        """
+        # Calculate centroid of all movable components
+        movable_refs = [
+            ref for ref in self.board.components
+            if not self._is_component_fixed(ref)
+        ]
+
+        if len(movable_refs) < 2:
+            return False
+
+        centroid_x = sum(self.board.components[r].x for r in movable_refs) / len(movable_refs)
+        centroid_y = sum(self.board.components[r].y for r in movable_refs) / len(movable_refs)
+
+        factor = self.config.expansion_factor
+        grid = self.config.secondary_grid  # Use fine grid for precise expansion
+
+        expanded = 0
+        for ref in movable_refs:
+            comp = self.board.components[ref]
+
+            # Calculate expanded position
+            dx = comp.x - centroid_x
+            dy = comp.y - centroid_y
+
+            new_x = centroid_x + dx * factor
+            new_y = centroid_y + dy * factor
+
+            # Snap to grid
+            new_x = round(new_x / grid) * grid
+            new_y = round(new_y / grid) * grid
+
+            if abs(new_x - comp.x) > 0.001 or abs(new_y - comp.y) > 0.001:
+                comp.x = new_x
+                comp.y = new_y
+                # Ensure still within bounds
+                self._clamp_to_bounds(ref, grid)
+                expanded += 1
+
+        return expanded > 0
+
+    def _calculate_all_moves(
+        self,
+        overlaps: List[Tuple[str, str, float, float]],
+        priorities: Dict[str, ComponentPriority],
+        escalation: float,
+        use_manhattan: bool,
+        stuck_pairs: Dict[Tuple[str, str], int]
+    ) -> Dict[str, Tuple[float, float]]:
+        """
+        Calculate displacement for all overlapping components simultaneously.
+
+        Instead of applying moves one at a time (which causes ripple effects),
+        this calculates the aggregate displacement vector for each component
+        considering all its overlaps.
+
+        For stuck pairs (same overlap persisting across iterations):
+        - After 2 iterations: use diagonal movement
+        - After 4 iterations: assign full displacement to one component (break symmetry)
+        - After 6 iterations: use larger displacement multiplier
+
+        Returns:
+            Dictionary mapping component ref to (dx, dy) displacement
+        """
+        moves: Dict[str, Tuple[float, float]] = {}
+
+        for ref1, ref2, overlap_x, overlap_y in overlaps:
+            current_overlap = self._get_overlap_values(ref1, ref2)
+            if current_overlap is None:
+                continue
+
+            overlap_x, overlap_y = current_overlap
+            overlap_x *= escalation
+            overlap_y *= escalation
+
+            pair_key = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
+            stuck_count = stuck_pairs.get(pair_key, 0)
+
+            # Escalating strategies for stuck pairs
+            local_manhattan = use_manhattan
+            break_symmetry = False
+            stuck_escalation = 1.0
+
+            if stuck_count >= 2:
+                # After 2 iterations stuck: use diagonal movement
+                local_manhattan = False
+            if stuck_count >= 4:
+                # After 4 iterations stuck: break symmetry by moving only one component
+                break_symmetry = True
+            if stuck_count >= 6:
+                # After 6 iterations stuck: increase displacement
+                stuck_escalation = 1.5 + (stuck_count - 6) * 0.25
+
+            overlap_x *= stuck_escalation
+            overlap_y *= stuck_escalation
+
+            # Calculate MTV (Minimum Translation Vector)
+            comp1 = self.board.components[ref1]
+            comp2 = self.board.components[ref2]
+            dx = comp2.x - comp1.x
+            dy = comp2.y - comp1.y
+
+            if local_manhattan:
+                if overlap_x <= overlap_y:
+                    mtv_x = overlap_x + 0.01
+                    mtv_y = 0.0
+                else:
+                    mtv_x = 0.0
+                    mtv_y = overlap_y + 0.01
+            else:
+                dist = math.sqrt(dx*dx + dy*dy) if (dx != 0 or dy != 0) else 1.0
+                mtv_mag = min(overlap_x, overlap_y) + 0.01
+                mtv_x = mtv_mag * dx / dist if dist > 0 else mtv_mag
+                mtv_y = mtv_mag * dy / dist if dist > 0 else 0
+
+            # Direction
+            if dx < 0:
+                mtv_x = -abs(mtv_x)
+            elif dx > 0:
+                mtv_x = abs(mtv_x)
+            else:
+                mtv_x = abs(mtv_x) if ref2 > ref1 else -abs(mtv_x)
+
+            if dy < 0:
+                mtv_y = -abs(mtv_y)
+            elif dy > 0:
+                mtv_y = abs(mtv_y)
+            else:
+                mtv_y = abs(mtv_y) if ref2 > ref1 else -abs(mtv_y)
+
+            # Determine who moves based on priority
+            p1 = priorities[ref1]
+            p2 = priorities[ref2]
+
+            move1_x, move1_y = 0.0, 0.0
+            move2_x, move2_y = 0.0, 0.0
+
+            if p1 == ComponentPriority.LOCKED and p2 == ComponentPriority.LOCKED:
+                continue  # Cannot resolve
+            elif p1 == ComponentPriority.LOCKED:
+                move2_x, move2_y = mtv_x, mtv_y
+            elif p2 == ComponentPriority.LOCKED:
+                move1_x, move1_y = -mtv_x, -mtv_y
+            elif p1.value > p2.value:
+                move2_x, move2_y = mtv_x, mtv_y
+            elif p2.value > p1.value:
+                move1_x, move1_y = -mtv_x, -mtv_y
+            else:
+                # Equal priority
+                if break_symmetry:
+                    # Break symmetry: move only the lexicographically smaller ref
+                    # This prevents oscillation from split moves
+                    if ref1 < ref2:
+                        move1_x, move1_y = -mtv_x, -mtv_y
+                    else:
+                        move2_x, move2_y = mtv_x, mtv_y
+                else:
+                    # Split displacement
+                    move1_x, move1_y = -mtv_x/2, -mtv_y/2
+                    move2_x, move2_y = mtv_x/2, mtv_y/2
+
+            # Accumulate moves
+            if ref1 not in moves:
+                moves[ref1] = (0.0, 0.0)
+            if ref2 not in moves:
+                moves[ref2] = (0.0, 0.0)
+
+            moves[ref1] = (moves[ref1][0] + move1_x, moves[ref1][1] + move1_y)
+            moves[ref2] = (moves[ref2][0] + move2_x, moves[ref2][1] + move2_y)
+
+        return moves
+
+    def _apply_moves_simultaneously(
+        self,
+        moves: Dict[str, Tuple[float, float]],
+        locked_conflicts: List[Tuple[str, str]]
+    ) -> bool:
+        """
+        Apply all calculated moves at once.
+
+        Returns:
+            True if any moves were applied
+        """
+        applied = False
+
+        for ref, (dx, dy) in moves.items():
+            if abs(dx) < 0.001 and abs(dy) < 0.001:
+                continue
+
+            comp = self.board.components.get(ref)
+            if not comp:
+                continue
+
+            if self._is_component_fixed(ref):
+                continue
+
+            # Apply move
+            comp.x += dx
+            comp.y += dy
+
+            # Snap to appropriate grid
+            grid = self.config.secondary_grid if self._is_passive(ref) else self.config.primary_grid
+            if self._is_passive(ref):
+                size = self._detect_passive_size(comp)
+                if size not in FINE_PITCH_SIZES:
+                    grid = self.config.primary_grid
+
+            comp.x = round(comp.x / grid) * grid
+            comp.y = round(comp.y / grid) * grid
+
+            # Ensure within bounds
+            self._clamp_to_bounds(ref, grid)
+            applied = True
+
+        return applied
 
     def _get_component_priority(self, ref: str) -> ComponentPriority:
         """Determine component priority for overlap resolution."""
@@ -739,9 +1252,13 @@ class PlacementLegalizer:
 
         # Check component type from reference designator
         first_char = ref[0].upper() if ref else ''
+        prefix = ref.upper()
 
-        if first_char == 'J' or first_char == 'P':
+        if prefix.startswith('SW') or first_char in ('J', 'P', 'H'):
             return ComponentPriority.CONNECTOR
+
+        if first_char == 'B':
+            return ComponentPriority.LARGE_IC
 
         if first_char == 'U':
             # Distinguish large ICs from small ICs by size
@@ -795,6 +1312,23 @@ class PlacementLegalizer:
         if overlap_x > 0 and overlap_y > 0:
             return (overlap_x, overlap_y)
         return None
+
+    def _find_overlaps_for_ref(self, ref: str) -> List[str]:
+        """Find all components that overlap with a specific component.
+
+        Used for ripple detection - when moving a component to resolve one
+        overlap, we check if it now overlaps with other components.
+
+        Returns:
+            List of component refs that overlap with the given ref
+        """
+        overlapping_refs = []
+        for other_ref in self.board.components:
+            if other_ref == ref:
+                continue
+            if self._get_overlap_values(ref, other_ref) is not None:
+                overlapping_refs.append(other_ref)
+        return overlapping_refs
 
     def _build_spatial_index(self) -> Dict[Tuple[int, int], List[str]]:
         """
@@ -864,6 +1398,9 @@ class PlacementLegalizer:
             for i, ref1 in enumerate(cell_refs):
                 comp1 = self.board.components[ref1]
                 half_w1, half_h1 = self._component_sizes.get(ref1, (1.0, 1.0))
+                
+                # Import Layer enum for checks
+                from ..board.abstraction import Layer
 
                 for ref2 in cell_refs[i+1:]:
                     # Skip if already checked (components can be in multiple cells)
@@ -873,6 +1410,18 @@ class PlacementLegalizer:
                     checked_pairs.add(pair_key)
 
                     comp2 = self.board.components[ref2]
+                    
+                    # Layer check: Skip if components are on opposite sides
+                    # We assume components on different copper layers don't physically collide
+                    if comp1.layer != comp2.layer:
+                        is_top1 = comp1.layer == Layer.TOP_COPPER
+                        is_bottom1 = comp1.layer == Layer.BOTTOM_COPPER
+                        is_top2 = comp2.layer == Layer.TOP_COPPER
+                        is_bottom2 = comp2.layer == Layer.BOTTOM_COPPER
+                        
+                        if (is_top1 and is_bottom2) or (is_bottom1 and is_top2):
+                            continue
+
                     half_w2, half_h2 = self._component_sizes.get(ref2, (1.0, 1.0))
 
                     # Calculate required separation
@@ -892,6 +1441,30 @@ class PlacementLegalizer:
 
         return overlaps
 
+    def _is_within_bounds(self, ref: str, x: float, y: float) -> bool:
+        """Check if a position is within board boundaries (accounting for size/margin)."""
+        comp = self.board.components.get(ref)
+        if not comp:
+            return True
+            
+        outline = self.board.outline
+        if not outline.has_outline:
+            return True
+            
+        half_w, half_h = self._component_sizes.get(ref, (comp.width / 2, comp.height / 2))
+        margin = self.config.edge_clearance
+        
+        min_x = outline.origin_x + half_w + margin
+        max_x = outline.origin_x + outline.width - half_w - margin
+        min_y = outline.origin_y + half_h + margin
+        max_y = outline.origin_y + outline.height - half_h - margin
+        
+        # Board too small?
+        if max_x < min_x or max_y < min_y:
+            return True # Can't satisfy, assume valid to avoid lockup
+            
+        return (min_x <= x <= max_x) and (min_y <= y <= max_y)
+
     def _resolve_overlap_priority(
         self, ref1: str, ref2: str,
         overlap_x: float, overlap_y: float,
@@ -900,22 +1473,6 @@ class PlacementLegalizer:
     ) -> bool:
         """
         Resolve overlap using priority-based displacement.
-
-        Uses Minimum Translation Vector (MTV) approach:
-        - Choose axis with minimum overlap (smaller displacement)
-        - Move lower-priority component by MTV
-        - If equal priority, move both components
-
-        Displacement can be Manhattan-constrained (X or Y only) or diagonal.
-
-        Args:
-            ref1, ref2: Component references
-            overlap_x, overlap_y: Overlap amounts (may be scaled for escalation)
-            priority1, priority2: Component priorities
-            use_manhattan: Override for manhattan_shove config (for escalation)
-
-        Returns:
-            True if overlap was resolved
         """
         comp1 = self.board.components[ref1]
         comp2 = self.board.components[ref2]
@@ -982,27 +1539,59 @@ class PlacementLegalizer:
         grid1 = get_grid_for_ref(ref1)
         grid2 = get_grid_for_ref(ref2)
 
-        # Determine who moves based on priority
+        # Determine moves based on priority and boundaries
+        move1_x, move1_y = 0.0, 0.0
+        move2_x, move2_y = 0.0, 0.0
+        
+        # Candidate moves
+        c1_away = (-mtv_x, -mtv_y)
+        c2_away = (mtv_x, mtv_y)
+        c1_half = (-mtv_x/2, -mtv_y/2)
+        c2_half = (mtv_x/2, mtv_y/2)
+
         if priority1.value > priority2.value:
-            # comp1 has higher priority - move comp2 away
-            comp2.x += mtv_x
-            comp2.y += mtv_y
-            comp2.x = round(comp2.x / grid2) * grid2
-            comp2.y = round(comp2.y / grid2) * grid2
+            # Prefer moving comp2
+            move2_x, move2_y = c2_away
         elif priority2.value > priority1.value:
-            # comp2 has higher priority - move comp1 away
-            comp1.x -= mtv_x
-            comp1.y -= mtv_y
-            comp1.x = round(comp1.x / grid1) * grid1
-            comp1.y = round(comp1.y / grid1) * grid1
+            # Prefer moving comp1
+            move1_x, move1_y = c1_away
         else:
-            # Equal priority - move both by half MTV
-            comp1.x -= mtv_x / 2
-            comp1.y -= mtv_y / 2
-            comp2.x += mtv_x / 2
-            comp2.y += mtv_y / 2
+            # Equal priority - split
+            move1_x, move1_y = c1_half
+            move2_x, move2_y = c2_half
+
+        # Boundary Check: If a preferred move pushes out of bounds, try pushing the other component instead
+        # unless the other component is locked or higher priority.
+        
+        # Proposed positions
+        prop_x1 = comp1.x + move1_x
+        prop_y1 = comp1.y + move1_y
+        prop_x2 = comp2.x + move2_x
+        prop_y2 = comp2.y + move2_y
+        
+        valid1 = self._is_within_bounds(ref1, prop_x1, prop_y1)
+        valid2 = self._is_within_bounds(ref2, prop_x2, prop_y2)
+        
+        # Logic to swap moves if boundary violated
+        if not valid2 and valid1 and priority1.value <= priority2.value:
+             # Comp2 hits wall, but Comp1 has room and isn't higher priority -> Push Comp1 instead
+             move1_x, move1_y = c1_away
+             move2_x, move2_y = 0.0, 0.0
+        elif not valid1 and valid2 and priority2.value <= priority1.value:
+             # Comp1 hits wall -> Push Comp2 instead
+             move1_x, move1_y = 0.0, 0.0
+             move2_x, move2_y = c2_away
+
+        # Apply moves
+        if move1_x != 0 or move1_y != 0:
+            comp1.x += move1_x
+            comp1.y += move1_y
             comp1.x = round(comp1.x / grid1) * grid1
             comp1.y = round(comp1.y / grid1) * grid1
+            
+        if move2_x != 0 or move2_y != 0:
+            comp2.x += move2_x
+            comp2.y += move2_y
             comp2.x = round(comp2.x / grid2) * grid2
             comp2.y = round(comp2.y / grid2) * grid2
 
@@ -1012,8 +1601,173 @@ class PlacementLegalizer:
 
         return True
 
+    def _force_separate_components(
+        self, ref1: str, ref2: str,
+        overlap_x: float, overlap_y: float,
+        priority1: ComponentPriority, priority2: ComponentPriority
+    ) -> bool:
+        """
+        Force separate overlapping components with aggressive displacement.
+
+        Unlike normal resolution, this method:
+        - Always uses diagonal displacement for maximum effect
+        - Moves components by the FULL overlap distance (not half)
+        - Ignores grid snapping for initial displacement
+        - Uses larger clearance buffer
+
+        Args:
+            ref1, ref2: Component references
+            overlap_x, overlap_y: Amount of overlap in each axis
+            priority1, priority2: Component priorities
+
+        Returns:
+            True if components were separated
+        """
+        comp1 = self.board.components.get(ref1)
+        comp2 = self.board.components.get(ref2)
+        if not comp1 or not comp2:
+            return False
+
+        # Cannot move locked components
+        if priority1 == ComponentPriority.LOCKED and priority2 == ComponentPriority.LOCKED:
+            return False
+
+        # Calculate separation direction (from comp1 to comp2)
+        dx = comp2.x - comp1.x
+        dy = comp2.y - comp1.y
+        dist = math.sqrt(dx * dx + dy * dy)
+
+        if dist < 0.001:
+            # Components are on top of each other - use arbitrary direction
+            dx, dy = 1.0, 0.5
+            dist = math.sqrt(dx * dx + dy * dy)
+
+        # Normalize direction
+        nx = dx / dist
+        ny = dy / dist
+
+        # Calculate required separation with extra buffer
+        half_w1, half_h1 = self._component_sizes.get(ref1, (1.0, 1.0))
+        half_w2, half_h2 = self._component_sizes.get(ref2, (1.0, 1.0))
+        required_sep = math.sqrt((half_w1 + half_w2) ** 2 + (half_h1 + half_h2) ** 2)
+        required_sep += self.config.min_clearance * 2  # Extra buffer
+
+        # Calculate displacement magnitude needed
+        displacement = max(overlap_x, overlap_y) + self.config.min_clearance + 0.5
+
+        # Determine who moves
+        grid1 = self.config.secondary_grid if self._is_passive(ref1) else self.config.primary_grid
+        grid2 = self.config.secondary_grid if self._is_passive(ref2) else self.config.primary_grid
+
+        if priority1 == ComponentPriority.LOCKED:
+            # Move only comp2 away from comp1
+            comp2.x += nx * displacement
+            comp2.y += ny * displacement
+            comp2.x = round(comp2.x / grid2) * grid2
+            comp2.y = round(comp2.y / grid2) * grid2
+        elif priority2 == ComponentPriority.LOCKED:
+            # Move only comp1 away from comp2
+            comp1.x -= nx * displacement
+            comp1.y -= ny * displacement
+            comp1.x = round(comp1.x / grid1) * grid1
+            comp1.y = round(comp1.y / grid1) * grid1
+        elif priority1.value >= priority2.value:
+            # Move comp2 (lower or equal priority)
+            comp2.x += nx * displacement
+            comp2.y += ny * displacement
+            comp2.x = round(comp2.x / grid2) * grid2
+            comp2.y = round(comp2.y / grid2) * grid2
+        else:
+            # Move comp1 (lower priority)
+            comp1.x -= nx * displacement
+            comp1.y -= ny * displacement
+            comp1.x = round(comp1.x / grid1) * grid1
+            comp1.y = round(comp1.y / grid1) * grid1
+
+        return True
+
+    def _compact_board_outline(self) -> Tuple[bool, Optional[Tuple[float, float]]]:
+        """
+        Phase 4: Compact board outline to fit the final component placement.
+
+        Calculates the bounding box of all placed components (accounting for
+        their sizes and clearance), then updates the board outline to fit.
+
+        This creates a tight, professional board outline that matches the
+        actual component placement area plus a margin for edge clearance.
+
+        Returns:
+            (compacted: bool, new_size: (width, height) or None)
+        """
+        if not self.board.components:
+            return (False, None)
+
+        # Calculate bounding box of all components including their footprints
+        min_x = float('inf')
+        max_x = float('-inf')
+        min_y = float('inf')
+        max_y = float('-inf')
+
+        for ref, comp in self.board.components.items():
+            # Skip DNP components
+            if comp.dnp:
+                continue
+
+            half_w, half_h = self._component_sizes.get(ref, (comp.width / 2, comp.height / 2))
+
+            comp_min_x = comp.x - half_w
+            comp_max_x = comp.x + half_w
+            comp_min_y = comp.y - half_h
+            comp_max_y = comp.y + half_h
+
+            min_x = min(min_x, comp_min_x)
+            max_x = max(max_x, comp_max_x)
+            min_y = min(min_y, comp_min_y)
+            max_y = max(max_y, comp_max_y)
+
+        # No valid components found
+        if min_x == float('inf'):
+            return (False, None)
+
+        # Add margin around the component bounding box
+        margin = self.config.outline_margin
+        new_origin_x = min_x - margin
+        new_origin_y = min_y - margin
+        new_width = (max_x - min_x) + 2 * margin
+        new_height = (max_y - min_y) + 2 * margin
+
+        # Snap to grid for clean dimensions
+        grid = self.config.primary_grid
+        new_origin_x = math.floor(new_origin_x / grid) * grid
+        new_origin_y = math.floor(new_origin_y / grid) * grid
+        new_width = math.ceil(new_width / grid) * grid
+        new_height = math.ceil(new_height / grid) * grid
+
+        # Update board outline
+        old_outline = self.board.outline
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Board compaction: (%.1f, %.1f, %.1fx%.1f) -> (%.1f, %.1f, %.1fx%.1f)",
+                old_outline.origin_x, old_outline.origin_y,
+                old_outline.width, old_outline.height,
+                new_origin_x, new_origin_y, new_width, new_height
+            )
+
+        # Update the board outline directly
+        self.board.outline.origin_x = new_origin_x
+        self.board.outline.origin_y = new_origin_y
+        self.board.outline.width = new_width
+        self.board.outline.height = new_height
+        self.board.outline.has_outline = True
+
+        return (True, (new_width, new_height))
+
     def _clamp_to_bounds(self, ref: str, grid: float):
         """Clamp component position to stay within board boundaries.
+
+        Uses edge_clearance (matches DFM min_trace_to_edge) for boundary margin.
+        Grid snapping is done in the inward direction to ensure components
+        stay within bounds even after snapping.
 
         Skipped when board has no explicit outline defined.
         """
@@ -1028,7 +1782,8 @@ class PlacementLegalizer:
             return
 
         half_w, half_h = self._component_sizes.get(ref, (comp.width / 2, comp.height / 2))
-        margin = self.config.min_clearance
+        # Use edge_clearance to match validator's min_trace_to_edge check
+        margin = self.config.edge_clearance
 
         # Calculate bounds
         min_x = outline.origin_x + half_w + margin
@@ -1036,26 +1791,28 @@ class PlacementLegalizer:
         min_y = outline.origin_y + half_h + margin
         max_y = outline.origin_y + outline.height - half_h - margin
 
-        # Clamp position
-        clamped = False
+        # Check for invalid bounds (board too small)
+        if max_x < min_x or max_y < min_y:
+            # Board is too small - center the component
+            comp.x = outline.origin_x + outline.width / 2
+            comp.y = outline.origin_y + outline.height / 2
+            return
+
+        # Clamp position and snap to grid in the INWARD direction
+        # This ensures grid snapping doesn't push components back out of bounds
         if comp.x < min_x:
-            comp.x = min_x
-            clamped = True
+            # Snap to next grid point INSIDE the bound (ceiling)
+            comp.x = math.ceil(min_x / grid) * grid
         elif comp.x > max_x:
-            comp.x = max_x
-            clamped = True
+            # Snap to next grid point INSIDE the bound (floor)
+            comp.x = math.floor(max_x / grid) * grid
 
         if comp.y < min_y:
-            comp.y = min_y
-            clamped = True
+            # Snap to next grid point INSIDE the bound (ceiling)
+            comp.y = math.ceil(min_y / grid) * grid
         elif comp.y > max_y:
-            comp.y = max_y
-            clamped = True
-
-        # Re-snap to grid if clamped
-        if clamped:
-            comp.x = round(comp.x / grid) * grid
-            comp.y = round(comp.y / grid) * grid
+            # Snap to next grid point INSIDE the bound (floor)
+            comp.y = math.floor(max_y / grid) * grid
 
     def _is_passive(self, ref: str) -> bool:
         """Check if a component reference indicates a passive (R, C, L)."""
