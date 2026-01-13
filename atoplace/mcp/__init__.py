@@ -1,27 +1,39 @@
-"""MCP server for Claude integration."""
+"""
+AtoPlace MCP (Model Context Protocol) Server
 
-# Lazy imports to avoid ModuleNotFoundError until implementation exists
-__all__ = ["AtoPlaceMCPServer", "create_server"]
+Exposes the Layout DSL and Context Generators to LLM agents.
 
+Modules:
+- server: FastMCP server with tool registrations
+- context: Multi-level context generators (macro, micro, vision)
+"""
 
-def __getattr__(name):
-    """Lazy import MCP components."""
-    if name == "AtoPlaceMCPServer":
-        try:
-            from .server import AtoPlaceMCPServer
-            return AtoPlaceMCPServer
-        except ImportError:
-            raise ImportError(
-                "AtoPlaceMCPServer not yet implemented. "
-                "See docs/PRODUCT_PLAN.md MCP Server Integration section."
-            )
-    elif name == "create_server":
-        try:
-            from .server import create_server
-            return create_server
-        except ImportError:
-            raise ImportError(
-                "create_server not yet implemented. "
-                "See docs/PRODUCT_PLAN.md MCP Server Integration section."
-            )
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+from .server import mcp, main, session
+
+# Context generators
+from .context import (
+    Microscope,
+    MicroscopeData,
+    MacroContext,
+    BoardSummary,
+    SemanticGrid,
+    ModuleMap,
+    VisionContext,
+)
+
+__all__ = [
+    # Server
+    "mcp",
+    "main",
+    "session",
+    # Context - Micro
+    "Microscope",
+    "MicroscopeData",
+    # Context - Macro
+    "MacroContext",
+    "BoardSummary",
+    "SemanticGrid",
+    "ModuleMap",
+    # Context - Vision
+    "VisionContext",
+]
