@@ -295,6 +295,11 @@ class ForceDirectedRefiner:
         current_max_velocity = self.config.max_velocity
         oscillation_count = 0
 
+        # Stability tracking for early convergence
+        stable_iterations = 0
+        stable_threshold = 30  # Exit after N consecutive stable iterations
+        movement_stable_threshold = 0.1  # mm - consider stable if max_movement below this
+
         log_every = 10
 
         # Capture initial state
@@ -387,6 +392,7 @@ class ForceDirectedRefiner:
             # to prevent freezing high-energy states when damping limits movement
             converged = False
             low_movement = max_movement < self.config.min_movement
+            low_variance = False
 
             # Check energy variance when we have enough history
             if len(energy_history) >= self.config.energy_window:
@@ -398,6 +404,14 @@ class ForceDirectedRefiner:
                 normalized_variance = energy_variance / (avg_energy + 1e-6)
                 low_variance = normalized_variance < self.config.energy_variance_threshold
 
+                if logger.isEnabledFor(logging.DEBUG) and iteration % log_every == 0:
+                    logger.debug(
+                        "  Convergence: max_move=%.4f stable_iters=%d/%d",
+                        max_movement,
+                        stable_iterations,
+                        stable_threshold
+                    )
+
                 # Scale energy threshold by component count for board-size independence
                 # More components = higher baseline energy, so scale accordingly
                 energy_threshold = self.config.min_movement * 10 * max(1, num_components / 10)
@@ -406,6 +420,26 @@ class ForceDirectedRefiner:
                 # Converge when movement is low AND (variance is low OR energy is low)
                 # This prevents false convergence when high forces exist but movement is damped
                 converged = low_movement and (low_variance or low_energy)
+
+                # Track consecutive stable iterations for early exit
+                # Use movement stability as the primary criterion since energy can oscillate
+                # while components are barely moving due to damping
+                movement_stable = max_movement < movement_stable_threshold
+                if movement_stable:
+                    stable_iterations += 1
+                else:
+                    stable_iterations = 0
+
+                # Early exit: if movement has been low for N iterations, we're converged
+                # This prevents long dwell time when algorithm has effectively finished
+                if stable_iterations >= stable_threshold:
+                    converged = True
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Early convergence: movement stable for %d iterations (max_move=%.4f)",
+                            stable_iterations,
+                            max_movement
+                        )
             else:
                 # Before we have energy history, use movement + very low energy as fallback
                 # Scale by component count for consistency
