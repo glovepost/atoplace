@@ -976,6 +976,229 @@ def validate_placement() -> str:
 
 
 # =============================================================================
+# DRC Tools
+# =============================================================================
+
+@mcp.tool()
+def run_drc(
+    use_kicad: bool = True,
+    dfm_profile: str = "jlcpcb_standard",
+    severity_filter: str = "all"
+) -> str:
+    """
+    Run Design Rule Check on the loaded board.
+
+    This runs DRC using two backends:
+    - atoplace: Python-based checks (placement-focused, always available)
+    - kicad-cli: Native KiCad DRC (comprehensive, if kicad-cli is available)
+
+    Args:
+        use_kicad: Whether to use kicad-cli for native DRC (default: True)
+        dfm_profile: DFM profile name (default: "jlcpcb_standard")
+            Options: jlcpcb_standard, jlcpcb_advanced, oshpark_2layer, pcbway_standard
+        severity_filter: Filter results by severity (default: "all")
+            Options: "all", "errors", "warnings"
+
+    Returns:
+        DRC report with violations that can be actioned.
+        Each violation has an "actionable" flag indicating if it can be auto-fixed.
+    """
+    logger.info("run_drc called", extra={
+        "use_kicad": use_kicad,
+        "dfm_profile": dfm_profile,
+        "severity_filter": severity_filter
+    })
+    _require_board()
+
+    from .drc import get_drc_runner, DRCFixer
+
+    runner = get_drc_runner()
+
+    # Get board path for kicad-cli
+    board_path = session.source_path if hasattr(session, 'source_path') else None
+
+    # Run combined DRC
+    result = runner.run_combined_drc(
+        board=session.board,
+        board_path=board_path,
+        dfm_profile=dfm_profile,
+        use_kicad=use_kicad
+    )
+
+    # Filter by severity if requested
+    violations = result.violations
+    if severity_filter == "errors":
+        violations = [v for v in violations if v.severity == "error"]
+    elif severity_filter == "warnings":
+        violations = [v for v in violations if v.severity == "warning"]
+
+    # Count actionable violations
+    actionable_count = sum(1 for v in violations if v.actionable)
+
+    logger.info("run_drc result", extra={
+        "passed": result.passed,
+        "error_count": result.error_count,
+        "warning_count": result.warning_count
+    })
+
+    return _success_response({
+        "passed": result.passed,
+        "summary": result.summary,
+        "error_count": result.error_count,
+        "warning_count": result.warning_count,
+        "violation_count": len(violations),
+        "actionable_count": actionable_count,
+        "violations": [v.to_dict() for v in violations],
+    })
+
+
+@mcp.tool()
+def get_drc_details(violation_id: str) -> str:
+    """
+    Get detailed information about a specific DRC violation.
+
+    Args:
+        violation_id: The violation ID from run_drc results (e.g., "v001")
+
+    Returns:
+        Detailed violation information including suggested fix actions.
+    """
+    logger.info("get_drc_details called", extra={"violation_id": violation_id})
+
+    from .drc import get_drc_runner
+
+    runner = get_drc_runner()
+    violation = runner.get_violation(violation_id)
+
+    if not violation:
+        return _error_response(
+            f"Violation '{violation_id}' not found. Run run_drc first.",
+            "violation_not_found"
+        )
+
+    # Add extra context
+    details = violation.to_dict()
+
+    # If items reference components, add their positions
+    if violation.items and session.is_loaded:
+        component_details = []
+        for ref in violation.items:
+            comp = session.board.components.get(ref)
+            if comp:
+                component_details.append({
+                    "ref": ref,
+                    "x": round(comp.x, 3),
+                    "y": round(comp.y, 3),
+                    "rotation": comp.rotation,
+                    "locked": comp.locked,
+                })
+        details["component_details"] = component_details
+
+    return _success_response(details)
+
+
+@mcp.tool()
+def fix_drc_violation(
+    violation_id: str,
+    strategy: str = "auto"
+) -> str:
+    """
+    Attempt to automatically fix a DRC violation.
+
+    This works by moving components to resolve spacing issues. Not all
+    violations can be auto-fixed (e.g., routing issues, footprint problems).
+
+    Args:
+        violation_id: The violation ID to fix (e.g., "v001")
+        strategy: Fix strategy to use:
+            - "auto": Automatically choose best strategy (default)
+            - "move_first": Move the first component in the violation
+            - "move_second": Move the second component
+            - "spread": Move both components apart equally
+
+    Returns:
+        Result of the fix attempt, including any component moves made.
+    """
+    logger.info("fix_drc_violation called", extra={
+        "violation_id": violation_id,
+        "strategy": strategy
+    })
+    _require_board()
+
+    from .drc import get_drc_runner, DRCFixer
+
+    runner = get_drc_runner()
+    violation = runner.get_violation(violation_id)
+
+    if not violation:
+        return _error_response(
+            f"Violation '{violation_id}' not found. Run run_drc first.",
+            "violation_not_found"
+        )
+
+    if not violation.actionable:
+        return _error_response(
+            f"Violation '{violation_id}' ({violation.rule}) cannot be auto-fixed. "
+            f"Reason: {violation.suggested_action or 'Not a placement issue'}",
+            "not_actionable"
+        )
+
+    # Validate strategy
+    valid_strategies = ["auto", "move_first", "move_second", "spread"]
+    if strategy not in valid_strategies:
+        return _error_response(
+            f"Invalid strategy '{strategy}'. Use one of: {valid_strategies}",
+            "invalid_strategy"
+        )
+
+    # Attempt fix
+    fixer = DRCFixer(session.board)
+    success, message, updates = fixer.fix_violation(violation, strategy)
+
+    if not success:
+        return _error_response(message, "fix_failed")
+
+    # Apply the updates
+    applied_updates = []
+    for update in updates:
+        ref = update["ref"]
+        new_x = update.get("x")
+        new_y = update.get("y")
+
+        # Use session to update (supports kipy real-time mode)
+        if hasattr(session, 'update_component'):
+            session.update_component(ref, x=new_x, y=new_y)
+        else:
+            # Direct mode - update board
+            comp = session.board.components.get(ref)
+            if comp:
+                if new_x is not None:
+                    comp.x = new_x
+                if new_y is not None:
+                    comp.y = new_y
+                session.mark_modified([ref])
+
+        applied_updates.append({
+            "ref": ref,
+            "new_x": round(new_x, 3) if new_x else None,
+            "new_y": round(new_y, 3) if new_y else None,
+        })
+
+    logger.info("fix_drc_violation result", extra={
+        "success": True,
+        "updates_count": len(applied_updates)
+    })
+
+    return _success_response({
+        "fixed": True,
+        "message": message,
+        "violation_id": violation_id,
+        "updates": applied_updates,
+        "hint": "Run run_drc() again to verify the fix"
+    })
+
+
+# =============================================================================
 # MCP Resources
 # =============================================================================
 

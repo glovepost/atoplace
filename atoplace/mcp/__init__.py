@@ -48,6 +48,17 @@ def get_kipy_session():
 # Backend selection
 from .backends import BackendMode, get_backend_mode, create_session as create_backend_session
 
+# DRC (lazy import)
+def get_drc_runner():
+    """Get DRC runner instance."""
+    from .drc import get_drc_runner as _get_runner
+    return _get_runner()
+
+def get_drc_fixer():
+    """Get DRC fixer class."""
+    from .drc import DRCFixer
+    return DRCFixer
+
 __all__ = [
     # Server
     "mcp",
@@ -62,6 +73,9 @@ __all__ = [
     "get_ipc_client",
     "get_ipc_session",
     "get_kipy_session",
+    # DRC
+    "get_drc_runner",
+    "get_drc_fixer",
     # Context - Micro
     "Microscope",
     "MicroscopeData",

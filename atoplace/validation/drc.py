@@ -22,6 +22,16 @@ class DRCViolation:
     location: Tuple[float, float]  # mm coordinates
     items: List[str]  # Affected items (refs, net names)
 
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "rule": self.rule,
+            "severity": self.severity,
+            "message": self.message,
+            "location": {"x": self.location[0], "y": self.location[1]},
+            "items": self.items,
+        }
+
 
 class DRCChecker:
     """Design rule checker."""
