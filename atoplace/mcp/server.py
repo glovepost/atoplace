@@ -1309,16 +1309,6 @@ def main():
         description="AtoPlace MCP Server - AI-powered PCB placement"
     )
     parser.add_argument(
-        "--ipc", "-i",
-        action="store_true",
-        help="Use IPC mode to communicate with KiCad bridge"
-    )
-    parser.add_argument(
-        "--socket", "-s",
-        default=None,
-        help="Unix socket path for IPC communication"
-    )
-    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging"
@@ -1333,15 +1323,9 @@ def main():
         logger.error("MCP package not installed. Install with: pip install mcp")
         sys.exit(1)
 
-    # Configure session based on args or environment
-    use_ipc = args.ipc or _USE_IPC
-    socket_path = args.socket or _IPC_SOCKET
-
-    if use_ipc:
-        configure_session(use_ipc=True, socket_path=socket_path)
-        logger.info("Starting MCP server in IPC mode")
-    else:
-        logger.info("Starting MCP server in direct mode")
+    # Session is already configured at module load via backends.create_session()
+    # Backend is selected via ATOPLACE_BACKEND env var (or legacy ATOPLACE_USE_IPC)
+    logger.info("Starting MCP server (backend: %s)", get_backend_mode().value)
 
     mcp.run()
 
