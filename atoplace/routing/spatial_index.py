@@ -27,6 +27,8 @@ class Obstacle:
     net_id: Optional[int] = None  # None = blocks all nets, else blocks other nets
     obstacle_type: str = "generic"  # "pad", "via", "trace", "component", "keepout"
     ref: Optional[str] = None  # Component reference if applicable
+    component_nets: Optional[Set[int]] = None  # For component bodies: nets that can pass through
+                                                 # (i.e., nets connected to component's pads)
 
     def __hash__(self):
         return hash((self.min_x, self.min_y, self.max_x, self.max_y, self.layer))
@@ -55,7 +57,8 @@ class Obstacle:
             clearance=self.clearance,
             net_id=self.net_id,
             obstacle_type=self.obstacle_type,
-            ref=self.ref
+            ref=self.ref,
+            component_nets=self.component_nets
         )
 
     def contains_point(self, x: float, y: float) -> bool:
@@ -177,6 +180,9 @@ class SpatialHashIndex:
                         # Net check: same net doesn't block
                         if net_id is not None and obs.net_id == net_id:
                             continue
+                        # Component body check: allow routing nets connected to component pads
+                        if net_id is not None and obs.component_nets is not None and net_id in obs.component_nets:
+                            continue
                         candidates.append(obs)
 
         return candidates
@@ -207,6 +213,9 @@ class SpatialHashIndex:
                         continue
                     # Net check
                     if net_id is not None and obs.net_id == net_id:
+                        continue
+                    # Component body check: allow routing nets connected to component pads
+                    if net_id is not None and obs.component_nets is not None and net_id in obs.component_nets:
                         continue
                     candidates.append(obs)
 

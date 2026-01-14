@@ -12,6 +12,7 @@ import math
 
 from ..board.abstraction import Board, Component, Net
 from ..dfm.profiles import DFMProfile, get_profile
+from ..patterns import get_patterns
 
 
 class Severity(Enum):
@@ -199,14 +200,16 @@ class ConfidenceScorer:
     - DFM rule compliance
     """
 
-    def __init__(self, dfm_profile: Optional[DFMProfile] = None):
+    def __init__(self, dfm_profile: Optional[DFMProfile] = None, patterns_config: Optional[str] = None):
         """
         Initialize scorer.
 
         Args:
             dfm_profile: DFM profile for checking manufacturability
+            patterns_config: Optional path to custom component patterns YAML file
         """
         self.dfm_profile = dfm_profile or get_profile("jlcpcb_standard")
+        self.patterns = get_patterns(patterns_config)
 
     def assess(self, board: Board, routing_done: bool = False) -> ConfidenceReport:
         """
@@ -328,18 +331,9 @@ class ConfidenceScorer:
         flags = []
         score = 1.0
 
-        # High-speed IC patterns (require closer decoupling)
-        high_speed_patterns = [
-            'USB', 'ETH', 'ENET', 'PHY', 'HDMI', 'LVDS', 'PCIE',
-            'DDR', 'SDRAM', 'FPGA', 'CPLD', 'RF', 'WIFI', 'BLE', 'BT',
-            'GHZ', 'MHZ',  # Frequency indicators
-        ]
-
-        # Medium-speed digital patterns
-        medium_speed_patterns = [
-            'STM32', 'ESP32', 'NRF', 'ATMEGA', 'PIC', 'RP2040',  # MCUs
-            'SPI', 'QSPI', 'I2C', 'UART',  # Communication interfaces
-        ]
+        # Load patterns from configuration
+        high_speed_patterns = self.patterns.high_speed_ic_patterns
+        medium_speed_patterns = self.patterns.medium_speed_ic_patterns
 
         # Find ICs (U* components)
         ics = board.get_components_by_prefix('U')
@@ -357,19 +351,22 @@ class ConfidenceScorer:
 
             # Set distance thresholds based on IC type
             if is_high_speed:
-                critical_distance = 2.0   # mm - high-speed needs very close decoupling
-                warning_distance = 3.0
-                info_distance = 5.0
+                distances = self.patterns.get_decoupling_distances('high_speed')
+                critical_distance = distances['critical']
+                warning_distance = distances['warning']
+                info_distance = distances['info']
                 speed_class = "high-speed"
             elif is_medium_speed:
-                critical_distance = 5.0   # mm - standard digital
-                warning_distance = 7.0
-                info_distance = 10.0
+                distances = self.patterns.get_decoupling_distances('medium_speed')
+                critical_distance = distances['critical']
+                warning_distance = distances['warning']
+                info_distance = distances['info']
                 speed_class = "digital"
             else:
-                critical_distance = 10.0  # mm - low-speed/unknown
-                warning_distance = 15.0
-                info_distance = 20.0
+                distances = self.patterns.get_decoupling_distances('standard')
+                critical_distance = distances['critical']
+                warning_distance = distances['warning']
+                info_distance = distances['info']
                 speed_class = "standard"
 
             # Find connected capacitors
@@ -625,16 +622,9 @@ class ConfidenceScorer:
         """
         hs_nets = []
 
-        # Patterns that can match anywhere in net name
-        hs_patterns = [
-            'USB', 'HDMI', 'LVDS', 'PCIE', 'ETH', 'SDIO', 'QSPI',
-            '_D+', '_D-', 'CLK', 'MCLK', 'SCLK',
-        ]
-
-        # Differential pair suffixes (must be at end of net name)
-        # NOTE: Avoid single-letter suffixes like 'P', 'N' which cause false positives
-        # (e.g., TEMP, EN, LOOP would incorrectly match). Use '_P', '_N' or '+', '-' instead.
-        diff_pair_suffixes = ['_P', '_N', '+', '-']
+        # Load patterns from configuration
+        hs_patterns = self.patterns.high_speed_net_patterns
+        diff_pair_suffixes = self.patterns.differential_pair_suffixes
 
         for net_name in board.nets:
             name_upper = net_name.upper()

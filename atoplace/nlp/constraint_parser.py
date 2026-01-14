@@ -22,6 +22,7 @@ from ..placement.constraints import (
     FixedConstraint,
     ConstraintType,
 )
+from ..patterns import get_patterns
 
 
 class ParseConfidence(Enum):
@@ -63,14 +64,16 @@ class ConstraintParser:
     # Pattern definitions: (regex, constraint_type, extractor_function)
     PATTERNS: List[Tuple[str, ConstraintType, Callable]] = []
 
-    def __init__(self, board: Optional[Board] = None):
+    def __init__(self, board: Optional[Board] = None, patterns_config: Optional[str] = None):
         """
         Initialize parser.
 
         Args:
             board: Optional board for validating component references
+            patterns_config: Optional path to custom component patterns YAML file
         """
         self.board = board
+        self.patterns = get_patterns(patterns_config)
         self._setup_patterns()
 
     def _setup_patterns(self):
@@ -425,11 +428,7 @@ class ConstraintParser:
             return []
 
         analog_refs = []
-        analog_patterns = [
-            r'OPA', r'LM358', r'TL08', r'AD8', r'MCP6',  # Op-amps
-            r'ADC', r'DAC',  # Converters
-            r'REF', r'VREF',  # Voltage references
-        ]
+        analog_patterns = self.patterns.analog_patterns
 
         for ref, comp in self.board.components.items():
             fp = comp.footprint.upper()
@@ -454,12 +453,7 @@ class ConstraintParser:
             return []
 
         digital_refs = []
-        digital_patterns = [
-            r'STM32', r'ESP32', r'ATMEGA', r'PIC', r'NRF5', r'RP2040',  # MCUs
-            r'74HC', r'74LS', r'74LVC',  # Logic ICs
-            r'FPGA', r'CPLD',  # Programmable logic
-            r'FLASH', r'EEPROM', r'SRAM',  # Memory
-        ]
+        digital_patterns = self.patterns.digital_patterns
 
         for ref, comp in self.board.components.items():
             fp = comp.footprint.upper()

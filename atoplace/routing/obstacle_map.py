@@ -67,19 +67,22 @@ class ObstacleMapBuilder:
 
         Args:
             include_component_bodies: If True, add component body outlines as obstacles.
-                This prevents traces from routing through SMD component areas.
+                This prevents traces from routing through SMD component areas while
+                still allowing routing to pads inside the component body.
+
+                Component body obstacles are smart: they block routing for all nets
+                EXCEPT nets that are connected to the component's pads. This allows
+                routing to reach pads inside component bodies (e.g., BGAs, LGAs,
+                connectors with internal pins) while still preventing unrealistic
+                routes through the component area.
 
                 Tradeoffs:
-                - True: Prevents unrealistic routes through component bodies, but may
-                  cause routing failures for designs where pads are at component edges
-                  and traces need to exit through the body area.
+                - True: Produces realistic routing that doesn't go through component
+                  bodies. Works correctly even for components with pads inside the
+                  body area (BGAs, LGAs, etc.).
                 - False (default): Allows traces to route over component bodies as long
                   as they don't cross pads. This is permissive and may produce
                   unrealistic results for densely packed boards.
-
-                For realistic routing, enable this and ensure components have adequate
-                clearance for trace fanout. Future versions may support smarter
-                body-with-pad-cutout obstacles.
 
         Returns:
             SpatialHashIndex populated with all routing obstacles
@@ -105,17 +108,16 @@ class ObstacleMapBuilder:
         pad_count = self._add_pad_obstacles(index)
         edge_count = self._add_edge_keepout(index)
 
-        # Component bodies block all routes through the component area.
-        # Note: This uses net_id=None which blocks ALL nets, including routes
-        # starting from pads on that component. For most SMD components where
-        # pads are on the component edge, this works fine. For components with
-        # pads inside the body area, this may cause routing failures.
+        # Component bodies block routes through the component area, but allow
+        # nets connected to the component's pads to pass through. This enables
+        # routing to pads inside the component body (BGAs, LGAs, etc.) while
+        # preventing unrealistic routes through the component.
         body_count = 0
         if include_component_bodies:
             body_count = self._add_component_obstacles(index)
             logger.debug(
-                f"Added {body_count} component body obstacles. "
-                "Traces cannot route through component areas."
+                f"Added {body_count} component body obstacles with smart net filtering. "
+                "Traces can reach component pads but cannot route through component areas."
             )
 
         logger.info(
@@ -134,6 +136,10 @@ class ObstacleMapBuilder:
     def _add_component_obstacles(self, index: SpatialHashIndex) -> int:
         """Add component bodies as obstacles.
 
+        Component bodies now support selective net filtering: nets connected to
+        the component's pads are allowed to pass through. This enables routing
+        to pads that are inside the component body (e.g., BGAs, LGAs).
+
         Note: Clearance is NOT embedded in obstacles. The router is responsible
         for passing the full clearance (trace_width/2 + dfm_clearance) to
         collision checks. This avoids double-counting clearance.
@@ -146,6 +152,14 @@ class ObstacleMapBuilder:
                 continue
 
             bbox = comp.get_bounding_box()
+
+            # Collect net IDs from all pads on this component
+            # These nets will be allowed to route through the component body
+            component_net_ids = set()
+            for pad in comp.pads:
+                if pad.net:
+                    net_hash = _deterministic_hash(pad.net)
+                    component_net_ids.add(net_hash)
 
             # Determine layers blocked - use Layer enum for comparison
             if comp.is_through_hole:
@@ -165,9 +179,10 @@ class ObstacleMapBuilder:
                     max_y=bbox[3],
                     layer=layer,
                     clearance=0,  # Router handles clearance to avoid double-counting
-                    net_id=None,  # Blocks all nets
+                    net_id=None,  # Still blocks all nets by default
                     obstacle_type="component",
-                    ref=ref
+                    ref=ref,
+                    component_nets=component_net_ids if component_net_ids else None
                 ))
                 count += 1
 

@@ -58,10 +58,37 @@ except ImportError:
 def check_pcbnew():
     """Raise error if pcbnew is not available."""
     if not PCBNEW_AVAILABLE:
+        import platform
+        import sys
+
+        os_type = platform.system()
+
+        # Build platform-specific guidance
+        if os_type == "Darwin":  # macOS
+            python_path = "/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3"
+            example = f"  {python_path}"
+        elif os_type == "Windows":
+            python_path = "C:\\Program Files\\KiCad\\<version>\\bin\\python.exe"
+            example = f"  {python_path}"
+        elif os_type == "Linux":
+            python_path = "/usr/bin/kicad-python"
+            example = f"  {python_path}\n  # or check your KiCad installation directory"
+        else:
+            python_path = "KiCad's Python interpreter"
+            example = "  # Check your KiCad installation directory for the Python interpreter"
+
         raise ImportError(
-            "pcbnew not available. Run with KiCad's Python interpreter:\n"
-            "  /Applications/KiCad/KiCad.app/Contents/Frameworks/"
-            "Python.framework/Versions/Current/bin/python3"
+            f"pcbnew module not found in current Python environment ({sys.executable}).\n"
+            f"\n"
+            f"To use atoplace with KiCad, you must run it with KiCad's Python interpreter.\n"
+            f"\n"
+            f"Platform-specific guidance for {os_type}:\n"
+            f"{example}\n"
+            f"\n"
+            f"Alternatively, install atoplace in KiCad's Python environment:\n"
+            f"  {python_path} -m pip install -e .\n"
+            f"\n"
+            f"Or use the MCP server interface which handles this automatically."
         )
 
 

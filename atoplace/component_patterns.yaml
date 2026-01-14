@@ -1,0 +1,138 @@
+# Component Classification Patterns
+# This configuration file defines patterns for classifying components and nets
+# Used by constraint_parser.py and confidence.py for intelligent component grouping and validation
+
+# Analog Component Patterns
+# Used to identify analog components for grouping and separation constraints
+analog_components:
+  - 'OPA'        # Op-amps (e.g., OPA2134, OPA350)
+  - 'LM358'      # Op-amps
+  - 'TL08'       # Op-amps (e.g., TL084, TL082)
+  - 'AD8'        # Analog Devices op-amps (e.g., AD8605)
+  - 'MCP6'       # Microchip op-amps (e.g., MCP6002)
+  - 'ADC'        # Analog-to-Digital Converters
+  - 'DAC'        # Digital-to-Analog Converters
+  - 'REF'        # Voltage references
+  - 'VREF'       # Voltage references
+
+# Digital Component Patterns
+# Used to identify digital components for grouping and separation constraints
+digital_components:
+  # Microcontrollers
+  - 'STM32'      # STMicroelectronics MCUs
+  - 'ESP32'      # Espressif MCUs
+  - 'ATMEGA'     # Atmel/Microchip AVR MCUs
+  - 'PIC'        # Microchip PIC MCUs
+  - 'NRF5'       # Nordic nRF52/nRF53 series
+  - 'RP2040'     # Raspberry Pi Pico MCU
+
+  # Logic ICs
+  - '74HC'       # High-speed CMOS logic
+  - '74LS'       # Low-power Schottky TTL logic
+  - '74LVC'      # Low-voltage CMOS logic
+
+  # Programmable Logic
+  - 'FPGA'       # Field-Programmable Gate Arrays
+  - 'CPLD'       # Complex Programmable Logic Devices
+
+  # Memory
+  - 'FLASH'      # Flash memory
+  - 'EEPROM'     # Electrically Erasable PROM
+  - 'SRAM'       # Static RAM
+
+# High-Speed IC Patterns
+# ICs requiring very close decoupling (<2mm recommended)
+# Based on inductance: 1mm trace ≈ 1nH, critical at high frequencies
+high_speed_ics:
+  # Communication interfaces
+  - 'USB'        # USB controllers/PHYs
+  - 'ETH'        # Ethernet controllers
+  - 'ENET'       # Ethernet
+  - 'PHY'        # Physical layer transceivers
+  - 'HDMI'       # HDMI controllers
+  - 'LVDS'       # Low-voltage differential signaling
+  - 'PCIE'       # PCI Express
+
+  # Memory interfaces
+  - 'DDR'        # DDR SDRAM (DDR3, DDR4, etc.)
+  - 'SDRAM'      # SDRAM controllers
+
+  # Programmable logic (typically high-speed)
+  - 'FPGA'       # FPGAs typically have high-speed interfaces
+  - 'CPLD'       # CPLDs
+
+  # Wireless
+  - 'RF'         # RF transceivers
+  - 'WIFI'       # WiFi modules
+  - 'BLE'        # Bluetooth Low Energy
+  - 'BT'         # Bluetooth
+
+  # Frequency indicators
+  - 'GHZ'        # GHz frequency components
+  - 'MHZ'        # MHz frequency components
+
+# Medium-Speed Digital IC Patterns
+# Standard digital ICs requiring close decoupling (<5mm recommended)
+medium_speed_ics:
+  # Microcontrollers
+  - 'STM32'      # STMicroelectronics MCUs
+  - 'ESP32'      # Espressif MCUs
+  - 'NRF'        # Nordic nRF series
+  - 'ATMEGA'     # Atmel/Microchip AVR MCUs
+  - 'PIC'        # Microchip PIC MCUs
+  - 'RP2040'     # Raspberry Pi Pico MCU
+
+  # Communication interfaces
+  - 'SPI'        # Serial Peripheral Interface
+  - 'QSPI'       # Quad SPI
+  - 'I2C'        # Inter-Integrated Circuit
+  - 'UART'       # Universal Asynchronous Receiver-Transmitter
+
+# High-Speed Net Patterns
+# Net names indicating high-speed signals requiring special routing considerations
+high_speed_nets:
+  # Communication protocols
+  - 'USB'        # USB data lines
+  - 'HDMI'       # HDMI signals
+  - 'LVDS'       # Low-voltage differential signals
+  - 'PCIE'       # PCI Express lanes
+  - 'ETH'        # Ethernet signals
+  - 'SDIO'       # SD card interface
+  - 'QSPI'       # Quad SPI signals
+
+  # USB-specific
+  - '_D+'        # USB D+ line
+  - '_D-'        # USB D- line
+
+  # Clock signals
+  - 'CLK'        # Clock signals
+  - 'MCLK'       # Master clock
+  - 'SCLK'       # Serial clock
+
+# Differential Pair Suffixes
+# Suffixes indicating differential pair signals (must be at end of net name)
+# NOTE: Use multi-character suffixes to avoid false positives
+# (e.g., 'P' alone would match TEMP, LOOP, etc.)
+differential_pair_suffixes:
+  - '_P'         # Positive signal (with underscore)
+  - '_N'         # Negative signal (with underscore)
+  - '+'          # Positive signal
+  - '-'          # Negative signal
+
+# Decoupling Distance Thresholds (in millimeters)
+# Based on inductance considerations: 1mm of trace ≈ 1nH inductance
+decoupling_distances:
+  high_speed:
+    critical: 2.0     # mm - high-speed needs very close decoupling
+    warning: 3.0      # mm
+    info: 5.0         # mm
+
+  medium_speed:
+    critical: 5.0     # mm - standard digital
+    warning: 7.0      # mm
+    info: 10.0        # mm
+
+  standard:
+    critical: 10.0    # mm - low-speed/unknown
+    warning: 15.0     # mm
+    info: 20.0        # mm

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Platform-aware KiCad Python detection
+detect_kicad_python() {
+  local os_type="$(uname -s)"
+  local kicad_python=""
+
+  case "${os_type}" in
+    Darwin)
+      # macOS - check common installation locations
+      local macos_paths=(
+        "/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3"
+        "/Applications/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3"
+      )
+      for path in "${macos_paths[@]}"; do
+        if [[ -x "${path}" ]]; then
+          kicad_python="${path}"
+          break
+        fi
+      done
+      ;;
+
+    Linux)
+      # Linux - check common installation locations
+      local linux_paths=(
+        "/usr/bin/kicad-python"
+        "/usr/local/bin/kicad-python"
+        "$(which kicad-python 2>/dev/null || true)"
+      )
+      for path in "${linux_paths[@]}"; do
+        if [[ -n "${path}" && -x "${path}" ]]; then
+          kicad_python="${path}"
+          break
+        fi
+      done
+      ;;
+
+    MINGW*|MSYS*|CYGWIN*)
+      # Windows (Git Bash, MSYS2, or Cygwin)
+      local windows_paths=(
+        "/c/Program Files/KiCad/8.0/bin/python.exe"
+        "/c/Program Files/KiCad/7.0/bin/python.exe"
+        "/c/Program Files (x86)/KiCad/8.0/bin/python.exe"
+        "/c/Program Files (x86)/KiCad/7.0/bin/python.exe"
+      )
+      for path in "${windows_paths[@]}"; do
+        if [[ -x "${path}" ]]; then
+          kicad_python="${path}"
+          break
+        fi
+      done
+      ;;
+
+    *)
+      echo "Unsupported platform: ${os_type}" >&2
+      ;;
+  esac
+
+  echo "${kicad_python}"
+}
+
+# Try to detect KiCad Python automatically
+KICAD_PYTHON="${KICAD_PYTHON:-$(detect_kicad_python)}"
+
+if [[ -z "${KICAD_PYTHON}" || ! -x "${KICAD_PYTHON}" ]]; then
+  echo "ERROR: KiCad Python interpreter not found." >&2
+  echo "" >&2
+  echo "Please set the KICAD_PYTHON environment variable to point to KiCad's Python:" >&2
+  echo "" >&2
+
+  case "$(uname -s)" in
+    Darwin)
+      echo "  macOS:" >&2
+      echo "    export KICAD_PYTHON=\"/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3\"" >&2
+      ;;
+    Linux)
+      echo "  Linux:" >&2
+      echo "    export KICAD_PYTHON=\"/usr/bin/kicad-python\"" >&2
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      echo "  Windows:" >&2
+      echo "    set KICAD_PYTHON=C:\\Program Files\\KiCad\\8.0\\bin\\python.exe" >&2
+      ;;
+  esac
+
+  echo "" >&2
+  echo "Then run this script again." >&2
+  exit 1
+fi
+
+exec "${KICAD_PYTHON}" -m atoplace.cli "$@"
