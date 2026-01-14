@@ -233,12 +233,22 @@ def load_board_from_path(
     board_arg: str,
     build: Optional[str] = None,
     console: Optional[Console] = None,
-) -> Tuple[Optional[object], Optional[Path], bool]:
+    apply_lock: bool = False,
+    only_locked: bool = False,
+) -> Tuple[Optional[object], Optional[Path], bool, Optional[object]]:
     """
     Load a board from a path, auto-detecting atopile projects.
 
+    Args:
+        board_arg: Path to board file or atopile project directory
+        build: Optional atopile build name
+        console: Console for output
+        apply_lock: If True, apply saved positions from atoplace.lock
+        only_locked: If True, only apply positions marked as locked
+
     Returns:
-        Tuple of (board, source_path, is_atopile)
+        Tuple of (board, source_path, is_atopile, loader)
+        The loader is returned for atopile projects to enable lock file saving.
     """
     from .board.atopile_adapter import AtopileProjectLoader
     from .board.kicad_adapter import load_kicad_board
@@ -259,22 +269,31 @@ def load_board_from_path(
             if not board_path.exists():
                 emit(f"[red]Error:[/red] Board file not found: {board_path}")
                 emit("Run 'ato build' first to generate the board.")
-                return None, None, True
+                return None, None, True, None
 
-            board = loader.load_board(build_name)
-            return board, board_path, True
+            # Check for lock file
+            if apply_lock:
+                lock = loader.get_lock(build_name)
+                if lock:
+                    locked_count = len(lock.get_locked_refs())
+                    emit(f"  Lock file: [bold]{len(lock.components)}[/bold] positions ({locked_count} locked)")
+                else:
+                    emit("  Lock file: [dim]not found[/dim]")
+
+            board = loader.load_board(build_name, apply_lock=apply_lock, only_locked=only_locked)
+            return board, board_path, True, loader
 
         except ValueError as exc:
             emit(f"[red]Error:[/red] {exc}")
-            return None, None, True
+            return None, None, True, None
 
     if not path.exists():
         project_root = AtopileProjectLoader.find_project_root(path)
         if project_root:
-            return load_board_from_path(str(project_root), build, console)
+            return load_board_from_path(str(project_root), build, console, apply_lock, only_locked)
 
         emit(f"[red]Error:[/red] Path not found: {path}")
-        return None, None, False
+        return None, None, False, None
 
     if path.suffix == ".kicad_pcb":
         # Check if this kicad_pcb file is inside an atopile project
@@ -291,8 +310,18 @@ def load_board_from_path(
                 expected_board = loader.get_board_path(build_name)
                 if path.resolve() == expected_board.resolve():
                     emit(f"  Build: [bold]{build_name}[/bold]")
-                    board = loader.load_board(build_name)
-                    return board, path, True
+
+                    # Check for lock file
+                    if apply_lock:
+                        lock = loader.get_lock(build_name)
+                        if lock:
+                            locked_count = len(lock.get_locked_refs())
+                            emit(f"  Lock file: [bold]{len(lock.components)}[/bold] positions ({locked_count} locked)")
+                        else:
+                            emit("  Lock file: [dim]not found[/dim]")
+
+                    board = loader.load_board(build_name, apply_lock=apply_lock, only_locked=only_locked)
+                    return board, path, True, loader
             except ValueError:
                 pass
 
@@ -303,14 +332,14 @@ def load_board_from_path(
                 # Apply atopile metadata: component values and module hierarchy
                 loader._apply_component_metadata(board)
                 loader._apply_module_hierarchy(board, build_name)
-                return board, path, True
+                return board, path, True, loader
             except Exception as e:
                 emit(f"[yellow]Warning:[/yellow] Could not apply atopile metadata: {e}")
-                return board, path, False
+                return board, path, False, None
 
         emit(f"Loading KiCad board: [bold]{path}[/bold]")
         board = load_kicad_board(path)
-        return board, path, False
+        return board, path, False, None
 
     if path.is_dir():
         kicad_files = sorted(path.glob("*.kicad_pcb"))
@@ -324,10 +353,10 @@ def load_board_from_path(
             board_path = kicad_files[0]
             emit(f"Loading KiCad board: [bold]{board_path}[/bold]")
             board = load_kicad_board(board_path)
-            return board, board_path, False
+            return board, board_path, False, None
 
     emit(f"[red]Error:[/red] Cannot load board from: {path}")
-    return None, None, False
+    return None, None, False, None
 
 
 def _generate_full_validation_report(report, pre_validator, drc, pre_route_passed, drc_passed):
@@ -480,6 +509,27 @@ def place(
         "--visualize",
         help="Generate interactive HTML visualization for debugging.",
     ),
+    # Lock file options for atopile sidecar persistence
+    use_lock: bool = typer.Option(
+        False,
+        "--use-lock",
+        help="Apply saved positions from atoplace.lock before placement.",
+    ),
+    only_locked: bool = typer.Option(
+        False,
+        "--only-locked",
+        help="Only apply positions marked as locked (user-approved) from lock file.",
+    ),
+    save_lock: bool = typer.Option(
+        True,
+        "--save-lock/--no-save-lock",
+        help="Save positions to atoplace.lock after placement (default: True for atopile projects).",
+    ),
+    lock_all: bool = typer.Option(
+        False,
+        "--lock-all",
+        help="Mark all positions as locked (user-approved) when saving lock file.",
+    ),
 ):
     """Run placement optimization."""
     from .board.kicad_adapter import save_kicad_board
@@ -495,11 +545,14 @@ def place(
     console = context.console
 
     console.print(Rule("Load Board", style="cyan"))
-    board_obj, pcb_path, is_atopile = load_board_from_path(
-        str(board), build, console
+    board_obj, pcb_path, is_atopile, ato_loader = load_board_from_path(
+        str(board), build, console, apply_lock=use_lock, only_locked=only_locked
     )
     if board_obj is None or pcb_path is None:
         raise typer.Exit(code=1)
+
+    # Determine build name for lock file operations
+    build_name = build or "default"
 
     outline_note = "present" if board_obj.outline.has_outline else "missing"
     if not board_obj.outline.has_outline:
@@ -771,6 +824,33 @@ def place(
             save_kicad_board(board_obj, output_path)
         console.print(Panel(f"Saved to {output_path}", border_style="green"))
 
+        # Save lock file for atopile projects (sidecar persistence)
+        if is_atopile and save_lock and ato_loader:
+            console.print(Rule("Lock File", style="cyan"))
+            with console.status("Saving placement lock file..."):
+                lock_saved = ato_loader.save_lock(
+                    board_obj,
+                    build_name=build_name,
+                    lock_all=lock_all,
+                    preserve_locked=True,
+                )
+            if lock_saved:
+                lock_path = ato_loader.get_lock_path(build_name)
+                lock = ato_loader.get_lock(build_name)
+                locked_count = len(lock.get_locked_refs()) if lock else 0
+                console.print(
+                    Panel(
+                        f"Saved to {lock_path}\n"
+                        f"  {len(lock.components) if lock else 0} positions"
+                        f" ({locked_count} locked)",
+                        border_style="green",
+                    )
+                )
+            else:
+                console.print(
+                    Panel("Failed to save lock file", border_style="yellow")
+                )
+
     # Export visualization if enabled
     if visualizer:
         viz_path = visualizer.export_html_report(
@@ -807,7 +887,7 @@ def validate(
     console = context.console
 
     console.print(Rule("Load Board", style="cyan"))
-    board_obj, _, _ = load_board_from_path(str(board), build, console)
+    board_obj, _, _, _ = load_board_from_path(str(board), build, console)
     if board_obj is None:
         raise typer.Exit(code=1)
 
@@ -909,7 +989,7 @@ def route(
     console.print(Rule("Routing"))
 
     # Load board
-    board_obj, pcb_path, _ = load_board_from_path(str(board), build, console)
+    board_obj, pcb_path, _, _ = load_board_from_path(str(board), build, console)
     if board_obj is None:
         raise typer.Exit(code=1)
 
@@ -1124,7 +1204,7 @@ def report(
     console = context.console
 
     console.print(Rule("Load Board", style="cyan"))
-    board_obj, _, _ = load_board_from_path(str(board), build, console)
+    board_obj, _, _, _ = load_board_from_path(str(board), build, console)
     if board_obj is None:
         raise typer.Exit(code=1)
 
@@ -1321,7 +1401,7 @@ def interactive(
     console = context.console
 
     console.print(Rule("Load Board", style="cyan"))
-    board_obj, pcb_path, _ = load_board_from_path(str(board), build, console)
+    board_obj, pcb_path, _, _ = load_board_from_path(str(board), build, console)
     if board_obj is None or pcb_path is None:
         raise typer.Exit(code=1)
 

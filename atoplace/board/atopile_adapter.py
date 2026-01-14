@@ -25,6 +25,14 @@ except ImportError:
     YAML_AVAILABLE = False
 
 from .abstraction import Board, Component
+from .lock_file import (
+    AtoplaceLock,
+    get_lock_file_path,
+    parse_lock_file,
+    write_lock_file,
+    apply_lock_to_board,
+    create_lock_from_board,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,10 @@ class AtopileProjectLoader:
         loader = AtopileProjectLoader(Path("my-project"))
         board = loader.load_board()  # Loads default build
         board = loader.load_board("custom-build")  # Loads specific build
+
+        # With lock file persistence:
+        board = loader.load_board(apply_lock=True)  # Apply saved positions
+        loader.save_lock(board)  # Save positions after placement
     """
 
     def __init__(self, project_root: Path):
@@ -80,6 +92,7 @@ class AtopileProjectLoader:
         self._project: Optional[AtopileProject] = None
         self._lock_data: Optional[Dict] = None
         self._module_hierarchy: Optional[Dict[str, ModuleHierarchy]] = None
+        self._placement_lock: Dict[str, Optional[AtoplaceLock]] = {}  # cache per build
 
         # Validate project
         if not self.is_atopile_project(self.root):
@@ -245,49 +258,131 @@ class AtopileProjectLoader:
 
     def _parse_simple_yaml(self, content: str) -> Dict:
         """
-        Simple YAML parser for nested key-value structures.
+        Simple YAML parser for nested key-value structures and lists.
         Falls back to this when PyYAML is not available.
 
-        Supports up to 3 levels of nesting (sufficient for ato.yaml builds/paths).
+        Supports nested dicts and both inline and block-style lists.
         """
         result = {}
-        # Stack of (indent, dict_ref) to track nesting
-        stack = [(0, result)]
+        # Stack of (indent, container, type) where container is dict or list
+        stack = [(0, result, 'dict')]
 
-        for line in content.split('\n'):
-            # Skip empty lines and comments
+        lines = content.split('\n')
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
             stripped = line.strip()
+
+            # Skip empty lines and comments
             if not stripped or stripped.startswith('#'):
+                i += 1
                 continue
 
-            # Calculate indent level (spaces, 2 per level typically)
+            # Calculate indent level
             indent = len(line) - len(line.lstrip())
 
             # Pop stack until we find parent at lower indent
             while len(stack) > 1 and stack[-1][0] >= indent:
                 stack.pop()
 
-            current_dict = stack[-1][1]
+            current_container = stack[-1][1]
+            container_type = stack[-1][2]
+
+            # Handle list items (lines starting with -)
+            if stripped.startswith('- '):
+                list_value = stripped[2:].strip()
+
+                # If current container is not a list, this shouldn't happen in valid YAML
+                # but we'll handle it gracefully
+                if container_type != 'list':
+                    i += 1
+                    continue
+
+                # Check if list item has nested content (key: value)
+                if ':' in list_value:
+                    key, _, value = list_value.partition(':')
+                    key = key.strip()
+                    value = value.strip()
+
+                    if value:
+                        # Inline key-value in list item
+                        item_dict = {key: self._clean_yaml_value(value)}
+                        current_container.append(item_dict)
+                    else:
+                        # Nested dict item, need to parse following lines
+                        item_dict = {}
+                        current_container.append(item_dict)
+                        stack.append((indent, item_dict, 'dict'))
+                else:
+                    # Simple list item
+                    current_container.append(self._clean_yaml_value(list_value))
 
             # Handle key-value pairs
-            if ':' in stripped:
+            elif ':' in stripped:
                 key, _, value = stripped.partition(':')
                 key = key.strip()
                 value = value.strip()
 
+                # Only process if we're in a dict context
+                if container_type != 'dict':
+                    i += 1
+                    continue
+
                 if value:
-                    # Remove quotes if present
-                    if (value.startswith('"') and value.endswith('"')) or \
-                       (value.startswith("'") and value.endswith("'")):
-                        value = value[1:-1]
-                    current_dict[key] = value
+                    # Check for inline list syntax [item1, item2, ...]
+                    if value.startswith('[') and value.endswith(']'):
+                        list_content = value[1:-1].strip()
+                        if list_content:
+                            items = [self._clean_yaml_value(item.strip())
+                                    for item in list_content.split(',')]
+                            current_container[key] = items
+                        else:
+                            current_container[key] = []
+                    else:
+                        # Regular value
+                        current_container[key] = self._clean_yaml_value(value)
                 else:
-                    # This is a section header - create nested dict
-                    new_section = {}
-                    current_dict[key] = new_section
-                    stack.append((indent, new_section))
+                    # Check if next line is a list item or nested dict
+                    # Peek at next non-empty line
+                    j = i + 1
+                    while j < len(lines) and not lines[j].strip():
+                        j += 1
+
+                    if j < len(lines):
+                        next_line = lines[j]
+                        next_stripped = next_line.strip()
+                        next_indent = len(next_line) - len(next_line.lstrip())
+
+                        # If next line is indented more and starts with -, it's a list
+                        if next_indent > indent and next_stripped.startswith('- '):
+                            new_list = []
+                            current_container[key] = new_list
+                            stack.append((indent, new_list, 'list'))
+                        else:
+                            # It's a nested dict
+                            new_dict = {}
+                            current_container[key] = new_dict
+                            stack.append((indent, new_dict, 'dict'))
+                    else:
+                        # No next line, create empty dict
+                        new_dict = {}
+                        current_container[key] = new_dict
+                        stack.append((indent, new_dict, 'dict'))
+
+            i += 1
 
         return result
+
+    def _clean_yaml_value(self, value: str) -> str:
+        """Remove quotes and clean up a YAML value string."""
+        if not value:
+            return value
+        # Remove quotes if present
+        if (value.startswith('"') and value.endswith('"')) or \
+           (value.startswith("'") and value.endswith("'")):
+            return value[1:-1]
+        return value
 
     def get_build_names(self) -> List[str]:
         """Get list of available build configurations."""
@@ -358,7 +453,12 @@ class AtopileProjectLoader:
         file_part, _, _ = entry.partition(':')
         return self.root / file_part
 
-    def load_board(self, build_name: str = "default") -> Board:
+    def load_board(
+        self,
+        build_name: str = "default",
+        apply_lock: bool = False,
+        only_locked: bool = False,
+    ) -> Board:
         """
         Load an atopile project board.
 
@@ -367,6 +467,9 @@ class AtopileProjectLoader:
 
         Args:
             build_name: Build configuration to load
+            apply_lock: If True, apply saved positions from atoplace.lock
+            only_locked: If True and apply_lock=True, only apply positions
+                        that are marked as locked (user-approved)
 
         Returns:
             Board instance with atopile metadata applied
@@ -386,7 +489,102 @@ class AtopileProjectLoader:
         self._apply_component_metadata(board)
         self._apply_module_hierarchy(board, build_name)
 
+        # Apply lock file positions if requested
+        if apply_lock:
+            lock = self.get_lock(build_name)
+            if lock:
+                count = apply_lock_to_board(board, lock, only_locked=only_locked)
+                logger.info(f"Applied {count} positions from lock file")
+
         return board
+
+    def get_lock_path(self, build_name: str = "default") -> Path:
+        """
+        Get the path to the lock file for a build.
+
+        Args:
+            build_name: Build configuration name
+
+        Returns:
+            Path to the atoplace.lock file
+        """
+        board_path = self.get_board_path(build_name)
+        return get_lock_file_path(board_path)
+
+    def get_lock(self, build_name: str = "default") -> Optional[AtoplaceLock]:
+        """
+        Get the lock file for a build (cached).
+
+        Args:
+            build_name: Build configuration name
+
+        Returns:
+            AtoplaceLock instance or None if no lock file exists
+        """
+        if build_name not in self._placement_lock:
+            lock_path = self.get_lock_path(build_name)
+            self._placement_lock[build_name] = parse_lock_file(lock_path)
+        return self._placement_lock[build_name]
+
+    def save_lock(
+        self,
+        board: Board,
+        build_name: str = "default",
+        lock_all: bool = False,
+        preserve_locked: bool = True,
+    ) -> bool:
+        """
+        Save board positions to the lock file.
+
+        This creates or updates the atoplace.lock file with current
+        component positions. Positions marked as locked in the existing
+        lock file are preserved unless overwritten.
+
+        Args:
+            board: Board with positions to save
+            build_name: Build configuration name
+            lock_all: If True, mark all positions as locked
+            preserve_locked: If True, don't overwrite existing locked positions
+
+        Returns:
+            True if save was successful
+        """
+        lock_path = self.get_lock_path(build_name)
+
+        # Get existing lock or create new
+        existing_lock = self.get_lock(build_name)
+
+        if existing_lock:
+            # Update existing lock
+            existing_lock.update_from_board(
+                board,
+                lock=lock_all,
+                preserve_locked=preserve_locked,
+            )
+            lock = existing_lock
+        else:
+            # Create new lock
+            lock = create_lock_from_board(board, build=build_name, lock_all=lock_all)
+
+        success = write_lock_file(lock, lock_path)
+
+        # Update cache
+        if success:
+            self._placement_lock[build_name] = lock
+
+        return success
+
+    def clear_lock_cache(self, build_name: Optional[str] = None):
+        """
+        Clear the lock file cache.
+
+        Args:
+            build_name: Specific build to clear, or None for all
+        """
+        if build_name:
+            self._placement_lock.pop(build_name, None)
+        else:
+            self._placement_lock.clear()
 
     def _apply_component_metadata(self, board: Board):
         """

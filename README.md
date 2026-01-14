@@ -39,7 +39,7 @@ PCB layout automation has historically been "black box" and "messy"—producing 
 - **🚀 A* Routing**: High-performance, deterministic geometric router using a **Greedy Multiplier** ($w=2-3$) and **Spatial Hash Indexing** for O(~1) collision detection.
 - **🔍 Confidence Scoring**: Automated assessment of your board's routability, signal integrity risks, and DFM compliance.
 - **💬 Natural Language Control**: "Move the USB connector to the left edge", "Align these capacitors", "Keep the crystal near the MCU".
-- **🔌 Atopile Native**: First-class support for `atopile` projects with `ato-lock.yaml` parsing and module-aware grouping.
+- **🔌 Atopile Native**: First-class support for `atopile` projects with `ato-lock.yaml` parsing, module-aware grouping, and **`atoplace.lock` sidecar persistence** to preserve placements across rebuilds.
 
 ## 🛠️ Installation
 
@@ -110,7 +110,7 @@ See [MCP Server](#-mcp-server) section below for details.
   - [x] **A* Geometric Planner** (Greedy Multiplier & Spatial Indexing).
   - [x] **MCP Server** with IPC bridge for LLM agent integration.
   - [x] **Live KiCad IPC** via kipy for real-time component manipulation (KiCad 9+).
-  - [ ] `atoplace.lock` Sidecar Persistence for Atopile.
+  - [x] **`atoplace.lock` Sidecar Persistence** for atopile projects.
   - [ ] BGA/QFN Fanout Generator.
   - [ ] Differential Pair Path Planning.
 - **Milestone C (Q2 2026): Professional Agent** 🔮
@@ -123,6 +123,8 @@ See [MCP Server](#-mcp-server) section below for details.
 ```
 atoplace/
 ├── board/          # Board abstraction & KiCad/Atopile adapters
+│   ├── lock_file.py        # atoplace.lock sidecar persistence
+│   └── atopile_adapter.py  # Atopile project loader
 ├── placement/      # Force-directed physics & Manhattan Legalizer
 │   ├── force_directed.py   # Physics Engine (Star Model)
 │   ├── legalizer.py        # Manhattan Pipeline (REQ-P-03)
@@ -290,6 +292,74 @@ User: Save the board
 Claude: [Calls save_board]
 Board saved to: examples/dogtracker/layouts/default/default.placed.kicad_pcb
 ```
+
+## 🔒 Atopile Lock File Persistence
+
+When working with **atopile** projects, placement positions can be lost when `ato build` regenerates the KiCad board. The `atoplace.lock` sidecar file solves this by persisting component positions between builds.
+
+### How it works
+
+After placement, atoplace automatically saves positions to a lock file next to the board:
+```
+my-project/
+├── elec/
+│   └── layout/
+│       └── default/
+│           ├── default.kicad_pcb
+│           └── default.atoplace.lock  ← Saved positions
+└── ato.yaml
+```
+
+### Lock File Format
+
+```yaml
+version: 1
+created: 2026-01-14T10:30:00
+build: default
+components:
+  U1:
+    x: 125.5
+    y: 80.0
+    rotation: 0.0
+    locked: true    # User-approved position
+    module: mcu
+  C1:
+    x: 130.0
+    y: 85.5
+    locked: false   # Auto-placed, can be re-optimized
+```
+
+### CLI Options
+
+| Flag | Description |
+|------|-------------|
+| `--use-lock` | Apply saved positions before placement |
+| `--only-locked` | Only restore `locked: true` positions |
+| `--save-lock/--no-save-lock` | Auto-save after placement (default: on) |
+| `--lock-all` | Mark all positions as user-approved |
+
+### Workflow Example
+
+```bash
+# First placement - automatically saves lock file
+atoplace place my-project/ --use-ato-modules
+
+# After `ato build` regenerates board - restore positions
+atoplace place my-project/ --use-lock
+
+# Only restore approved positions, re-optimize others
+atoplace place my-project/ --use-lock --only-locked
+
+# Approve all current positions
+atoplace place my-project/ --lock-all
+```
+
+### Merge Logic
+
+The lock file uses **Lock > Physics** priority:
+1. `locked: true` positions always preserved (user-approved)
+2. `locked: false` positions used as initial hints, can be re-optimized
+3. New components (not in lock file) placed by physics engine
 
 ## 📄 License
 

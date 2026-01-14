@@ -7,22 +7,23 @@ Marketing and product vision live in `README.md`.
 
 ---
 
-## Project Status (2026-01-13)
+## Project Status (2026-01-14)
 
 - **Placement Engine:** Core force-directed solver is implemented with **Star Model** and **Adaptive Damping**.
-- **Legalization:** Professional **Manhattan Legalizer** implemented with PCA-based row/column alignment and priority-based overlap resolution.
-- **Routing:** Internal **A* Geometric Router** implemented with Greedy Multiplier and Spatial Hash Indexing.
-- **Atopile Integration:** Project detection and `ato-lock.yaml` parsing are functional. Module-to-ref mapping works.
-- **Validation:** Pre-route and Confidence Scoring pipelines are functional.
+- **Legalization:** Professional **Manhattan Legalizer** implemented with grid snapping, PCA-based row/column alignment, and priority-based overlap resolution.
+- **Routing:** Internal **A* Geometric Router** implemented with Greedy Multiplier, Spatial Hash Indexing, obstacle map builder, and net ordering.
+- **CLI Routing:** `atoplace route` command is functional with optional SVG/HTML visualization.
+- **Atopile Integration:** Project detection, `ato.yaml` parsing (fallback parser), and `ato-lock.yaml` module-to-ref mapping are functional.
+- **Validation & MCP:** Pre-route and confidence scoring pipelines are functional; MCP exposes context tools/resources and DRC runner.
 
 ---
 
 ## Known Gaps (track details in `ISSUES.md`)
 
-- **Polygonal Support:** Complex board shapes are partially ignored (containment checks need hardening for concave polygons).
-- **Atopile Persistence:** `atoplace.lock` sidecar logic is planned but not yet implemented.
+- ~~**Atopile Persistence:** `atoplace.lock` sidecar logic is planned but not yet implemented.~~ **IMPLEMENTED** - Full sidecar persistence with `atoplace.lock` files.
 - **Routing Advanced:** Differential pair detection and specialized BGA fanout are not yet implemented.
-- **LLM Context:** Multi-level RAG strategy is defined but MCP server tools are still stubs.
+- **Routing Fallback:** Freerouting runner is not yet implemented for failed nets.
+- **MCP Routing:** No `route_board` MCP tool yet (CLI-only routing).
 
 ---
 
@@ -59,20 +60,20 @@ To handle 50k+ line board files:
 ## Near-Term Roadmap (2026 Q1)
 
 - **Milestone A: Placement Reliability**
-    - [ ] Implement **Star Model** physics for high-degree nets.
-    - [ ] Implement **Abacus Legalization** (Quantize -> Align -> Shove).
-    - [ ] Implement **Sidecar Persistence** (`atoplace.lock`) for atopile integration.
-    - [ ] Add **Polygonal Outline** support (ray-casting containment).
+    - [x] Implement **Star Model** physics for high-degree nets.
+    - [x] Implement **Abacus Legalization** (Quantize -> Align -> Shove).
+    - [x] Implement **Sidecar Persistence** (`atoplace.lock`) for atopile integration.
+    - [x] Add **Polygonal Outline** support (ray-casting containment).
 
 - **Milestone B: Routing Foundation**
-    - [ ] Build **RouteVisualizer** (SVG/HTML export).
-    - [ ] Implement **SpatialHashIndex** for obstacles.
-    - [ ] Implement **ObstacleMapBuilder** (pads, keepouts, existing traces).
+    - [x] Build **RouteVisualizer** (SVG/HTML export).
+    - [x] Implement **SpatialHashIndex** for obstacles.
+    - [x] Implement **ObstacleMapBuilder** (pads, keepouts, existing traces).
 
 - **Milestone C: Basic Routing**
-    - [ ] Implement **A* Router** with greedy multiplier.
-    - [ ] Implement **Net Orderer** (hardest first).
-    - [ ] CLI `atoplace route` command.
+    - [x] Implement **A* Router** with greedy multiplier.
+    - [x] Implement **Net Orderer** (hardest first).
+    - [x] CLI `atoplace route` command.
 
 ---
 
@@ -81,28 +82,28 @@ To handle 50k+ line board files:
 **Status Legend:** [x] complete, [~] implemented but needs fixes, [ ] planned
 
 ### Phase 1: Placement Engine (Refining)
-- [x] Force-directed solver (needs Star Model update)
+- [x] Force-directed solver (Star Model + adaptive damping)
 - [x] Pre-routing validation pipeline
-- [ ] **Star Model** implementation for nets
-- [ ] **Legalization Pipeline:**
-    - [ ] Grid Snapping (Quantizer)
-    - [ ] Row/Col Alignment (PCA-based)
-    - [ ] Overlap Removal (Abacus/Sweep-line)
-- [ ] **Sidecar Persistence:**
-    - [ ] `atoplace.lock` parser/writer
-    - [ ] Merge logic (Lock > Physics)
+- [x] **Star Model** implementation for nets
+- [x] **Legalization Pipeline:**
+    - [x] Grid Snapping (Quantizer)
+    - [x] Row/Col Alignment (PCA-based)
+    - [x] Overlap Removal (Abacus/Sweep-line)
+- [x] **Sidecar Persistence:**
+    - [x] `atoplace.lock` parser/writer
+    - [x] Merge logic (Lock > Physics)
 
 ### Phase 2: Routing Integration (New)
 **Implementation Reference:** `research/routing_implementation_plan.md`
 
 **Phase 2A - Foundation:**
-- [ ] `atoplace.routing.visualizer`: SVG/HTML rendering of routing state.
-- [ ] `atoplace.routing.spatial_index`: Spatial Hash implementation.
-- [ ] `atoplace.routing.obstacle_map`: Board to Obstacle converter.
+- [x] `atoplace.routing.visualizer`: SVG/HTML rendering of routing state.
+- [x] `atoplace.routing.spatial_index`: Spatial Hash implementation.
+- [x] `atoplace.routing.obstacle_map`: Board to Obstacle converter.
 
 **Phase 2B - The Router:**
-- [ ] `atoplace.routing.astar`: A* implementation with `w` multiplier.
-- [ ] `atoplace.routing.net_orderer`: Difficulty scorer.
+- [x] `atoplace.routing.astar`: A* implementation with `w` multiplier.
+- [x] `atoplace.routing.net_orderer`: Difficulty scorer.
 - [ ] `atoplace.routing.cache`: Pattern caching system.
 
 **Phase 2C - Advanced & Fallback:**
@@ -110,17 +111,17 @@ To handle 50k+ line board files:
 - [ ] `atoplace.routing.freerouting`: Java runner for fallback.
 
 ### Phase 3: Atopile & NLP
-- [~] Atopile project detection
-- [ ] `ato.yaml` nested parser (or PyYAML dependency)
-- [ ] `atoplace.lock` integration for module positions
-- [ ] LLM "Microscope" tool implementation (`focus_region`)
+- [x] Atopile project detection
+- [x] `ato.yaml` nested parser (or PyYAML dependency)
+- [x] `atoplace.lock` integration for module positions
+- [x] LLM "Microscope" tool implementation (`inspect_region`)
 
 ### Phase 4: MCP Server
 - [ ] `place_board` tool
 - [ ] `route_board` tool
-- [ ] `check_drc` tool
-- [ ] Resource: Board Summary (Level 1)
-- [ ] Resource: Connectivity Graph (Level 2)
+- [x] `run_drc` tool (atoplace + KiCad)
+- [x] Resource: Board Summary (Level 1)
+- [~] Resource: Connectivity Graph (Level 2)
 
 ---
 

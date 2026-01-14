@@ -9,6 +9,16 @@ from .atopile_adapter import (
     detect_board_source,
     load_board_auto,
 )
+from .lock_file import (
+    AtoplaceLock,
+    ComponentPosition,
+    get_lock_file_path,
+    parse_lock_file,
+    write_lock_file,
+    apply_lock_to_board,
+    create_lock_from_board,
+    merge_lock_files,
+)
 
 __all__ = [
     # Core abstractions
@@ -26,4 +36,13 @@ __all__ = [
     "ModuleHierarchy",
     "detect_board_source",
     "load_board_auto",
+    # Lock file persistence
+    "AtoplaceLock",
+    "ComponentPosition",
+    "get_lock_file_path",
+    "parse_lock_file",
+    "write_lock_file",
+    "apply_lock_to_board",
+    "create_lock_from_board",
+    "merge_lock_files",
 ]
