@@ -460,6 +460,30 @@ def serialize_board(board) -> Dict[str, Any]:
     }
 
 
+def _from_layer_string(layer_str: Optional[str]):
+    """Convert a layer string back to a Layer enum.
+
+    Args:
+        layer_str: Layer string (e.g., "F.Cu", "B.Cu") or None
+
+    Returns:
+        Layer enum value, or the original string if no match found
+    """
+    if layer_str is None:
+        return None
+
+    # Import Layer enum
+    from ..board.abstraction import Layer
+
+    # Try to match string to enum value
+    for layer in Layer:
+        if layer.value == layer_str:
+            return layer
+
+    # Fall back to string if no match (backward compatibility)
+    return layer_str
+
+
 def deserialize_board(data: Dict[str, Any]):
     """
     Deserialize a dictionary to a Board object.
@@ -487,7 +511,7 @@ def deserialize_board(data: Dict[str, Any]):
 
     # Deserialize components
     for ref, c in data.get("components", {}).items():
-        from ..board.abstraction import Component, Pad, RefDesText
+        from ..board.abstraction import Component, Pad, RefDesText, Layer
         comp = Component(
             reference=c["reference"],
             footprint=c.get("footprint", ""),
@@ -497,7 +521,7 @@ def deserialize_board(data: Dict[str, Any]):
             width=c.get("width", 1.0),
             height=c.get("height", 1.0),
             rotation=c.get("rotation", 0.0),
-            layer=c.get("layer", "F.Cu"),
+            layer=_from_layer_string(c.get("layer", "F.Cu")) or Layer.TOP_COPPER,
             locked=c.get("locked", False),
             origin_offset_x=c.get("origin_offset_x", 0.0),
             origin_offset_y=c.get("origin_offset_y", 0.0),
@@ -515,7 +539,7 @@ def deserialize_board(data: Dict[str, Any]):
                 size=rdt.get("size", 1.0),
                 thickness=rdt.get("thickness", 0.15),
                 visible=rdt.get("visible", True),
-                layer=rdt.get("layer", "F.SilkS"),
+                layer=_from_layer_string(rdt.get("layer", "F.SilkS")) or Layer.TOP_SILK,
             )
 
         # Deserialize pads
@@ -530,7 +554,7 @@ def deserialize_board(data: Dict[str, Any]):
                 net=p.get("net"),
                 shape=p.get("shape"),
                 rotation=p.get("rotation", 0.0),
-                layer=p.get("layer", "F.Cu"),
+                layer=_from_layer_string(p.get("layer", "F.Cu")) or Layer.TOP_COPPER,
                 drill=p.get("drill"),
             )
             pad.component_ref = ref
