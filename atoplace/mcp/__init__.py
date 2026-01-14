@@ -16,7 +16,7 @@ The launcher auto-detects KiCad Python on macOS/Linux/Windows.
 Override with KICAD_PYTHON environment variable if needed.
 """
 
-from .server import mcp, main, session, configure_session
+from .server import mcp, main, session
 
 # Context generators
 from .context import (
@@ -64,7 +64,6 @@ __all__ = [
     "mcp",
     "main",
     "session",
-    "configure_session",
     # Backend selection
     "BackendMode",
     "get_backend_mode",

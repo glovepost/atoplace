@@ -446,7 +446,13 @@ def arrange_pattern(
 
         session.checkpoint(f"Arrange {len(refs)} components in {pattern}")
         actions = LayoutActions(session.board)
-        result = actions.arrange_pattern(refs, pattern, spacing, cols, radius, center_x, center_y)
+
+        # Combine center_x and center_y into tuple if both provided
+        center = None
+        if center_x is not None and center_y is not None:
+            center = (center_x, center_y)
+
+        result = actions.arrange_pattern(refs, pattern, spacing, cols, radius, center)
 
         if result.success:
             session.mark_modified(result.modified_refs)
@@ -641,7 +647,7 @@ def run_drc(
 
         dfm = get_profile(dfm_profile)
         checker = DRCChecker(session.board, dfm)
-        violations = checker.check_all()
+        passed, violations = checker.run_checks()
 
         # Filter by severity
         if severity_filter != "all":
@@ -650,11 +656,11 @@ def run_drc(
         return json.dumps({
             "violation_count": len(violations),
             "violations": [{
-                "type": v.violation_type,
+                "rule": v.rule,
                 "severity": v.severity,
                 "message": v.message,
-                "refs": v.refs,
-                "location": v.location
+                "items": v.items,
+                "location": {"x": v.location[0], "y": v.location[1]}
             } for v in violations[:50]]
         })
     except Exception as e:
@@ -669,14 +675,18 @@ def validate_placement() -> str:
         _require_board()
         from ..validation.confidence import ConfidenceScorer
 
-        scorer = ConfidenceScorer(session.board)
-        report = scorer.assess()
+        scorer = ConfidenceScorer()  # Uses default DFM profile
+        report = scorer.assess(session.board)
 
         return json.dumps({
             "overall_score": report.overall_score,
-            "flags": report.flags,
-            "category_scores": report.category_scores,
-            "recommendations": report.recommendations[:10]
+            "placement_score": report.placement_score,
+            "routing_score": report.routing_score,
+            "dfm_score": report.dfm_score,
+            "electrical_score": report.electrical_score,
+            "flags": [{"category": f.category.value, "severity": f.severity.value, "message": f.message} for f in report.flags[:20]],
+            "component_count": report.component_count,
+            "net_count": report.net_count
         })
     except Exception as e:
         return _error_response(str(e), "validation_failed")

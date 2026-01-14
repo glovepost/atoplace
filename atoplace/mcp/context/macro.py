@@ -184,6 +184,18 @@ class MacroContext:
             critical_issues=issues
         )
 
+    def get_unplaced_components(self) -> List[str]:
+        """
+        Get list of component references that are outside the board bounds.
+
+        Returns list of component references that are not within the board area.
+        """
+        unplaced_refs = []
+        for ref, comp in self.board.components.items():
+            if not self._is_in_bounds(comp):
+                unplaced_refs.append(ref)
+        return unplaced_refs
+
     def get_semantic_grid(self) -> SemanticGrid:
         """
         Map components to a 3x3 semantic grid.
