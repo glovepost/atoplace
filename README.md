@@ -238,11 +238,13 @@ flowchart LR
 ```
 
 **Backend Modes:**
-| Mode | KiCad Version | Real-time | How it works |
-|------|--------------|-----------|--------------|
-| `kipy` | 9.0+ | ✅ Yes | Direct IPC API connection |
-| `ipc` | 8.0+ | ❌ No | File-based bridge process |
-| `direct` | 8.0+ | ❌ No | Direct file manipulation |
+| Mode | KiCad Version | Real-time | How it works | Status |
+|------|--------------|-----------|--------------|--------|
+| `kipy` | 9.0+ | ✅ Yes | Direct IPC API connection | **Default** |
+| `ipc` | 8.0+ | ❌ No | File-based bridge process | Fallback |
+| `direct` | 8.0+ | ❌ No | Direct file manipulation | Fallback |
+
+**Note:** KIPY mode is the primary backend for bleeding-edge development. It provides instant visual feedback in KiCad's viewport and native undo/redo integration. The server automatically falls back to IPC or direct mode if KIPY is unavailable.
 
 ### Available Tools (26 total)
 
@@ -259,10 +261,12 @@ flowchart LR
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ATOPLACE_BACKEND` | Backend mode: `kipy`, `ipc`, or `direct` | Auto-detected |
-| `ATOPLACE_USE_KIPY` | Enable kipy mode (`1` or `true`) | `false` |
+| `ATOPLACE_BACKEND` | Backend mode: `kipy`, `ipc`, or `direct` | `kipy` (with fallback) |
+| `ATOPLACE_USE_KIPY` | Enable kipy mode (`1` or `true`) | Deprecated - use `ATOPLACE_BACKEND` |
 | `KICAD_PYTHON` | Override KiCad Python path | Auto-detected |
 | `ATOPLACE_LOG` | Log file location | `/tmp/atoplace.log` |
+
+**Default behavior:** The server attempts KIPY first, then falls back to IPC, then direct mode. For bleeding-edge KiCad 9+ users, no configuration is needed - KIPY mode activates automatically when KiCad is running with IPC enabled.
 
 ### Example LLM Conversation
 
