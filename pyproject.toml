@@ -42,10 +42,22 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
+mcp = [
+    "mcp>=1.0.0",
+]
+kipy = [
+    "kicad-python>=0.4.0",  # Official KiCad IPC API (KiCad 9+)
+]
+all = [
+    "mcp>=1.0.0",
+    "kicad-python>=0.4.0",
+]
 
 [project.scripts]
 atoplace = "atoplace.cli:main"
 atoplace-mcp = "atoplace.mcp.server:main"
+atoplace-mcp-launcher = "atoplace.mcp.launcher:main"
+atoplace-mcp-bridge = "atoplace.mcp.bridge:main"
 
 [project.urls]
 Homepage = "https://github.com/atoplace/atoplace"

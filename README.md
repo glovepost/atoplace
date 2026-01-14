@@ -9,6 +9,7 @@
   <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status">
   <img src="https://img.shields.io/badge/KiCad-8.0%2B-blue" alt="KiCad Support">
+  <img src="https://img.shields.io/badge/KiCad%209-Live%20IPC-green" alt="KiCad 9 Live IPC">
 </p>
 
 <p align="center">
@@ -91,6 +92,14 @@ atoplace interactive board.kicad_pcb
 # > "Save"
 ```
 
+### 5. MCP Server (LLM Integration)
+Expose atoplace tools to AI agents via the Model Context Protocol:
+```bash
+atoplace mcp --launch
+```
+
+See [MCP Server](#-mcp-server) section below for details.
+
 ## 🗺️ Roadmap
 
 - **Milestone A (Q1 2026): Solid Foundation** ✅
@@ -99,13 +108,15 @@ atoplace interactive board.kicad_pcb
   - [x] Atopile `ato-lock.yaml` and module hierarchy integration.
 - **Milestone B (Q1-Q2 2026): Routing & Persistence** 🚧
   - [x] **A* Geometric Planner** (Greedy Multiplier & Spatial Indexing).
+  - [x] **MCP Server** with IPC bridge for LLM agent integration.
+  - [x] **Live KiCad IPC** via kipy for real-time component manipulation (KiCad 9+).
   - [ ] `atoplace.lock` Sidecar Persistence for Atopile.
   - [ ] BGA/QFN Fanout Generator.
   - [ ] Differential Pair Path Planning.
 - **Milestone C (Q2 2026): Professional Agent** 🔮
-  - [ ] MCP Server for full conversational design.
   - [ ] Deep Signal Integrity Analysis (Crosstalk/Impedance).
   - [ ] Automated Manufacturing Outputs (Gerbers/BOM/PNP).
+  - [ ] Multi-board design support.
 
 ## 📂 Architecture
 
@@ -122,8 +133,162 @@ atoplace/
 │   └── obstacle_map.py     # Obstacle generation
 ├── nlp/            # Natural Language & Intent Engine
 ├── validation/     # Confidence Scorer & DFM/DRC Checker
-├── mcp/            # MCP Server (Planned)
+├── mcp/            # MCP Server for LLM Integration
+│   ├── server.py           # FastMCP server with 26 tools
+│   ├── backends.py         # Backend mode detection & factory
+│   ├── kipy_session.py     # Live KiCad IPC session (KiCad 9+)
+│   ├── kipy_adapter.py     # kipy ↔ atoplace data conversion
+│   ├── bridge.py           # KiCad bridge (Python 3.9)
+│   ├── ipc.py              # IPC protocol & serialization
+│   ├── launcher.py         # Process manager
+│   └── context/            # Context generators (macro/micro/vision)
 └── cli.py          # CLI entry point
+```
+
+## 🤖 MCP Server
+
+atoplace includes a **Model Context Protocol (MCP)** server that exposes 26 PCB design tools to LLM agents like Claude. This enables conversational PCB layout design.
+
+### Quick Start
+
+Just run:
+```bash
+python -m atoplace.mcp.launcher
+```
+
+That's it! The launcher:
+- **Auto-detects** KiCad Python on macOS, Linux, and Windows
+- **Starts** the KiCad bridge (for pcbnew access)
+- **Starts** the MCP server (exposes tools to LLM)
+- **Manages** lifecycle and clean shutdown
+
+### Claude Code / Claude Desktop Configuration
+
+Add to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "atoplace": {
+      "command": "python",
+      "args": ["-m", "atoplace.mcp.launcher"]
+    }
+  }
+}
+```
+
+> **Note**: Replace `python` with the path to your atoplace virtualenv Python if needed.
+
+### 🔴 Live KiCad IPC Mode (KiCad 9+)
+
+**New!** With KiCad 9+, atoplace can manipulate components in real-time without save/reload cycles. Changes appear instantly in your KiCad viewport!
+
+**Requirements:**
+- KiCad 9.0 or later (with IPC API enabled)
+- `kicad-python` package: `pip install kicad-python`
+
+**Setup:**
+```bash
+# Install the kipy optional dependency
+pip install atoplace[kipy]
+
+# Or install directly
+pip install kicad-python
+```
+
+**Usage:**
+1. Open your `.kicad_pcb` in KiCad 9+ PCB Editor
+2. Start the MCP server with the kipy backend:
+   ```bash
+   ATOPLACE_BACKEND=kipy python -m atoplace.mcp.launcher
+   ```
+3. Components move instantly as you interact with the LLM!
+
+**How it works:** The kipy backend connects directly to KiCad's IPC socket and uses the official API to update component positions in real-time. Native undo/redo (Cmd/Ctrl+Z) works seamlessly.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    subgraph MCP["MCP Server (Python 3.10+)"]
+        direction TB
+        FastMCP[FastMCP]
+        Tools[26 Layout Tools]
+        Context[Context Generators]
+    end
+
+    subgraph KiPy["KiPy Backend (KiCad 9+)"]
+        direction TB
+        IPC[KiCad IPC API]
+        LiveEdit[Real-time Updates]
+        NativeUndo[Native Undo/Redo]
+    end
+
+    subgraph Bridge["KiCad Bridge (KiCad 8.x)"]
+        direction TB
+        pcbnew[pcbnew API]
+        BoardIO[Board I/O]
+        UndoRedo[Undo/Redo]
+    end
+
+    MCP <-->|"KiCad IPC\nSocket"| KiPy
+    MCP <-->|"Unix Socket\nJSON-RPC"| Bridge
+```
+
+**Backend Modes:**
+| Mode | KiCad Version | Real-time | How it works |
+|------|--------------|-----------|--------------|
+| `kipy` | 9.0+ | ✅ Yes | Direct IPC API connection |
+| `ipc` | 8.0+ | ❌ No | File-based bridge process |
+| `direct` | 8.0+ | ❌ No | Direct file manipulation |
+
+### Available Tools (26 total)
+
+| Category | Tools |
+|----------|-------|
+| **Board Management** | `load_board`, `save_board`, `undo`, `redo` |
+| **Placement Actions** | `move_component`, `place_next_to`, `align_components`, `distribute_evenly`, `stack_components`, `swap_positions`, `arrange_pattern`, `cluster_around`, `group_components`, `lock_components` |
+| **Discovery** | `find_components`, `get_board_bounds`, `get_unplaced_components` |
+| **Topology** | `get_connected_components`, `get_critical_nets` |
+| **Context** | `inspect_region`, `get_board_summary`, `get_semantic_grid`, `get_module_map`, `render_region` |
+| **Validation** | `check_overlaps`, `validate_placement` |
+
+### Environment Variables (Optional)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ATOPLACE_BACKEND` | Backend mode: `kipy`, `ipc`, or `direct` | Auto-detected |
+| `ATOPLACE_USE_KIPY` | Enable kipy mode (`1` or `true`) | `false` |
+| `KICAD_PYTHON` | Override KiCad Python path | Auto-detected |
+| `ATOPLACE_LOG` | Log file location | `/tmp/atoplace.log` |
+
+### Example LLM Conversation
+
+```
+User: Load the board at examples/dogtracker/layouts/default/default.kicad_pcb
+
+Claude: [Calls load_board tool]
+Board loaded successfully:
+- 37 components
+- 72 nets
+
+User: Find all the capacitors and align them horizontally
+
+Claude: [Calls find_components with query="C", filter_by="ref"]
+Found 12 capacitors: C1, C2, C3...
+
+[Calls align_components with refs=["C1","C2",...], axis="y"]
+Aligned 12 capacitors along the Y axis.
+
+User: Check if there are any overlaps
+
+Claude: [Calls check_overlaps]
+No overlapping components detected. The placement is valid.
+
+User: Save the board
+
+Claude: [Calls save_board]
+Board saved to: examples/dogtracker/layouts/default/default.placed.kicad_pcb
 ```
 
 ## 📄 License
@@ -134,4 +299,5 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 *   **[atopile](https://github.com/atopile/atopile)**: The declarative language that makes code-driven hardware possible.
 *   **[KiCad](https://kicad.org)**: The open-source EDA standard we build upon.
+*   **[kicad-python](https://github.com/kicad/kicad-python)**: Official Python bindings for KiCad's IPC API.
 *   **[Freerouting](https://github.com/freerouting/freerouting)**: The open-source autorouting engine.

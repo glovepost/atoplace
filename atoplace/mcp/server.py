@@ -14,10 +14,35 @@ Tools are organized into categories:
 """
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 import json
 import logging
+import os
+import sys
 
+# Configure logging - use file to keep STDIO clean for MCP protocol
+LOG_FILE = os.environ.get("ATOPLACE_LOG", "/tmp/atoplace.log")
+_log_configured = False
+
+def _configure_logging():
+    """Configure logging once."""
+    global _log_configured
+    if _log_configured:
+        return
+
+    # Only add file handler if not already configured
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.FileHandler(LOG_FILE, mode="a")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+            datefmt="%H:%M:%S"
+        ))
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+    _log_configured = True
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 try:
@@ -30,7 +55,7 @@ except ImportError:
         def __init__(self, name): self.name = name
         def tool(self): return lambda f: f
         def resource(self, uri): return lambda f: f
-        def run(self): print("MCP not installed")
+        def run(self): pass
 
 from ..board.abstraction import Board
 from ..api.actions import LayoutActions
@@ -44,8 +69,22 @@ from .prompts import SYSTEM_PROMPT, FIX_OVERLAPS_PROMPT
 # Initialize FastMCP server
 mcp = FastMCP("atoplace")
 
-# Session state (manages board, undo/redo, dirty tracking)
-session = Session()
+# Session state - supports multiple backends:
+# - direct: Direct pcbnew access (KiCad Python environment)
+# - ipc: Bridge-based IPC to pcbnew process
+# - kipy: Live KiCad IPC via official kicad-python API (KiCad 9+)
+#
+# Set via ATOPLACE_BACKEND env var: direct, ipc, or kipy
+# Or legacy: ATOPLACE_USE_IPC=1 or ATOPLACE_USE_KIPY=1
+from .backends import create_session, get_backend_mode, BackendNotAvailableError
+
+try:
+    session = create_session()
+    logger.info("MCP server using %s mode", get_backend_mode().value)
+except BackendNotAvailableError as e:
+    logger.warning("Preferred backend not available: %s. Falling back to direct.", e)
+    session = Session()
+    logger.info("MCP server using direct mode (fallback)")
 
 
 # =============================================================================
@@ -1020,12 +1059,67 @@ def fix_overlaps_prompt_resource() -> str:
 # Entry Point
 # =============================================================================
 
+def configure_session(use_ipc: bool = False, socket_path: str = None):
+    """
+    Configure the session mode.
+
+    Args:
+        use_ipc: Use IPC mode to communicate with KiCad bridge
+        socket_path: Override default socket path for IPC
+    """
+    global session
+
+    if use_ipc:
+        from .ipc_session import IPCSession
+        session = IPCSession(socket_path) if socket_path else IPCSession()
+        logger.info("Configured MCP server for IPC mode")
+    else:
+        session = Session()
+        logger.info("Configured MCP server for direct mode")
+
+
 def main():
     """Run the MCP server."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="AtoPlace MCP Server - AI-powered PCB placement"
+    )
+    parser.add_argument(
+        "--ipc", "-i",
+        action="store_true",
+        help="Use IPC mode to communicate with KiCad bridge"
+    )
+    parser.add_argument(
+        "--socket", "-s",
+        default=None,
+        help="Unix socket path for IPC communication"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+
+    args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
     if not MCP_AVAILABLE:
-        print("Error: MCP package not installed.")
-        print("Install with: pip install mcp")
-        return
+        logger.error("MCP package not installed. Install with: pip install mcp")
+        sys.exit(1)
+
+    # Configure session based on args or environment
+    use_ipc = args.ipc or _USE_IPC
+    socket_path = args.socket or _IPC_SOCKET
+
+    if use_ipc:
+        configure_session(use_ipc=True, socket_path=socket_path)
+        logger.info("Starting MCP server in IPC mode")
+    else:
+        logger.info("Starting MCP server in direct mode")
+
     mcp.run()
 
 

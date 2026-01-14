@@ -1186,6 +1186,23 @@ def mcp_serve(
         "-l",
         help="Log level for MCP server (DEBUG, INFO, WARNING, ERROR).",
     ),
+    ipc: bool = typer.Option(
+        False,
+        "--ipc",
+        "-i",
+        help="Use IPC mode to communicate with KiCad bridge (for Python 3.9 compatibility).",
+    ),
+    socket: Optional[str] = typer.Option(
+        None,
+        "--socket",
+        "-s",
+        help="Unix socket path for IPC communication.",
+    ),
+    launch: bool = typer.Option(
+        False,
+        "--launch",
+        help="Auto-launch both KiCad bridge and MCP server (recommended for IPC mode).",
+    ),
 ):
     """Start the MCP server for LLM agent integration.
 
@@ -1193,8 +1210,15 @@ def mcp_serve(
     like Claude. Tools include board management, placement actions, discovery,
     topology analysis, context generation, and validation.
 
+    Modes:
+        - Direct: Uses pcbnew directly (requires KiCad's Python 3.9)
+        - IPC: Communicates with KiCad bridge process (works with Python 3.10+)
+        - Launch: Starts both bridge and server automatically (recommended)
+
     Examples:
-        atoplace mcp                    # Start with stdio transport
+        atoplace mcp                    # Start with stdio transport (direct mode)
+        atoplace mcp --ipc              # Start in IPC mode (needs bridge running)
+        atoplace mcp --launch           # Auto-launch bridge and server
         atoplace mcp --log-level DEBUG  # Enable debug logging
     """
     import logging as mcp_logging
@@ -1206,15 +1230,46 @@ def mcp_serve(
     mcp_logger = mcp_logging.getLogger("atoplace.mcp")
     mcp_logger.setLevel(getattr(mcp_logging, log_level.upper(), mcp_logging.INFO))
 
+    # Handle launch mode
+    if launch:
+        console.print(
+            Panel(
+                "Launching KiCad bridge and MCP server...\n\n"
+                "This will start:\n"
+                "  1. KiCad bridge (Python 3.9 with pcbnew)\n"
+                "  2. MCP server (Python 3.10+ with FastMCP)",
+                border_style="cyan",
+            )
+        )
+        try:
+            from .mcp.launcher import main as launcher_main
+            launcher_main()
+        except ImportError as e:
+            console.print(
+                Panel(
+                    f"[red]Failed to import launcher[/red]: {e}",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(code=1)
+        return
+
+    mode = "IPC" if ipc else "direct"
     console.print(
         Panel(
-            f"Starting MCP server (transport={transport}, log_level={log_level})",
+            f"Starting MCP server (transport={transport}, mode={mode}, log_level={log_level})",
             border_style="cyan",
         )
     )
 
+    if ipc:
+        console.print(
+            "[yellow]IPC mode: Make sure the KiCad bridge is running![/yellow]\n"
+            "Start the bridge with: atoplace-mcp-bridge"
+        )
+
     try:
-        from .mcp.server import mcp, MCP_AVAILABLE
+        from .mcp.server import mcp, MCP_AVAILABLE, configure_session
 
         if not MCP_AVAILABLE:
             console.print(
@@ -1225,6 +1280,10 @@ def mcp_serve(
                 )
             )
             raise typer.Exit(code=1)
+
+        # Configure session based on mode
+        if ipc:
+            configure_session(use_ipc=True, socket_path=socket)
 
         # Run the MCP server
         mcp.run()
