@@ -369,6 +369,12 @@ class DRCChecker:
         if not self.dfm_profile:
             return
 
+        # Log that this check is intentionally skipped
+        logger.debug(
+            "Skipping silkscreen-to-pad check: requires silkscreen geometry "
+            "extraction from KiCad (not yet implemented in Board abstraction)"
+        )
+
         # Silkscreen checking requires access to actual silkscreen geometry
         # from KiCad (text positions, lines, etc.). The Board abstraction
         # doesn't currently store this data.
@@ -380,7 +386,6 @@ class DRCChecker:
         #
         # For now, this is a placeholder that can be expanded when
         # silkscreen geometry is added to the Board abstraction.
-        pass
 
     def run_kicad_drc(self, pcb_path: Path) -> Tuple[bool, List[DRCViolation]]:
         """

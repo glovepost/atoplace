@@ -587,12 +587,21 @@ def check_overlaps(refs: Optional[List[str]] = None) -> str:
 
 @mcp.tool()
 def get_unplaced_components() -> str:
-    """Get list of components that are outside the board area."""
+    """Get list of components that are outside the board area.
+
+    Returns up to 50 component references. If more exist, count will indicate
+    total and truncated flag will be set.
+    """
     try:
         _require_board()
         macro = MacroContext(session.board)
         unplaced = macro.get_unplaced_components()
-        return json.dumps({"count": len(unplaced), "refs": unplaced[:50]})
+        truncated = len(unplaced) > 50
+        return json.dumps({
+            "count": len(unplaced),
+            "refs": unplaced[:50],
+            "truncated": truncated
+        })
     except Exception as e:
         return _error_response(str(e), "discovery_failed")
 
@@ -601,6 +610,9 @@ def get_unplaced_components() -> str:
 def find_components(query: str, filter_by: str = "ref") -> str:
     """
     Find components matching a query.
+
+    Returns up to 50 matches. If more exist, count will indicate total
+    and truncated flag will be set.
 
     Args:
         query: Search string
@@ -627,7 +639,12 @@ def find_components(query: str, filter_by: str = "ref") -> str:
                     "y": comp.y
                 })
 
-        return json.dumps({"count": len(matches), "matches": matches[:50]})
+        truncated = len(matches) > 50
+        return json.dumps({
+            "count": len(matches),
+            "matches": matches[:50],
+            "truncated": truncated
+        })
     except Exception as e:
         return _error_response(str(e), "search_failed")
 
@@ -644,6 +661,9 @@ def run_drc(
 ) -> str:
     """
     Run Design Rule Check on the loaded board.
+
+    Returns up to 50 violations. If more exist, violation_count will indicate
+    total and truncated flag will be set.
 
     Args:
         use_kicad: Whether to use KiCad's native DRC (if available)
@@ -663,6 +683,7 @@ def run_drc(
         if severity_filter != "all":
             violations = [v for v in violations if v.severity == severity_filter]
 
+        truncated = len(violations) > 50
         return json.dumps({
             "violation_count": len(violations),
             "violations": [{
@@ -671,7 +692,8 @@ def run_drc(
                 "message": v.message,
                 "items": v.items,
                 "location": {"x": v.location[0], "y": v.location[1]}
-            } for v in violations[:50]]
+            } for v in violations[:50]],
+            "truncated": truncated
         })
     except Exception as e:
         logger.error("DRC failed: %s", e)
