@@ -469,9 +469,21 @@ class KiPySession:
             return {ref: False for ref in refs}
 
     def mark_modified(self, refs: List[str]):
-        """Mark components as modified."""
+        """
+        Mark components as modified and immediately sync to KiCad.
+
+        In kipy mode, this triggers an instant sync for live feedback.
+        In other modes, just marks dirty for later save.
+        """
         self._dirty = True
         self._dirty_refs.update(refs)
+
+        # Immediately sync to KiCad for live updates
+        if self._connected and self._kipy_board:
+            try:
+                self._sync_to_kicad()
+            except Exception as e:
+                logger.warning("Failed to auto-sync to KiCad: %s", e)
 
     def clear_dirty(self):
         """Clear dirty state."""
