@@ -12,8 +12,8 @@ def __getattr__(name):
             return ManufacturingOutputGenerator
         except ImportError:
             raise ImportError(
-                "ManufacturingOutputGenerator not yet implemented. "
-                "See docs/PRODUCT_PLAN.md Phase 4 for implementation plan."
+                "ManufacturingOutputGenerator is not yet implemented. "
+                "This feature is planned for a future release."
             )
     elif name == "JLCPCBExporter":
         try:
@@ -21,8 +21,8 @@ def __getattr__(name):
             return JLCPCBExporter
         except ImportError:
             raise ImportError(
-                "JLCPCBExporter not yet implemented. "
-                "See docs/PRODUCT_PLAN.md Phase 4 for implementation plan."
+                "JLCPCBExporter is not yet implemented. "
+                "This feature is planned for a future release."
             )
     elif name == "GerberGenerator":
         try:
@@ -30,7 +30,7 @@ def __getattr__(name):
             return GerberGenerator
         except ImportError:
             raise ImportError(
-                "GerberGenerator not yet implemented. "
-                "See docs/PRODUCT_PLAN.md Phase 4 for implementation plan."
+                "GerberGenerator is not yet implemented. "
+                "This feature is planned for a future release."
             )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
