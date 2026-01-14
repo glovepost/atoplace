@@ -1778,9 +1778,20 @@ class PlacementLegalizer:
 
         # Update board outline
         old_outline = self.board.outline
+
+        # Log at INFO level so users are aware the board outline is being modified
+        # This is an important side effect that should be visible even without debug logging
+        logger.info(
+            "Compacting board outline to fit placement: "
+            "%.1fx%.1f mm -> %.1fx%.1f mm (margin=%.1f mm)",
+            old_outline.width, old_outline.height,
+            new_width, new_height,
+            margin
+        )
+
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                "Board compaction: (%.1f, %.1f, %.1fx%.1f) -> (%.1f, %.1f, %.1fx%.1f)",
+                "Board compaction details: (%.1f, %.1f, %.1fx%.1f) -> (%.1f, %.1f, %.1fx%.1f)",
                 old_outline.origin_x, old_outline.origin_y,
                 old_outline.width, old_outline.height,
                 new_origin_x, new_origin_y, new_width, new_height

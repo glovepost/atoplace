@@ -697,8 +697,31 @@ def _extract_polygon_outline(kicad_board) -> tuple:
         return None, []
 
     # Find the largest polygon (main outline) and treat others as holes
-    main_polygon = max(polygons, key=lambda p: _polygon_area(p))
-    holes = [p for p in polygons if p is not main_polygon]
+    # This works correctly for boards with internal cutouts because the outer
+    # boundary will always have a larger area than any internal cutout
+    polygon_areas = [(p, _polygon_area(p)) for p in polygons]
+    polygon_areas.sort(key=lambda x: x[1], reverse=True)
+
+    main_polygon = polygon_areas[0][0]
+    main_area = polygon_areas[0][1]
+    holes = [p for p, area in polygon_areas[1:]]
+
+    # Log what was detected to help users understand the extraction
+    logger.debug(
+        f"Extracted board outline: main polygon with {len(main_polygon)} vertices "
+        f"(area={main_area:.1f} mm²), {len(holes)} internal cutout(s)"
+    )
+
+    # Warn if multiple large polygons detected (possible disjointed board)
+    if len(polygon_areas) > 1:
+        second_area = polygon_areas[1][1]
+        if second_area > 0.5 * main_area:  # Second polygon is >50% of main area
+            logger.warning(
+                f"Detected multiple large polygons on Edge.Cuts layer. "
+                f"Using largest (area={main_area:.1f} mm²) as main outline, "
+                f"but second polygon is also large (area={second_area:.1f} mm²). "
+                f"This may indicate a disjointed board or incorrect Edge.Cuts drawing."
+            )
 
     return main_polygon, holes
 
