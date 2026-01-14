@@ -703,6 +703,317 @@ def validate_placement() -> str:
 
 
 # =============================================================================
+# Advanced Placement Tools
+# =============================================================================
+
+@mcp.tool()
+def optimize_placement(
+    constraints: Optional[List[str]] = None,
+    iterations: int = 100,
+    enable_modules: bool = True
+) -> str:
+    """
+    Run force-directed placement optimization with optional constraints.
+
+    This uses atoplace's sophisticated physics-based placement algorithm
+    that considers:
+    - Component connectivity (minimizes wire length)
+    - Component repulsion (prevents overlaps)
+    - Board boundaries (keeps components in bounds)
+    - User constraints (proximity, edge placement, grouping, etc.)
+    - Module detection (groups related components)
+
+    Args:
+        constraints: List of natural language constraints, e.g.:
+                    ["Keep C1 close to U1", "USB connector on left edge"]
+        iterations: Number of optimization iterations (default: 100)
+        enable_modules: Auto-detect and group functional modules (default: True)
+
+    Returns:
+        JSON with optimization results and metrics
+    """
+    try:
+        _require_board()
+        from ..placement.force_directed import ForceDirectedRefiner, RefinementConfig
+        from ..placement.module_detector import ModuleDetector
+        from ..nlp.constraint_parser import ConstraintParser
+
+        # Detect modules if enabled
+        modules = None
+        if enable_modules:
+            detector = ModuleDetector(session.board)
+            detected_modules = detector.detect()
+            modules = {ref: mod.module_type.value for mod in detected_modules for ref in mod.components}
+            logger.info("Detected %d modules with %d components", len(detected_modules), len(modules))
+
+        # Parse constraints
+        parsed_constraints = []
+        if constraints:
+            parser = ConstraintParser(session.board)
+            for constraint_text in constraints:
+                result = parser.parse(constraint_text)
+                if result.constraints:
+                    parsed_constraints.extend(result.constraints)
+                    logger.info("Parsed constraint: %s", constraint_text)
+
+        # Create checkpoint before optimization
+        session.checkpoint("Placement optimization")
+
+        # Run force-directed refinement
+        config = RefinementConfig(max_iterations=iterations)
+        refiner = ForceDirectedRefiner(session.board, config=config, modules=modules)
+
+        # Add parsed constraints
+        for parsed_constraint in parsed_constraints:
+            refiner.add_constraint(parsed_constraint.constraint)
+
+        # Run optimization
+        refiner.refine()
+
+        # Mark all components as modified
+        modified_refs = list(session.board.components.keys())
+        session.mark_modified(modified_refs)
+
+        return _success_response({
+            "success": True,
+            "iterations_run": iterations,
+            "modules_detected": len(set(modules.values())) if modules else 0,
+            "constraints_applied": len(parsed_constraints),
+            "components_optimized": len(modified_refs),
+            "message": f"Optimized placement for {len(modified_refs)} components"
+        })
+    except Exception as e:
+        logger.error("Placement optimization failed: %s", e, exc_info=True)
+        return _error_response(str(e), "optimization_failed")
+
+
+@mcp.tool()
+def detect_modules() -> str:
+    """
+    Detect functional modules in the board using connectivity and heuristics.
+
+    Identifies module types like:
+    - Microcontrollers and their support circuits
+    - Power regulators and decoupling
+    - RF frontends and matching networks
+    - Sensors and signal conditioning
+    - ESD protection circuits
+    - Crystal oscillators
+
+    Returns:
+        JSON with detected modules and their components
+    """
+    try:
+        _require_board()
+        from ..placement.module_detector import ModuleDetector
+
+        detector = ModuleDetector(session.board)
+        modules = detector.detect()
+
+        result = []
+        for module in modules:
+            result.append({
+                "name": module.name,
+                "type": module.module_type.value,
+                "components": list(module.components),
+                "primary_component": module.primary_component,
+                "priority": module.priority,
+                "placement_hints": module.placement_hints
+            })
+
+        return json.dumps({
+            "module_count": len(modules),
+            "modules": result
+        }, indent=2)
+    except Exception as e:
+        logger.error("Module detection failed: %s", e, exc_info=True)
+        return _error_response(str(e), "detection_failed")
+
+
+@mcp.tool()
+def parse_constraint(text: str) -> str:
+    """
+    Parse natural language placement constraint into structured form.
+
+    Supported constraint types:
+    - Proximity: "Keep C1 close to U1", "Place C1 within 5mm of U1"
+    - Edge: "USB connector on left edge", "J1 at top edge"
+    - Zone: "Keep RF components in top-left", "Analog in zone (10,10,50,50)"
+    - Grouping: "Group all decoupling capacitors", "Keep power components together"
+    - Separation: "Keep analog and digital separate", "Separate RF from MCU"
+    - Fixed: "Lock U1 in place", "Fix connector positions"
+
+    Args:
+        text: Natural language constraint description
+
+    Returns:
+        JSON with parsed constraint details and confidence
+    """
+    try:
+        _require_board()
+        from ..nlp.constraint_parser import ConstraintParser
+
+        parser = ConstraintParser(session.board)
+        result = parser.parse(text)
+
+        constraints_data = []
+        for parsed_constraint in result.constraints:
+            # Get the actual constraint object
+            constraint = parsed_constraint.constraint
+
+            constraint_dict = {
+                "type": constraint.constraint_type.value,
+                "confidence": parsed_constraint.confidence.value,
+                "source_text": parsed_constraint.source_text,
+                "description": str(constraint)
+            }
+
+            # Add type-specific fields
+            if hasattr(constraint, "components"):
+                constraint_dict["components"] = list(constraint.components)
+            if hasattr(constraint, "edge"):
+                constraint_dict["edge"] = constraint.edge.value if hasattr(constraint.edge, 'value') else str(constraint.edge)
+            if hasattr(constraint, "distance"):
+                constraint_dict["distance"] = constraint.distance
+            if hasattr(constraint, "zone"):
+                constraint_dict["zone"] = constraint.zone
+            if hasattr(constraint, "target"):
+                constraint_dict["target"] = constraint.target
+            if hasattr(constraint, "reference"):
+                constraint_dict["reference"] = constraint.reference
+
+            constraints_data.append(constraint_dict)
+
+        return json.dumps({
+            "original_text": text,
+            "parsed_count": len(result.constraints),
+            "constraints": constraints_data,
+            "unrecognized_text": result.unrecognized_text,
+            "warnings": result.warnings
+        }, indent=2)
+    except Exception as e:
+        logger.error("Constraint parsing failed: %s", e, exc_info=True)
+        return _error_response(str(e), "parse_failed")
+
+
+@mcp.tool()
+def get_atopile_context(ato_path: Optional[str] = None) -> str:
+    """
+    Load atopile project context to understand design intent.
+
+    Extracts:
+    - Module hierarchy and relationships
+    - Component metadata (tolerances, ratings, part numbers)
+    - Interface definitions (power, signals, connectors)
+    - Design intent and constraints from ato files
+
+    Args:
+        ato_path: Path to .ato file or project directory
+                 If None, tries to auto-detect from board path
+
+    Returns:
+        JSON with atopile project context
+    """
+    try:
+        _require_board()
+        from ..board.atopile_adapter import (
+            AtopileProjectLoader,
+            AtopileModuleParser,
+            detect_board_source
+        )
+
+        # Auto-detect atopile source if not provided
+        if ato_path is None and session.source_path:
+            try:
+                # Try to find project root from the loaded board path
+                project_root = AtopileProjectLoader.find_project_root(session.source_path)
+                if project_root:
+                    ato_path = str(project_root)
+                    logger.info("Auto-detected atopile project root: %s", ato_path)
+                else:
+                    return _error_response(
+                        "No atopile project found. Provide ato_path parameter.",
+                        "no_atopile_source"
+                    )
+            except Exception as e:
+                logger.warning("Could not auto-detect atopile source: %s", e)
+                return _error_response(
+                    "No atopile source found. Provide ato_path parameter.",
+                    "no_atopile_source"
+                )
+
+        if not ato_path:
+            return _error_response(
+                "No atopile path provided and auto-detection failed",
+                "missing_path"
+            )
+
+        # Load atopile project
+        project_path = Path(ato_path)
+        if not project_path.exists():
+            return _error_response(
+                f"Path does not exist: {ato_path}",
+                "path_not_found"
+            )
+
+        # Initialize loader
+        loader = AtopileProjectLoader(project_path)
+
+        # Get project configuration
+        project = loader.project
+
+        # Parse module hierarchy from .ato files
+        modules_data = []
+        ato_source = loader.get_ato_source_path()
+        if ato_source and ato_source.exists():
+            parser = AtopileModuleParser()
+            module_hierarchy = parser.parse_file(ato_source)
+
+            for module_path, module_info in module_hierarchy.items():
+                modules_data.append({
+                    "path": module_path,
+                    "name": module_info.name,
+                    "type": module_info.module_type or "unknown",
+                    "components": module_info.components,
+                    "submodules": len(module_info.submodules),
+                    "parent": module_info.parent
+                })
+
+        # Extract component metadata from lock file
+        components_metadata = {}
+        lock_data = loader.lock_data
+        if lock_data:
+            components_section = lock_data.get("components", {})
+            for ref, comp_data in components_section.items():
+                if isinstance(comp_data, dict):
+                    components_metadata[ref] = {
+                        "value": comp_data.get("value", ""),
+                        "mpn": comp_data.get("mpn", ""),
+                        "package": comp_data.get("package", ""),
+                        "manufacturer": comp_data.get("manufacturer", ""),
+                        "description": comp_data.get("description", "")
+                    }
+
+        # Build response
+        result = {
+            "project_name": project_path.name,
+            "project_root": str(loader.root),
+            "ato_version": project.ato_version,
+            "builds": list(project.builds.keys()),
+            "module_count": len(modules_data),
+            "modules": modules_data,
+            "components_with_metadata": len(components_metadata),
+            "component_metadata": components_metadata
+        }
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        logger.error("Atopile context loading failed: %s", e, exc_info=True)
+        return _error_response(str(e), "context_load_failed")
+
+
+# =============================================================================
 # MCP Resources
 # =============================================================================
 
