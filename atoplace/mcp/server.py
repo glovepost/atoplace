@@ -177,8 +177,18 @@ def save_board(path: Optional[str] = None) -> str:
     """
     Save the modified board.
 
-    In kipy mode, changes are already in KiCad; user saves via Ctrl+S.
-    In other modes, writes to the specified path.
+    Args:
+        path: Optional output path. If not provided, uses default behavior
+              for the current backend.
+
+    Backend-specific behavior:
+    - KIPY mode: Changes synced to KiCad. Default save works (user saves with
+                 Ctrl+S/Cmd+S). Explicit path raises error - use KiCad's
+                 "File > Save As" menu instead.
+    - IPC/Direct modes: Explicit path supported for Save As functionality.
+
+    In kipy mode without path, changes are synced and user saves via Ctrl+S.
+    In other modes, writes to the specified path or default .placed path.
     """
     try:
         _require_board()

@@ -203,28 +203,40 @@ class KiPySession:
         """
         Save board via KiCad.
 
-        In kipy mode, changes are applied directly to KiCad, so saving
-        triggers KiCad's native save. Note: Save As is not directly
-        supported via kipy API.
+        In kipy mode, changes are applied directly to KiCad. Changes are
+        synced to KiCad's memory, then user saves via Ctrl+S (Cmd+S on Mac).
 
         Args:
-            path: Output path (currently ignored in kipy mode)
+            path: Output path. If provided, user is instructed to use
+                  KiCad's "File > Save As" menu for Save As functionality,
+                  since KIPY mode works with the live KiCad instance.
 
         Returns:
-            Path where board was saved
+            Path where board should be saved
         """
         if not self.board or not self._connected:
             raise ValueError("No board loaded or not connected")
 
-        # Sync any pending local changes
+        # Sync any pending local changes to KiCad
         self._sync_to_kicad()
 
-        # Note: kipy doesn't have a direct "save" API
-        # Changes are already in KiCad; user can save via Ctrl+S
-        logger.info("Changes synced to KiCad. Use Ctrl+S in KiCad to save to file.")
-
-        self._dirty = False
-        return self.source_path or Path("unknown")
+        if path is not None:
+            # Explicit path provided - but KIPY mode can't do Save As directly
+            # User needs to use KiCad's native Save As
+            logger.warning(
+                "KIPY mode: Save As not supported. Use KiCad's 'File > Save As' menu. "
+                "Changes are synced to KiCad."
+            )
+            raise ValueError(
+                "Save As not supported in KIPY mode. "
+                "Your changes are synced to KiCad. "
+                "Use 'File > Save As' in KiCad to save to a different path."
+            )
+        else:
+            # No path - changes synced to KiCad, user saves via Ctrl+S
+            logger.info("Changes synced to KiCad. Use Ctrl+S (Cmd+S on Mac) to save.")
+            self._dirty = False
+            return self.source_path or Path("unknown")
 
     # =========================================================================
     # Undo/Redo (Delegates to KiCad)
