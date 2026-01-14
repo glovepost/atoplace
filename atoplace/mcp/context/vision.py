@@ -210,10 +210,10 @@ class VisionContext:
         return min_x, min_y, max_x, max_y
 
     def _get_rotated_size(self, comp: Component) -> Tuple[float, float]:
-        """Get component size accounting for rotation."""
-        if 45 < (comp.rotation % 180) < 135:
-            return comp.height, comp.width
-        return comp.width, comp.height
+        """Get component AABB size accounting for arbitrary rotation."""
+        # Calculate proper AABB dimensions for arbitrary rotations
+        bbox = comp.get_bounding_box()
+        return (bbox[2] - bbox[0], bbox[3] - bbox[1])  # (width, height)
 
     def _render_component(self, svg_parts: List[str], comp: Component,
                           tx, ty, ts):
@@ -237,9 +237,8 @@ class VisionContext:
 
         # Pads
         for pad in comp.pads:
-            # Transform pad position
-            pad_x = comp.x + pad.x
-            pad_y = comp.y + pad.y
+            # Transform pad position (accounting for component rotation)
+            pad_x, pad_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
             px, py = tx(pad_x), ty(pad_y)
             pw = max(ts(pad.width/2), 2)
             ph = max(ts(pad.height/2), 2)
@@ -287,10 +286,12 @@ class VisionContext:
                             # Find the pad on the other component
                             other_pad = other_comp.get_pad_by_number(other_pad_num)
                             if other_pad:
-                                x1 = tx(comp.x + pad.x)
-                                y1 = ty(comp.y + pad.y)
-                                x2 = tx(other_comp.x + other_pad.x)
-                                y2 = ty(other_comp.y + other_pad.y)
+                                pad1_x, pad1_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
+                                pad2_x, pad2_y = other_pad.absolute_position(other_comp.x, other_comp.y, other_comp.rotation)
+                                x1 = tx(pad1_x)
+                                y1 = ty(pad1_y)
+                                x2 = tx(pad2_x)
+                                y2 = ty(pad2_y)
 
                                 svg_parts.append(
                                     f'<line x1="{x1}" y1="{y1}" '

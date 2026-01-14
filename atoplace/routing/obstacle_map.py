@@ -292,6 +292,9 @@ class ObstacleMapBuilder:
         edge_clearance = self.dfm.min_trace_to_edge
 
         # Create keepout rectangles along each edge
+        # Note: We place obstacles AT the board edge and let the clearance field
+        # handle spacing, rather than insetting the obstacle. This prevents
+        # double-counting of clearance (once in obstacle position, once in collision check).
         for i in range(len(points)):
             p1 = points[i]
             p2 = points[(i + 1) % len(points)]
@@ -338,37 +341,122 @@ class ObstacleMapBuilder:
                 # Both or neither - fall back to CCW assumption
                 nx, ny = dy, -dx
 
-            # Four corners of keepout rectangle
-            # Outer edge (outside board, at board boundary)
-            x1 = p1[0]
-            y1 = p1[1]
-            x2 = p2[0]
-            y2 = p2[1]
-            # Inner edge (inside board, at keepout boundary)
-            x3 = p2[0] + nx * edge_clearance
-            y3 = p2[1] + ny * edge_clearance
-            x4 = p1[0] + nx * edge_clearance
-            y4 = p1[1] + ny * edge_clearance
+            # Create a thin line obstacle AT the board edge (no inset)
+            # The clearance field will handle the required spacing
+            # This is a zero-width line, so we use a very thin rectangle
+            thin_width = 0.001  # 1 micron
+            x1 = p1[0] - nx * thin_width
+            y1 = p1[1] - ny * thin_width
+            x2 = p2[0] - nx * thin_width
+            y2 = p2[1] - ny * thin_width
+            x3 = p2[0] + nx * thin_width
+            y3 = p2[1] + ny * thin_width
+            x4 = p1[0] + nx * thin_width
+            y4 = p1[1] + ny * thin_width
 
-            # Bounding box of the keepout zone
+            # Bounding box of the edge line
             min_x = min(x1, x2, x3, x4)
             max_x = max(x1, x2, x3, x4)
             min_y = min(y1, y2, y3, y4)
             max_y = max(y1, y2, y3, y4)
 
             # Add as obstacle on all layers
+            # Use edge_clearance in the clearance field so collision checks
+            # automatically maintain the proper spacing
             index.add(Obstacle(
                 min_x=min_x,
                 min_y=min_y,
                 max_x=max_x,
                 max_y=max_y,
                 layer=-1,  # All layers
-                clearance=0,  # Already includes clearance
+                clearance=edge_clearance,  # Let collision check handle spacing
                 net_id=None,
                 obstacle_type="keepout",
                 ref=f"edge_{i}"
             ))
             count += 1
+
+        # Process holes (cutouts) if present
+        if hasattr(self.board.outline, 'holes') and self.board.outline.holes:
+            for hole_idx, hole_polygon in enumerate(self.board.outline.holes):
+                if not hole_polygon or len(hole_polygon) < 3:
+                    continue  # Skip invalid holes
+
+                # Process each edge of the hole
+                for i in range(len(hole_polygon)):
+                    p1 = hole_polygon[i]
+                    p2 = hole_polygon[(i + 1) % len(hole_polygon)]
+
+                    # Create thin rectangle along edge
+                    dx = p2[0] - p1[0]
+                    dy = p2[1] - p1[1]
+                    length = (dx*dx + dy*dy) ** 0.5
+
+                    if length < 0.001:
+                        continue
+
+                    # Normalize direction
+                    dx /= length
+                    dy /= length
+
+                    # Calculate both possible normals
+                    mid_x = (p1[0] + p2[0]) / 2
+                    mid_y = (p1[1] + p2[1]) / 2
+                    test_dist = 0.1
+
+                    # Try normal (dy, -dx)
+                    test_x1 = mid_x + dy * test_dist
+                    test_y1 = mid_y - dx * test_dist
+
+                    # Try normal (-dy, dx)
+                    test_x2 = mid_x - dy * test_dist
+                    test_y2 = mid_y + dx * test_dist
+
+                    # For holes, we want the normal pointing OUTWARD from the hole
+                    # (inward to the board material)
+                    # A point is "outside" the hole if it's in the board but not in the hole
+                    in_board1 = self.board.outline.contains_point(test_x1, test_y1)
+                    in_board2 = self.board.outline.contains_point(test_x2, test_y2)
+
+                    # Choose the normal pointing away from the hole (into board material)
+                    if in_board1 and not in_board2:
+                        nx, ny = dy, -dx
+                    elif in_board2 and not in_board1:
+                        nx, ny = -dy, dx
+                    else:
+                        # Fallback: assume CCW winding
+                        nx, ny = dy, -dx
+
+                    # Create a thin line obstacle AT the hole edge
+                    thin_width = 0.001  # 1 micron
+                    x1 = p1[0] - nx * thin_width
+                    y1 = p1[1] - ny * thin_width
+                    x2 = p2[0] - nx * thin_width
+                    y2 = p2[1] - ny * thin_width
+                    x3 = p2[0] + nx * thin_width
+                    y3 = p2[1] + ny * thin_width
+                    x4 = p1[0] + nx * thin_width
+                    y4 = p1[1] + ny * thin_width
+
+                    # Bounding box of the edge line
+                    min_x = min(x1, x2, x3, x4)
+                    max_x = max(x1, x2, x3, x4)
+                    min_y = min(y1, y2, y3, y4)
+                    max_y = max(y1, y2, y3, y4)
+
+                    # Add as obstacle on all layers
+                    index.add(Obstacle(
+                        min_x=min_x,
+                        min_y=min_y,
+                        max_x=max_x,
+                        max_y=max_y,
+                        layer=-1,  # All layers
+                        clearance=edge_clearance,  # Same clearance as board edges
+                        net_id=None,
+                        obstacle_type="keepout",
+                        ref=f"hole_{hole_idx}_edge_{i}"
+                    ))
+                    count += 1
 
         return count
 

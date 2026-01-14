@@ -390,8 +390,24 @@ def serialize_board(board) -> Dict[str, Any]:
                     "height": pad.height,
                     "net": pad.net,
                     "shape": _to_serializable(getattr(pad, "shape", None)),
+                    "rotation": getattr(pad, "rotation", 0.0),
+                    "layer": _to_serializable(getattr(pad, "layer", None)),
+                    "drill": getattr(pad, "drill", None),
                 }
             )
+
+        # Serialize ref_des_text if present
+        ref_des_text = None
+        if hasattr(comp, "ref_des_text") and comp.ref_des_text is not None:
+            ref_des_text = {
+                "offset_x": comp.ref_des_text.offset_x,
+                "offset_y": comp.ref_des_text.offset_y,
+                "rotation": comp.ref_des_text.rotation,
+                "size": comp.ref_des_text.size,
+                "thickness": comp.ref_des_text.thickness,
+                "visible": comp.ref_des_text.visible,
+                "layer": _to_serializable(comp.ref_des_text.layer),
+            }
 
         components[ref] = {
             "reference": comp.reference,
@@ -404,6 +420,11 @@ def serialize_board(board) -> Dict[str, Any]:
             "rotation": comp.rotation,
             "layer": _to_serializable(comp.layer),
             "locked": comp.locked,
+            "origin_offset_x": getattr(comp, "origin_offset_x", 0.0),
+            "origin_offset_y": getattr(comp, "origin_offset_y", 0.0),
+            "dnp": getattr(comp, "dnp", False),
+            "ref_des_text": ref_des_text,
+            "properties": getattr(comp, "properties", {}),
             "pads": pads,
             "fields": getattr(comp, "fields", {}),
         }
@@ -426,6 +447,9 @@ def serialize_board(board) -> Dict[str, Any]:
             "origin_x": board.outline.origin_x,
             "origin_y": board.outline.origin_y,
             "has_outline": board.outline.has_outline,
+            "polygon": getattr(board.outline, "polygon", None),
+            "holes": getattr(board.outline, "holes", []),
+            "auto_generated": getattr(board.outline, "auto_generated", False),
         }
 
     return {
@@ -448,6 +472,7 @@ def deserialize_board(data: Dict[str, Any]):
 
     # Deserialize outline
     if data.get("outline"):
+        from ..board.abstraction import BoardOutline
         o = data["outline"]
         board.outline = BoardOutline(
             width=o["width"],
@@ -455,10 +480,14 @@ def deserialize_board(data: Dict[str, Any]):
             origin_x=o.get("origin_x", 0),
             origin_y=o.get("origin_y", 0),
             has_outline=o.get("has_outline", True),
+            polygon=o.get("polygon"),
+            holes=o.get("holes", []),
+            auto_generated=o.get("auto_generated", False),
         )
 
     # Deserialize components
     for ref, c in data.get("components", {}).items():
+        from ..board.abstraction import Component, Pad, RefDesText
         comp = Component(
             reference=c["reference"],
             footprint=c.get("footprint", ""),
@@ -470,7 +499,24 @@ def deserialize_board(data: Dict[str, Any]):
             rotation=c.get("rotation", 0.0),
             layer=c.get("layer", "F.Cu"),
             locked=c.get("locked", False),
+            origin_offset_x=c.get("origin_offset_x", 0.0),
+            origin_offset_y=c.get("origin_offset_y", 0.0),
+            dnp=c.get("dnp", False),
+            properties=c.get("properties", {}),
         )
+
+        # Deserialize ref_des_text if present
+        if c.get("ref_des_text"):
+            rdt = c["ref_des_text"]
+            comp.ref_des_text = RefDesText(
+                offset_x=rdt.get("offset_x", 0.0),
+                offset_y=rdt.get("offset_y", 0.0),
+                rotation=rdt.get("rotation", 0.0),
+                size=rdt.get("size", 1.0),
+                thickness=rdt.get("thickness", 0.15),
+                visible=rdt.get("visible", True),
+                layer=rdt.get("layer", "F.SilkS"),
+            )
 
         # Deserialize pads
         comp.pads = []
@@ -483,6 +529,9 @@ def deserialize_board(data: Dict[str, Any]):
                 height=p.get("height", 0.5),
                 net=p.get("net"),
                 shape=p.get("shape"),
+                rotation=p.get("rotation", 0.0),
+                layer=p.get("layer", "F.Cu"),
+                drill=p.get("drill"),
             )
             pad.component_ref = ref
             comp.pads.append(pad)

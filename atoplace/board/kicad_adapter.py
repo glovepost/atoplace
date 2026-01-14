@@ -327,13 +327,19 @@ def save_routed_traces(
         0: pcbnew.F_Cu,
         1: pcbnew.B_Cu,
     }
-    # Add inner layers for 4+ layer boards
-    if layer_count >= 4:
-        layer_map[2] = pcbnew.In1_Cu
-        layer_map[3] = pcbnew.In2_Cu
-    if layer_count >= 6:
-        layer_map[4] = pcbnew.In3_Cu
-        layer_map[5] = pcbnew.In4_Cu
+    # Add inner layers dynamically for 4+ layer boards
+    # KiCad supports up to 32 inner layers (In1_Cu through In30_Cu)
+    if layer_count > 2:
+        num_inner = layer_count - 2
+        for i in range(num_inner):
+            inner_num = i + 1  # In1, In2, In3, ...
+            layer_constant_name = f"In{inner_num}_Cu"
+            try:
+                layer_constant = getattr(pcbnew, layer_constant_name)
+                layer_map[i + 2] = layer_constant  # Map indices 2, 3, 4, ... to In1, In2, In3, ...
+            except AttributeError:
+                logger.warning(f"Layer constant {layer_constant_name} not found in pcbnew. "
+                              f"Board may have more layers than supported by this KiCad version.")
 
     # Build net code lookup from existing board
     net_code_map = {}

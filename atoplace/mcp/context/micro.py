@@ -121,7 +121,7 @@ class Microscope:
                 location=(comp.x, comp.y),
                 rotation=comp.rotation,
                 bbox={"min": (bbox[0], bbox[1]), "max": (bbox[2], bbox[3])},
-                pads=[{"num": p.number, "pos": (comp.x + p.x, comp.y + p.y), "net": p.net} for p in comp.pads] # Simplified
+                pads=[{"num": p.number, "pos": p.absolute_position(comp.x, comp.y, comp.rotation), "net": p.net} for p in comp.pads]
             )
             object_views.append(obj)
 
@@ -146,13 +146,9 @@ class Microscope:
         )
 
     def _get_bbox(self, comp: Component) -> Tuple[float, float, float, float]:
-        """Get precise AABB."""
-        # Simple implementation - should ideally match visualizer logic
-        w, h = comp.width, comp.height
-        if 45 < (comp.rotation % 180) < 135:
-            w, h = h, w
-        
-        return (comp.x - w/2, comp.y - h/2, comp.x + w/2, comp.y + h/2)
+        """Get precise AABB accounting for arbitrary rotation."""
+        # Use Component's built-in method which correctly handles rotation
+        return comp.get_bounding_box()
 
     def _calculate_gaps(self, components: List[Component]) -> List[GapView]:
         """Calculate gaps between all pairs of components."""
