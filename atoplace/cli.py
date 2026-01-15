@@ -1014,9 +1014,9 @@ def place(
                     Panel("Failed to save lock file", border_style="yellow")
                 )
 
-    # Export visualization if enabled
+    # Export visualization if enabled (using SVG delta for best quality/performance)
     if visualizer:
-        viz_path = visualizer.export_html_report(
+        viz_path = visualizer.export_svg_delta_html(
             filename="placement_debug.html",
             output_dir="placement_debug",
         )

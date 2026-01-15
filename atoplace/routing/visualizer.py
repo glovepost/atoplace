@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Set
 from pathlib import Path
 import math
+import json
+import warnings
 import logging
 
 from .spatial_index import Obstacle, SpatialHashIndex
@@ -127,6 +129,7 @@ class RouteVisualizer:
     """Real-time visualization of routing progress.
 
     Generates SVG frames and HTML reports for debugging routing algorithms.
+    Can optionally include board components for context.
     """
 
     def __init__(
@@ -135,6 +138,7 @@ class RouteVisualizer:
         output_dir: Optional[Path] = None,
         scale: float = 10.0,  # pixels per mm
         margin: float = 5.0,  # mm margin around board
+        board=None,  # Optional Board object for component rendering
     ):
         """
         Args:
@@ -142,12 +146,14 @@ class RouteVisualizer:
             output_dir: Directory for output files
             scale: Rendering scale (pixels per mm)
             margin: Margin around board in mm
+            board: Optional Board object to show components
         """
         self.bounds = board_bounds
         self.output_dir = output_dir or Path("./route_debug")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.scale = scale
         self.margin = margin
+        self.board = board  # Store board reference
 
         self.frames: List[VisualizationFrame] = []
 
@@ -372,7 +378,17 @@ class RouteVisualizer:
             self.export_frame(frame)
 
     def export_html_report(self, filename: str = "routing_report.html"):
-        """Generate interactive HTML report with all frames."""
+        """Generate interactive HTML report with all frames.
+
+        .. deprecated::
+            Use :meth:`export_svg_delta_html` instead for better performance
+            and unified visualization experience.
+        """
+        warnings.warn(
+            "export_html_report() is deprecated. Use export_svg_delta_html() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         if not self.frames:
             logger.warning("No frames to export")
             return None
@@ -469,6 +485,292 @@ class RouteVisualizer:
         logger.info(f"Exported HTML report to {path}")
         return path
 
+    def export_svg_delta_html(
+        self,
+        filename: str = "routing_debug.html",
+        output_dir: Optional[str] = None
+    ) -> Optional[Path]:
+        """Export routing visualization using SVG delta format.
+
+        Uses the unified visualization system for better performance
+        and consistent UI across placement and routing visualization.
+        If a board was provided, renders components for context.
+
+        Args:
+            filename: Output filename
+            output_dir: Output directory (defaults to self.output_dir)
+
+        Returns:
+            Path to generated HTML file, or None if no frames
+        """
+        if not self.frames:
+            logger.warning("No frames to export")
+            return None
+
+        from ..visualization import get_svg_delta_viewer_js, get_styles_css
+        from ..placement.viewer_template import generate_viewer_html_template
+
+        out_dir = Path(output_dir) if output_dir else self.output_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Extract static props and component data from board if available
+        static_props_json = {}
+        component_layers = {}
+        netlist = {}
+        initial_component_state = {}
+
+        if self.board:
+            from ..board.abstraction import Layer
+
+            for ref, comp in self.board.components.items():
+                # Extract pad geometry as tuples: [x, y, width, height, rotation, net]
+                pad_geom = []
+                for pad in comp.pads:
+                    pad_rot = getattr(pad, 'rotation', 0.0) or 0.0
+                    pad_geom.append([pad.x, pad.y, pad.width, pad.height, pad_rot, pad.net or ""])
+
+                static_props_json[ref] = {
+                    'width': comp.width,
+                    'height': comp.height,
+                    'pads': pad_geom
+                }
+
+                # Component layer
+                if comp.layer == Layer.TOP_COPPER:
+                    component_layers[ref] = 'top'
+                elif comp.layer == Layer.BOTTOM_COPPER:
+                    component_layers[ref] = 'bottom'
+                else:
+                    component_layers[ref] = 'top'
+
+                # Initial position for first frame (array format: [x, y, rotation])
+                initial_component_state[ref] = [comp.x, comp.y, comp.rotation]
+
+            # Build netlist
+            for ref, comp in self.board.components.items():
+                if getattr(comp, 'dnp', False):
+                    continue
+                for pad_index, pad in enumerate(comp.pads):
+                    net_name = (pad.net or "").strip()
+                    if not net_name:
+                        continue
+                    netlist.setdefault(net_name, []).append([ref, pad_index])
+
+            for net_name in sorted(netlist.keys()):
+                netlist[net_name] = sorted(netlist[net_name])
+
+        # Convert routing frames to delta format
+        delta_frames = []
+        for i, frame in enumerate(self.frames):
+            # Convert traces to delta format
+            traces = []
+            for trace in frame.completed_traces:
+                traces.append({
+                    'start': [trace.start[0], trace.start[1]],
+                    'end': [trace.end[0], trace.end[1]],
+                    'layer': trace.layer,
+                    'width': trace.width,
+                    'net': str(trace.net_id) if trace.net_id else ''
+                })
+
+            # Convert vias to delta format
+            vias = []
+            for via in frame.completed_vias:
+                vias.append({
+                    'x': via.x,
+                    'y': via.y,
+                    'drill': via.drill_diameter,
+                    'pad': via.pad_diameter,
+                    'net': str(via.net_id) if via.net_id else ''
+                })
+
+            # Convert A* debug data
+            astar_explored = list(frame.explored_nodes) if frame.explored_nodes else []
+            astar_frontier = list(frame.frontier_nodes) if frame.frontier_nodes else []
+            astar_path = frame.current_path if frame.current_path else []
+
+            # First frame includes all component positions
+            changed_components = {}
+            if i == 0 and initial_component_state:
+                changed_components = initial_component_state
+
+            delta_frame = {
+                'index': i,
+                'label': frame.label or f"Frame {i}",
+                'phase': frame.current_net_name or "Routing",
+                'iteration': frame.iteration,
+                'traces': traces,
+                'vias': vias,
+                'astar_explored': astar_explored,
+                'astar_frontier': astar_frontier,
+                'astar_path': astar_path,
+                'changed_components': changed_components
+            }
+            delta_frames.append(delta_frame)
+
+        # Calculate board bounds for JavaScript
+        board_bounds = {
+            'minX': self.bounds[0],
+            'minY': self.bounds[1],
+            'maxX': self.bounds[2],
+            'maxY': self.bounds[3],
+            'scale': self.scale,
+            'padding': self.margin * self.scale
+        }
+
+        # Generate JavaScript with data
+        js_code = get_svg_delta_viewer_js()
+        data_js = f'''
+// Board bounds for coordinate transforms
+const boardBounds = {json.dumps(board_bounds)};
+
+// Static properties for components
+const staticProps = {json.dumps(static_props_json)};
+
+// Delta frames
+const deltaFrames = {json.dumps(delta_frames)};
+
+// Total frames
+const totalFrames = {len(delta_frames)};
+
+// Module colors (empty for routing)
+const moduleColors = {{}};
+
+// Component layers
+const componentLayers = {json.dumps(component_layers)};
+
+// Netlist for ratsnest
+const netlist = {json.dumps(netlist)};
+
+{js_code}
+
+// Initialize on load
+document.addEventListener('DOMContentLoaded', function() {{
+    showFrame(0);
+    drawEnergyGraph();
+}});
+'''
+
+        # Helper to transform coordinates
+        def tx(x):
+            return (x - self.bounds[0] + self.margin) * self.scale
+
+        def ty(y):
+            return (y - self.bounds[1] + self.margin) * self.scale
+
+        def ts(size):
+            return size * self.scale
+
+        # Generate component SVG elements
+        component_svg = []
+        pad_svg = []
+        label_svg = []
+
+        if self.board:
+            from ..board.abstraction import Layer
+
+            for ref, comp in self.board.components.items():
+                x, y, rotation = comp.x, comp.y, comp.rotation
+                cx, cy = tx(x), ty(y)
+                hw = ts(comp.width / 2)
+                hh = ts(comp.height / 2)
+
+                # Determine layer class
+                layer_class = "comp-top"
+                if comp.layer == Layer.BOTTOM_COPPER:
+                    layer_class = "comp-bottom"
+
+                # Component body
+                component_svg.append(
+                    f'<g class="component {layer_class}" data-ref="{ref}" '
+                    f'transform="rotate({-rotation} {cx} {cy})">'
+                    f'<rect x="{cx - hw}" y="{cy - hh}" '
+                    f'width="{ts(comp.width)}" height="{ts(comp.height)}" '
+                    f'fill="#2d5a3d" stroke="#1a1a1a" stroke-width="1" opacity="0.9"/>'
+                    f'</g>'
+                )
+
+                # Component pads
+                for pad_idx, pad in enumerate(comp.pads):
+                    # Transform pad from component-relative to board coordinates
+                    rad = math.radians(rotation)
+                    cos_r, sin_r = math.cos(rad), math.sin(rad)
+                    px = x + pad.x * cos_r - pad.y * sin_r
+                    py = y + pad.x * sin_r + pad.y * cos_r
+
+                    pad_cx, pad_cy = tx(px), ty(py)
+                    pad_hw = ts(pad.width / 2)
+                    pad_hh = ts(pad.height / 2)
+                    pad_rot = rotation + (getattr(pad, 'rotation', 0) or 0)
+
+                    pad_color = "#4a9" if comp.layer == Layer.TOP_COPPER else "#49a"
+
+                    pad_svg.append(
+                        f'<rect class="pad-element {layer_class}" data-ref="{ref}" data-pad="{pad_idx}" '
+                        f'x="{pad_cx - pad_hw}" y="{pad_cy - pad_hh}" '
+                        f'width="{ts(pad.width)}" height="{ts(pad.height)}" '
+                        f'fill="{pad_color}" stroke="#1a1a1a" stroke-width="0.5" opacity="0.9" '
+                        f'transform="rotate({-pad_rot} {pad_cx} {pad_cy})"/>'
+                    )
+
+                # Component label
+                label_svg.append(
+                    f'<text class="ref-label {layer_class}" data-ref="{ref}" '
+                    f'x="{cx}" y="{cy}" '
+                    f'text-anchor="middle" dominant-baseline="middle" '
+                    f'font-size="8" fill="white" opacity="0.8">{ref}</text>'
+                )
+
+        components_group = '\n'.join(component_svg)
+        pads_group = '\n'.join(pad_svg)
+        labels_group = '\n'.join(label_svg)
+
+        # Create initial SVG with board outline and components
+        # Components are placed directly in SVG (not in a group) for JS compatibility
+        svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg"
+             id="routing-svg"
+             width="{self.svg_width}" height="{self.svg_height}"
+             viewBox="0 0 {self.svg_width} {self.svg_height}">
+            <rect width="100%" height="100%" fill="#1a1a2e"/>
+            <!-- Board outline -->
+            <rect x="{self.margin * self.scale}"
+                  y="{self.margin * self.scale}"
+                  width="{self.board_width * self.scale}"
+                  height="{self.board_height * self.scale}"
+                  fill="none"
+                  stroke="{get_routing_color('board_outline')}"
+                  stroke-width="2"
+                  class="board-outline"/>
+            <!-- Dynamic content groups -->
+            <g class="astar-debug-group"></g>
+            <g class="ratsnest-group"></g>
+            <g class="traces-group"></g>
+            <!-- Components (direct children for JS compatibility) -->
+            {components_group}
+            <!-- Pads -->
+            {pads_group}
+            <!-- Vias group -->
+            <g class="vias-group"></g>
+            <!-- Labels -->
+            {labels_group}
+        </svg>'''
+
+        # Generate HTML using shared template
+        html = generate_viewer_html_template(
+            title="Routing Visualization",
+            static_content='<div id="svg-container">' + svg_content + '</div>',
+            dynamic_content='',
+            javascript_code=data_js,
+            module_types={},
+            total_frames=len(delta_frames),
+            is_streaming=False
+        )
+
+        html_path = out_dir / filename
+        html_path.write_text(html)
+        logger.info(f"Exported SVG delta routing visualization to {html_path}")
+        return html_path
+
     def clear_frames(self):
         """Clear all captured frames."""
         self.frames = []
@@ -513,4 +815,4 @@ def create_visualizer_from_board(board) -> RouteVisualizer:
             max_y = max(max_y, bbox[3])
         bounds = (min_x - 5, min_y - 5, max_x + 5, max_y + 5)
 
-    return RouteVisualizer(board_bounds=bounds)
+    return RouteVisualizer(board_bounds=bounds, board=board)

@@ -196,6 +196,114 @@ body {
     font-family: monospace;
 }
 
+/* Option rows for settings */
+.option-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    min-height: 26px;
+}
+
+.option-label {
+    font-size: 10px;
+    color: #888;
+    min-width: 55px;
+    flex-shrink: 0;
+}
+
+.option-select {
+    flex: 1;
+    padding: 3px 6px;
+    background: #252550;
+    color: #ccc;
+    border: 1px solid #3a3a6e;
+    border-radius: 3px;
+    font-size: 10px;
+    cursor: pointer;
+    min-width: 70px;
+}
+
+.option-select:hover {
+    border-color: #3498db;
+}
+
+.option-select:focus {
+    outline: none;
+    border-color: #3498db;
+}
+
+.option-slider {
+    flex: 1;
+    height: 4px;
+    cursor: pointer;
+    appearance: none;
+    background: #252550;
+    border-radius: 2px;
+    min-width: 50px;
+}
+
+.option-slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #3498db;
+    cursor: pointer;
+    border: none;
+}
+
+.option-slider::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #3498db;
+    cursor: pointer;
+    border: none;
+}
+
+.option-slider:hover::-webkit-slider-thumb {
+    background: #5dade2;
+}
+
+.option-slider:hover::-moz-range-thumb {
+    background: #5dade2;
+}
+
+.slider-value {
+    font-size: 9px;
+    color: #00d4ff;
+    min-width: 30px;
+    text-align: right;
+    font-family: monospace;
+}
+
+.option-hint {
+    font-size: 9px;
+    color: #666;
+    margin-left: 4px;
+}
+
+/* Settings subsections */
+.settings-subsection {
+    padding: 4px 0;
+    border-bottom: 1px solid #2a2a4e;
+}
+
+.settings-subsection:last-child {
+    border-bottom: none;
+}
+
+.subsection-title {
+    font-size: 9px;
+    font-weight: 600;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-bottom: 4px;
+    padding: 2px 0;
+}
+
 /* Controls bar */
 .controls {
     display: flex;
@@ -447,4 +555,28 @@ body {
 .component.overlapping rect {
     stroke: #e74c3c !important;
     stroke-width: 2 !important;
+}
+
+/* Routing visualization */
+.traces-group line {
+    pointer-events: none;
+}
+
+.vias-group circle {
+    pointer-events: none;
+}
+
+.astar-debug-group {
+    pointer-events: none;
+}
+
+/* Trace hover effect */
+.traces-group line:hover {
+    stroke-opacity: 0.7;
+    filter: brightness(1.2);
+}
+
+/* Via hover effect */
+.vias-group circle:hover {
+    filter: brightness(1.2);
 }

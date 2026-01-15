@@ -61,7 +61,50 @@ let layerVisibility = {
     forces: false,
     pads: false,
     labels: true,
-    groups: true
+    groups: true,
+    astar_debug: false  // A* algorithm debug visualization
+};
+
+// Visual settings (configurable via side panel)
+let visualSettings = {
+    // Grid settings
+    gridSpacing: 1.0,       // mm
+    gridStyle: 'lines',     // 'lines', 'dots', 'crosses'
+    gridOpacity: 0.4,       // 0-1
+
+    // Ratsnest settings
+    ratsnestOpacity: 0.35,  // 0-1
+    ratsnestWidth: 0.5,     // px
+
+    // Trail settings
+    trailOpacity: 0.6,      // 0-1
+    trailDotSize: 1.5,      // base size multiplier
+
+    // Force settings
+    forceScale: 1.0,        // multiplier
+    forceMaxLength: 25,     // pixels
+
+    // Label settings
+    labelScale: 1.0,        // font size multiplier
+
+    // Animation settings
+    playbackMode: 'forward', // 'forward', 'loop', 'pingpong'
+    frameSkip: 1,            // frames to skip
+    autoPauseOnOverlaps: false
+};
+
+// Animation state
+let playbackDirection = 1;  // 1 = forward, -1 = backward (for ping-pong)
+
+// Routing layer colors
+const ROUTING_COLORS = {
+    trace_fcu: '#c41e3a',     // Front copper traces (red)
+    trace_bcu: '#2e86ab',     // Back copper traces (blue)
+    via_pad: '#b8860b',       // Via pads (dark goldenrod)
+    via_drill: '#ffffff',     // Via drill hole (white)
+    astar_explored: '#90EE90', // A* explored nodes (light green)
+    astar_frontier: '#FFD700', // A* frontier nodes (gold)
+    astar_path: '#FF1493'      // A* current path (deep pink)
 };
 
 // Module visibility state
@@ -79,7 +122,13 @@ let currentState = {
     energy: 0,
     max_move: 0,
     overlap_count: 0,
-    wire_length: 0
+    wire_length: 0,
+    // Routing state
+    traces: [],          // [{start: [x,y], end: [x,y], layer: int, width: float, net: string}]
+    vias: [],            // [{x, y, drill, pad, net}]
+    astar_explored: [],  // [[x, y, layer], ...] - A* explored nodes
+    astar_frontier: [],  // [[x, y, layer], ...] - A* frontier nodes
+    astar_path: []       // [[x, y, layer], ...] - Current A* path
 };
 
 function getPadColor(netName) {
@@ -167,13 +216,40 @@ function startPlayback() {
     if (playbackInterval) return;
 
     playbackInterval = setInterval(() => {
-        if (currentFrame < totalFrames - 1) {
-            currentFrame++;
+        const frameSkip = visualSettings.frameSkip;
+
+        // Check auto-pause on overlaps
+        if (visualSettings.autoPauseOnOverlaps && currentState.overlap_count > 0) {
+            togglePlay();  // Pause
+            return;
+        }
+
+        if (visualSettings.playbackMode === 'pingpong') {
+            // Ping-pong mode: reverse direction at ends
+            currentFrame += playbackDirection * frameSkip;
+            if (currentFrame >= totalFrames - 1) {
+                currentFrame = totalFrames - 1;
+                playbackDirection = -1;
+            } else if (currentFrame <= 0) {
+                currentFrame = 0;
+                playbackDirection = 1;
+            }
+            showFrame(currentFrame);
+        } else if (visualSettings.playbackMode === 'loop') {
+            // Loop mode: wrap around at end
+            currentFrame += frameSkip;
+            if (currentFrame >= totalFrames) {
+                currentFrame = 0;
+            }
             showFrame(currentFrame);
         } else {
-            // Loop back to start
-            currentFrame = 0;
-            showFrame(currentFrame);
+            // Forward mode: stop at end
+            if (currentFrame < totalFrames - 1) {
+                currentFrame = Math.min(currentFrame + frameSkip, totalFrames - 1);
+                showFrame(currentFrame);
+            } else {
+                togglePlay();  // Stop at end
+            }
         }
     }, playbackSpeed);
 }
@@ -318,6 +394,9 @@ function updateLayers() {
     layerVisibility.labels = document.getElementById('show-labels')?.checked || false;
     layerVisibility.groups = document.getElementById('show-groups')?.checked ?? true;
 
+    // Routing layers
+    layerVisibility.astar_debug = document.getElementById('show-astar-debug')?.checked || false;
+
     updateVisibility();
 }
 
@@ -335,9 +414,8 @@ function updateVisibility() {
     svg.querySelectorAll('.comp-bottom').forEach(el => {
         el.style.display = layerVisibility.bottom ? '' : 'none';
     });
-    svg.querySelectorAll('.grid-layer, .grid-line').forEach(el => {
-        el.style.display = layerVisibility.grid ? '' : 'none';
-    });
+    // Update grid with current settings
+    updateGrid();
     svg.querySelectorAll('.ratsnest-layer, .ratsnest').forEach(el => {
         el.style.display = layerVisibility.ratsnest ? '' : 'none';
     });
@@ -376,10 +454,250 @@ function updateVisibility() {
         updateForces();
     }
 
+    // Update routing layers
+    updateTraces();
+    updateVias();
+
+    // Show/hide A* debug layer
+    const astarGroup = svg.querySelector('.astar-debug-group');
+    if (astarGroup) {
+        astarGroup.style.display = layerVisibility.astar_debug ? '' : 'none';
+    }
+    if (layerVisibility.astar_debug) {
+        updateAStarDebug();
+    }
+
     updateModuleGroups();
 
     // Apply module visibility
     updateModuleVisibility();
+}
+
+// ============================================================================
+// Grid Rendering
+// ============================================================================
+function updateGrid() {
+    const svg = frameContainer.querySelector('svg');
+    if (!svg) return;
+
+    // Find or create grid layer
+    let gridLayer = svg.querySelector('#grid-layer');
+    if (!gridLayer) {
+        gridLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        gridLayer.id = 'grid-layer';
+        gridLayer.classList.add('grid-layer');
+        // Insert at the very beginning so grid is behind everything
+        svg.insertBefore(gridLayer, svg.firstChild);
+    }
+
+    // Clear existing grid
+    gridLayer.innerHTML = '';
+
+    if (!layerVisibility.grid) return;
+
+    const spacing = visualSettings.gridSpacing;
+    const style = visualSettings.gridStyle;
+    const opacity = visualSettings.gridOpacity;
+
+    // Calculate grid bounds in board coordinates
+    const minX = Math.floor(boardBounds.minX / spacing) * spacing;
+    const maxX = Math.ceil(boardBounds.maxX / spacing) * spacing;
+    const minY = Math.floor(boardBounds.minY / spacing) * spacing;
+    const maxY = Math.ceil(boardBounds.maxY / spacing) * spacing;
+
+    const gridColor = `rgba(100, 100, 150, ${opacity})`;
+
+    if (style === 'lines') {
+        // Vertical lines
+        for (let x = minX; x <= maxX; x += spacing) {
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', tx(x));
+            line.setAttribute('y1', ty(minY));
+            line.setAttribute('x2', tx(x));
+            line.setAttribute('y2', ty(maxY));
+            line.setAttribute('stroke', gridColor);
+            line.setAttribute('stroke-width', '0.5');
+            line.classList.add('grid-line');
+            gridLayer.appendChild(line);
+        }
+        // Horizontal lines
+        for (let y = minY; y <= maxY; y += spacing) {
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', tx(minX));
+            line.setAttribute('y1', ty(y));
+            line.setAttribute('x2', tx(maxX));
+            line.setAttribute('y2', ty(y));
+            line.setAttribute('stroke', gridColor);
+            line.setAttribute('stroke-width', '0.5');
+            line.classList.add('grid-line');
+            gridLayer.appendChild(line);
+        }
+    } else if (style === 'dots') {
+        const dotRadius = Math.max(1, ts(spacing * 0.05));
+        for (let x = minX; x <= maxX; x += spacing) {
+            for (let y = minY; y <= maxY; y += spacing) {
+                const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                dot.setAttribute('cx', tx(x));
+                dot.setAttribute('cy', ty(y));
+                dot.setAttribute('r', dotRadius);
+                dot.setAttribute('fill', gridColor);
+                dot.classList.add('grid-line');
+                gridLayer.appendChild(dot);
+            }
+        }
+    } else if (style === 'crosses') {
+        const crossSize = ts(spacing * 0.15);
+        for (let x = minX; x <= maxX; x += spacing) {
+            for (let y = minY; y <= maxY; y += spacing) {
+                const cx = tx(x);
+                const cy = ty(y);
+                // Horizontal line of cross
+                const h = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                h.setAttribute('x1', cx - crossSize);
+                h.setAttribute('y1', cy);
+                h.setAttribute('x2', cx + crossSize);
+                h.setAttribute('y2', cy);
+                h.setAttribute('stroke', gridColor);
+                h.setAttribute('stroke-width', '0.5');
+                h.classList.add('grid-line');
+                gridLayer.appendChild(h);
+                // Vertical line of cross
+                const v = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                v.setAttribute('x1', cx);
+                v.setAttribute('y1', cy - crossSize);
+                v.setAttribute('x2', cx);
+                v.setAttribute('y2', cy + crossSize);
+                v.setAttribute('stroke', gridColor);
+                v.setAttribute('stroke-width', '0.5');
+                v.classList.add('grid-line');
+                gridLayer.appendChild(v);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Settings Update Handlers
+// ============================================================================
+
+// Grid settings
+function updateGridSpacing() {
+    const select = document.getElementById('grid-spacing');
+    if (select) {
+        visualSettings.gridSpacing = parseFloat(select.value);
+        updateGrid();
+    }
+}
+
+function updateGridStyle() {
+    const select = document.getElementById('grid-style');
+    if (select) {
+        visualSettings.gridStyle = select.value;
+        updateGrid();
+    }
+}
+
+function updateGridOpacity() {
+    const slider = document.getElementById('grid-opacity');
+    const valueEl = document.getElementById('grid-opacity-value');
+    if (slider) {
+        visualSettings.gridOpacity = parseInt(slider.value) / 100;
+        if (valueEl) valueEl.textContent = slider.value + '%';
+        updateGrid();
+    }
+}
+
+// Ratsnest settings
+function updateRatsnestOpacity() {
+    const slider = document.getElementById('ratsnest-opacity');
+    const valueEl = document.getElementById('ratsnest-opacity-value');
+    if (slider) {
+        visualSettings.ratsnestOpacity = parseInt(slider.value) / 100;
+        if (valueEl) valueEl.textContent = slider.value + '%';
+        if (layerVisibility.ratsnest) updateRatsnest();
+    }
+}
+
+function updateRatsnestWidth() {
+    const slider = document.getElementById('ratsnest-width');
+    const valueEl = document.getElementById('ratsnest-width-value');
+    if (slider) {
+        visualSettings.ratsnestWidth = parseInt(slider.value) / 10;
+        if (valueEl) valueEl.textContent = visualSettings.ratsnestWidth.toFixed(1);
+        if (layerVisibility.ratsnest) updateRatsnest();
+    }
+}
+
+// Trail settings
+function updateTrailOpacity() {
+    const slider = document.getElementById('trail-opacity');
+    const valueEl = document.getElementById('trail-opacity-value');
+    if (slider) {
+        visualSettings.trailOpacity = parseInt(slider.value) / 100;
+        if (valueEl) valueEl.textContent = slider.value + '%';
+        if (layerVisibility.trails) drawTrails();
+    }
+}
+
+function updateTrailDotSize() {
+    const slider = document.getElementById('trail-dot-size');
+    const valueEl = document.getElementById('trail-dot-size-value');
+    if (slider) {
+        visualSettings.trailDotSize = parseInt(slider.value) / 10;
+        if (valueEl) valueEl.textContent = visualSettings.trailDotSize.toFixed(1);
+        if (layerVisibility.trails) drawTrails();
+    }
+}
+
+// Force settings
+function updateForceScale() {
+    const slider = document.getElementById('force-scale');
+    const valueEl = document.getElementById('force-scale-value');
+    if (slider) {
+        visualSettings.forceScale = parseInt(slider.value) / 100;
+        if (valueEl) valueEl.textContent = visualSettings.forceScale.toFixed(1) + 'x';
+        if (layerVisibility.forces) updateForces();
+    }
+}
+
+function updateForceMaxLength() {
+    const select = document.getElementById('force-max-length');
+    if (select) {
+        visualSettings.forceMaxLength = parseInt(select.value);
+        if (layerVisibility.forces) updateForces();
+    }
+}
+
+// Label settings
+function updateLabelSize() {
+    const select = document.getElementById('label-size');
+    if (select) {
+        visualSettings.labelScale = parseFloat(select.value);
+        updateLabels();
+    }
+}
+
+// Animation settings
+function updatePlaybackMode() {
+    const select = document.getElementById('playback-mode');
+    if (select) {
+        visualSettings.playbackMode = select.value;
+        playbackDirection = 1;  // Reset direction
+    }
+}
+
+function updateFrameSkip() {
+    const select = document.getElementById('frame-skip');
+    if (select) {
+        visualSettings.frameSkip = parseInt(select.value);
+    }
+}
+
+function updateAutoPause() {
+    const checkbox = document.getElementById('auto-pause-overlaps');
+    if (checkbox) {
+        visualSettings.autoPauseOnOverlaps = checkbox.checked;
+    }
 }
 
 function updateModuleVisibility() {
@@ -571,6 +889,13 @@ function applyDelta(delta) {
     if (delta.max_move !== undefined) currentState.max_move = delta.max_move;
     if (delta.overlap_count !== undefined) currentState.overlap_count = delta.overlap_count;
     if (delta.wire_length !== undefined) currentState.wire_length = delta.wire_length;
+
+    // Update routing state
+    if (delta.traces !== undefined) currentState.traces = delta.traces;
+    if (delta.vias !== undefined) currentState.vias = delta.vias;
+    if (delta.astar_explored !== undefined) currentState.astar_explored = delta.astar_explored;
+    if (delta.astar_frontier !== undefined) currentState.astar_frontier = delta.astar_frontier;
+    if (delta.astar_path !== undefined) currentState.astar_path = delta.astar_path;
 }
 
 function updateSVGElements() {
@@ -659,6 +984,15 @@ function updateSVGElements() {
         updateForces();
     }
 
+    // Update routing elements
+    updateTraces();
+    updateVias();
+
+    // Update A* debug visualization if visible
+    if (layerVisibility.astar_debug) {
+        updateAStarDebug();
+    }
+
     // Update pads and labels
     updatePads();
     updateLabels();
@@ -679,6 +1013,205 @@ function updateOverlapHighlighting() {
         const comp2 = svg.querySelector(`.component[data-ref="${ref2}"]`);
         if (comp1) comp1.classList.add('overlapping');
         if (comp2) comp2.classList.add('overlapping');
+    }
+}
+
+// ============================================================================
+// Routing Visualization Functions
+// ============================================================================
+
+function updateTraces() {
+    /**
+     * Render routed traces on the SVG.
+     * Traces are stored as: [{start: [x,y], end: [x,y], layer: int, width: float, net: string}]
+     * layer 0 = Front copper (F.Cu), layer 1 = Back copper (B.Cu)
+     */
+    const svg = frameContainer.querySelector('svg');
+    if (!svg) return;
+
+    // Find or create traces group
+    let tracesGroup = svg.querySelector('.traces-group');
+    if (!tracesGroup) {
+        tracesGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        tracesGroup.setAttribute('class', 'traces-group');
+        // Insert before components so traces are under components
+        const componentsGroup = svg.querySelector('.components-group');
+        if (componentsGroup) {
+            svg.insertBefore(tracesGroup, componentsGroup);
+        } else {
+            svg.appendChild(tracesGroup);
+        }
+    }
+
+    // Clear existing traces
+    tracesGroup.innerHTML = '';
+
+    if (!currentState.traces || currentState.traces.length === 0) return;
+
+    // Render traces by layer for proper stacking
+    for (const trace of currentState.traces) {
+        const layer = trace.layer || 0;
+
+        // Check layer visibility
+        // Traces follow copper layer visibility (F.Cu = top, B.Cu = bottom)
+        const isVisible = (layer === 0 && layerVisibility.top) ||
+                          (layer === 1 && layerVisibility.bottom) ||
+                          (layer > 1);  // Inner layers always visible if present
+
+        if (!isVisible) continue;
+
+        // Get layer color
+        const color = layer === 0 ? ROUTING_COLORS.trace_fcu :
+                      layer === 1 ? ROUTING_COLORS.trace_bcu :
+                      `hsl(${(layer * 60) % 360}, 70%, 50%)`; // Dynamic colors for inner layers
+
+        // Transform coordinates
+        const x1 = tx(trace.start[0]);
+        const y1 = ty(trace.start[1]);
+        const x2 = tx(trace.end[0]);
+        const y2 = ty(trace.end[1]);
+        const width = Math.max(ts(trace.width || 0.2), 1);
+
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        line.setAttribute('stroke', color);
+        line.setAttribute('stroke-width', width);
+        line.setAttribute('stroke-linecap', 'round');
+        line.setAttribute('data-layer', layer);
+        if (trace.net) {
+            line.setAttribute('data-net', trace.net);
+        }
+
+        tracesGroup.appendChild(line);
+    }
+}
+
+function updateVias() {
+    /**
+     * Render vias on the SVG.
+     * Vias are stored as: [{x, y, drill, pad, net}]
+     */
+    const svg = frameContainer.querySelector('svg');
+    if (!svg) return;
+
+    // Find or create vias group
+    let viasGroup = svg.querySelector('.vias-group');
+    if (!viasGroup) {
+        viasGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        viasGroup.setAttribute('class', 'vias-group');
+        // Insert after traces
+        const tracesGroup = svg.querySelector('.traces-group');
+        if (tracesGroup) {
+            tracesGroup.after(viasGroup);
+        } else {
+            svg.appendChild(viasGroup);
+        }
+    }
+
+    // Clear existing vias
+    viasGroup.innerHTML = '';
+
+    if (!currentState.vias || currentState.vias.length === 0) return;
+    // Vias connect layers, show when either copper layer is visible
+    if (!layerVisibility.top && !layerVisibility.bottom) return;
+
+    for (const via of currentState.vias) {
+        const cx = tx(via.x);
+        const cy = ty(via.y);
+        const padRadius = ts((via.pad || 0.6) / 2);
+        const drillRadius = ts((via.drill || 0.3) / 2);
+
+        // Via pad (outer circle)
+        const padCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        padCircle.setAttribute('cx', cx);
+        padCircle.setAttribute('cy', cy);
+        padCircle.setAttribute('r', padRadius);
+        padCircle.setAttribute('fill', ROUTING_COLORS.via_pad);
+        padCircle.setAttribute('stroke', '#000');
+        padCircle.setAttribute('stroke-width', '1');
+        if (via.net) {
+            padCircle.setAttribute('data-net', via.net);
+        }
+        viasGroup.appendChild(padCircle);
+
+        // Via drill hole (inner circle)
+        const drillCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        drillCircle.setAttribute('cx', cx);
+        drillCircle.setAttribute('cy', cy);
+        drillCircle.setAttribute('r', drillRadius);
+        drillCircle.setAttribute('fill', ROUTING_COLORS.via_drill);
+        viasGroup.appendChild(drillCircle);
+    }
+}
+
+function updateAStarDebug() {
+    /**
+     * Render A* algorithm debug visualization.
+     * Shows explored nodes, frontier, and current path being evaluated.
+     */
+    const svg = frameContainer.querySelector('svg');
+    if (!svg) return;
+
+    // Find or create A* debug group
+    let astarGroup = svg.querySelector('.astar-debug-group');
+    if (!astarGroup) {
+        astarGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        astarGroup.setAttribute('class', 'astar-debug-group');
+        // Insert at the beginning so it's under everything
+        svg.insertBefore(astarGroup, svg.firstChild);
+    }
+
+    // Clear existing debug elements
+    astarGroup.innerHTML = '';
+
+    const nodeRadius = ts(0.15);
+
+    // Render explored nodes (semi-transparent green dots)
+    if (currentState.astar_explored && currentState.astar_explored.length > 0) {
+        for (const node of currentState.astar_explored) {
+            const [x, y, layer] = node;
+            const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle.setAttribute('cx', tx(x));
+            circle.setAttribute('cy', ty(y));
+            circle.setAttribute('r', nodeRadius);
+            circle.setAttribute('fill', ROUTING_COLORS.astar_explored);
+            circle.setAttribute('opacity', '0.3');
+            astarGroup.appendChild(circle);
+        }
+    }
+
+    // Render frontier nodes (gold dots)
+    if (currentState.astar_frontier && currentState.astar_frontier.length > 0) {
+        for (const node of currentState.astar_frontier) {
+            const [x, y, layer] = node;
+            const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle.setAttribute('cx', tx(x));
+            circle.setAttribute('cy', ty(y));
+            circle.setAttribute('r', nodeRadius * 1.5);
+            circle.setAttribute('fill', ROUTING_COLORS.astar_frontier);
+            circle.setAttribute('stroke', 'orange');
+            circle.setAttribute('stroke-width', '0.5');
+            astarGroup.appendChild(circle);
+        }
+    }
+
+    // Render current path (dashed pink line)
+    if (currentState.astar_path && currentState.astar_path.length >= 2) {
+        const points = currentState.astar_path.map(node => {
+            const [x, y, layer] = node;
+            return `${tx(x)},${ty(y)}`;
+        }).join(' ');
+
+        const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+        polyline.setAttribute('points', points);
+        polyline.setAttribute('fill', 'none');
+        polyline.setAttribute('stroke', ROUTING_COLORS.astar_path);
+        polyline.setAttribute('stroke-width', '2');
+        polyline.setAttribute('stroke-dasharray', '5,3');
+        astarGroup.appendChild(polyline);
     }
 }
 
@@ -913,7 +1446,7 @@ function updatePads() {
         const sinR = Math.sin(radians);
 
         props.pads.forEach((pad, index) => {
-            const [pxRel, pyRel, pw, ph, net] = pad;
+            const [pxRel, pyRel, pw, ph, padRotation, net] = pad;
 
             // Apply rotation and translation (in board coordinates)
             const px = x + (pxRel * cosR - pyRel * sinR);
@@ -968,7 +1501,8 @@ function updateLabels() {
         const cy = ty(y);
         const hw = ts(props.width / 2);
         const hh = ts(props.height / 2);
-        const fontSize = Math.max(7, Math.min(11, ts(Math.min(props.width, props.height) * 0.35)));
+        const baseFontSize = Math.max(7, Math.min(11, ts(Math.min(props.width, props.height) * 0.35)));
+        const fontSize = baseFontSize * visualSettings.labelScale;
         const labelPadding = 3;
         const labelWidth = ref.length * fontSize * 0.6;
         const labelHeight = fontSize;
@@ -1057,7 +1591,7 @@ function updateRatsnest() {
             const cosR = Math.cos(radians);
             const sinR = Math.sin(radians);
 
-            for (const [padX, padY, padW, padH, netName] of props.pads) {
+            for (const [padX, padY, padW, padH, padRotation, netName] of props.pads) {
                 if (!netName || !netName.trim()) continue;
                 const px = padX * cosR - padY * sinR + x;
                 const py = padX * sinR + padY * cosR + y;
@@ -1081,8 +1615,9 @@ function updateRatsnest() {
             line.setAttribute('x2', tx(p2.x));
             line.setAttribute('y2', ty(p2.y));
             line.setAttribute('stroke', style.color);
-            line.setAttribute('stroke-width', style.width);
-            line.setAttribute('opacity', style.opacity);
+            // Use visual settings for width and opacity
+            line.setAttribute('stroke-width', visualSettings.ratsnestWidth);
+            line.setAttribute('opacity', visualSettings.ratsnestOpacity);
             line.classList.add('ratsnest');
             ratsnestLayer.appendChild(line);
         }
@@ -1120,7 +1655,8 @@ function updateForces() {
         alignment: '#9b59b6'
     };
 
-    const maxArrowLength = 25;
+    const maxArrowLength = visualSettings.forceMaxLength;
+    const forceScaleFactor = visualSettings.forceScale;
     for (const [ref, forceList] of Object.entries(currentState.forces || {})) {
         const comp = currentState.components[ref];
         if (!comp) continue;
@@ -1134,7 +1670,7 @@ function updateForces() {
             const rawLength = Math.sqrt(fx * fx + fy * fy);
             if (rawLength < 0.1) continue;
 
-            const arrowLength = Math.min(5 + Math.log1p(rawLength) * 5, maxArrowLength);
+            const arrowLength = Math.min((5 + Math.log1p(rawLength) * 5) * forceScaleFactor, maxArrowLength);
             const nx = fx / rawLength;
             const ny = fy / rawLength;
             const endX = cx + nx * arrowLength;
@@ -1218,6 +1754,8 @@ function drawTrails() {
         const isSelected = (ref === selectedComponent);
         const trailColor = isSelected ? '#00d4ff' : '#ff6b6b';
         const trailOpacityMult = isSelected ? 1.2 : 1.0;
+        const baseTrailOpacity = visualSettings.trailOpacity;
+        const dotSizeMultiplier = visualSettings.trailDotSize;
 
         // Draw connecting lines
         if (history.length > 1) {
@@ -1229,7 +1767,7 @@ function drawTrails() {
             path.setAttribute('d', pathD);
             path.setAttribute('stroke', trailColor);
             path.setAttribute('stroke-width', isSelected ? '2' : '1');
-            path.setAttribute('stroke-opacity', isSelected ? '0.7' : '0.4');
+            path.setAttribute('stroke-opacity', isSelected ? baseTrailOpacity * 1.2 : baseTrailOpacity * 0.7);
             path.setAttribute('fill', 'none');
             trailGroup.appendChild(path);
         }
@@ -1238,9 +1776,9 @@ function drawTrails() {
         for (let i = 0; i < history.length; i++) {
             const pos = history[i];
             const age = (currentFrame - pos.frame) / Math.max(currentFrame, 1);
-            const baseOpacity = 0.2 + (1 - age) * 0.6;
+            const baseOpacity = 0.2 + (1 - age) * baseTrailOpacity;
             const opacity = Math.min(1, baseOpacity * trailOpacityMult);
-            const radius = isSelected ? 2 + (1 - age) * 2 : 1.5 + (1 - age) * 1.5;
+            const radius = (isSelected ? 2 + (1 - age) * 2 : 1.5 + (1 - age) * 1.5) * dotSizeMultiplier;
 
             const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
             dot.setAttribute('cx', tx(pos.x));
@@ -1457,9 +1995,83 @@ function stopSeeking() {
 // ============================================================================
 // Initialization
 // ============================================================================
+function initializeSettingsControls() {
+    // Initialize grid controls
+    const gridSpacing = document.getElementById('grid-spacing');
+    if (gridSpacing) gridSpacing.value = visualSettings.gridSpacing;
+
+    const gridStyle = document.getElementById('grid-style');
+    if (gridStyle) gridStyle.value = visualSettings.gridStyle;
+
+    const gridOpacity = document.getElementById('grid-opacity');
+    const gridOpacityValue = document.getElementById('grid-opacity-value');
+    if (gridOpacity) {
+        gridOpacity.value = visualSettings.gridOpacity * 100;
+        if (gridOpacityValue) gridOpacityValue.textContent = Math.round(visualSettings.gridOpacity * 100) + '%';
+    }
+
+    // Initialize ratsnest controls
+    const ratsnestOpacity = document.getElementById('ratsnest-opacity');
+    const ratsnestOpacityValue = document.getElementById('ratsnest-opacity-value');
+    if (ratsnestOpacity) {
+        ratsnestOpacity.value = visualSettings.ratsnestOpacity * 100;
+        if (ratsnestOpacityValue) ratsnestOpacityValue.textContent = Math.round(visualSettings.ratsnestOpacity * 100) + '%';
+    }
+
+    const ratsnestWidth = document.getElementById('ratsnest-width');
+    const ratsnestWidthValue = document.getElementById('ratsnest-width-value');
+    if (ratsnestWidth) {
+        ratsnestWidth.value = visualSettings.ratsnestWidth * 10;
+        if (ratsnestWidthValue) ratsnestWidthValue.textContent = visualSettings.ratsnestWidth.toFixed(1);
+    }
+
+    // Initialize trail controls
+    const trailOpacity = document.getElementById('trail-opacity');
+    const trailOpacityValue = document.getElementById('trail-opacity-value');
+    if (trailOpacity) {
+        trailOpacity.value = visualSettings.trailOpacity * 100;
+        if (trailOpacityValue) trailOpacityValue.textContent = Math.round(visualSettings.trailOpacity * 100) + '%';
+    }
+
+    const trailDotSize = document.getElementById('trail-dot-size');
+    const trailDotSizeValue = document.getElementById('trail-dot-size-value');
+    if (trailDotSize) {
+        trailDotSize.value = visualSettings.trailDotSize * 10;
+        if (trailDotSizeValue) trailDotSizeValue.textContent = visualSettings.trailDotSize.toFixed(1);
+    }
+
+    // Initialize force controls
+    const forceScale = document.getElementById('force-scale');
+    const forceScaleValue = document.getElementById('force-scale-value');
+    if (forceScale) {
+        forceScale.value = visualSettings.forceScale * 100;
+        if (forceScaleValue) forceScaleValue.textContent = visualSettings.forceScale.toFixed(1) + 'x';
+    }
+
+    const forceMaxLength = document.getElementById('force-max-length');
+    if (forceMaxLength) forceMaxLength.value = visualSettings.forceMaxLength;
+
+    // Initialize label controls
+    const labelSize = document.getElementById('label-size');
+    if (labelSize) labelSize.value = visualSettings.labelScale;
+
+    // Initialize animation controls
+    const playbackMode = document.getElementById('playback-mode');
+    if (playbackMode) playbackMode.value = visualSettings.playbackMode;
+
+    const frameSkip = document.getElementById('frame-skip');
+    if (frameSkip) frameSkip.value = visualSettings.frameSkip;
+
+    const autoPauseOverlaps = document.getElementById('auto-pause-overlaps');
+    if (autoPauseOverlaps) autoPauseOverlaps.checked = visualSettings.autoPauseOnOverlaps;
+}
+
 function initialize() {
     // Initialize module visibility
     initializeModuleVisibility();
+
+    // Initialize settings controls
+    initializeSettingsControls();
 
     // Draw energy graph
     if (typeof drawEnergyGraph === 'function' && typeof deltaFrames !== 'undefined') {

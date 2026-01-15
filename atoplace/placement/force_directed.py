@@ -665,7 +665,8 @@ class ForceDirectedRefiner:
 
         hierarchy: Dict[str, Set[str]] = {}
         depths: Dict[str, int] = {}
-        for module_name, refs in groups.items():
+        # Use sorted() for deterministic iteration order (Issue #22)
+        for module_name, refs in sorted(groups.items()):
             parts = module_name.split(".")
             for depth in range(1, len(parts) + 1):
                 parent = ".".join(parts[:depth])
@@ -706,7 +707,8 @@ class ForceDirectedRefiner:
             if isinstance(constraint, GroupingConstraint):
                 existing_groups.append(set(constraint.components))
 
-        for module_name, refs in self._module_groups.items():
+        # Use sorted() for deterministic iteration order (Issue #22)
+        for module_name, refs in sorted(self._module_groups.items()):
             if len(refs) < 2:
                 continue
             ref_set = set(refs)
@@ -735,9 +737,10 @@ class ForceDirectedRefiner:
         if not self._module_hierarchy:
             return
 
-        for module_name, refs in self._module_hierarchy.items():
+        # Use sorted() for deterministic iteration order (Issue #22)
+        for module_name, refs in sorted(self._module_hierarchy.items()):
             active_refs = []
-            for ref in refs:
+            for ref in sorted(refs):
                 comp = self.board.components.get(ref)
                 if not comp or comp.dnp:
                     continue
@@ -1089,14 +1092,11 @@ class ForceDirectedRefiner:
                 dy = y1 - y2
                 distance = max(math.sqrt(dx*dx + dy*dy), 0.01)
 
-                # Skip if beyond cutoff (avoids long-range force accumulation)
-                if distance > cutoff_distance:
-                    continue
-
                 pair_min_clearance, pair_preferred = self._get_pair_clearance(ref1, ref2)
 
                 # AABB overlap detection - check if bounding boxes overlap
                 # along each axis independently
+                # NOTE: Check overlap BEFORE cutoff to handle large components (Issue #19)
                 overlap_x = (half_w1 + half_w2 + pair_min_clearance) - abs(dx)
                 overlap_y = (half_h1 + half_h2 + pair_min_clearance) - abs(dy)
 
@@ -1128,6 +1128,10 @@ class ForceDirectedRefiner:
 
                 elif abs(dx) < preferred_sep_x and abs(dy) < preferred_sep_y:
                     # Between min and preferred clearance - medium repulsion
+                    # Apply cutoff only to spacing forces, not overlap forces (Issue #19)
+                    if distance > cutoff_distance:
+                        continue
+
                     # Use max shortfall to ensure proper spacing on the tighter axis
                     shortfall_x = preferred_sep_x - abs(dx)
                     shortfall_y = preferred_sep_y - abs(dy)
@@ -1366,16 +1370,18 @@ class ForceDirectedRefiner:
 
             module_groups: Dict[str, Tuple[Set[str], Set[str]]] = {}
             if self.modules:
-                for ref in refs_a:
+                # Use sorted() for deterministic iteration (Issue #22)
+                for ref in sorted(refs_a):
                     key = self._module_key(ref) or "__unassigned__"
                     module_groups.setdefault(key, (set(), set()))[0].add(ref)
-                for ref in refs_b:
+                for ref in sorted(refs_b):
                     key = self._module_key(ref) or "__unassigned__"
                     module_groups.setdefault(key, (set(), set()))[1].add(ref)
             else:
                 module_groups["__all__"] = (set(refs_a), set(refs_b))
 
-            for module_key, (group_a, group_b) in module_groups.items():
+            # Use sorted() for deterministic iteration (Issue #22)
+            for module_key, (group_a, group_b) in sorted(module_groups.items()):
                 if not group_a or not group_b:
                     continue
 
@@ -1389,7 +1395,8 @@ class ForceDirectedRefiner:
                 if len(refs) < 2:
                     continue
 
-                for ref in refs:
+                # Use sorted() for deterministic force accumulation (Issue #22)
+                for ref in sorted(refs):
                     x, y = state.positions[ref]
                     dx = midpoint[0] - x
                     dy = midpoint[1] - y
@@ -1510,12 +1517,19 @@ class ForceDirectedRefiner:
 
             # For polygon outlines, use contains_point for proper boundary check
             if outline.polygon:
-                # Check each corner of the component's AABB
-                corners = [
+                # Check corners and edge midpoints to catch concave intrusions (Issue #20)
+                # Corners alone can miss when component edges cross concave boundaries
+                check_points = [
+                    # Corners
                     (x - half_w, y - half_h),  # bottom-left
                     (x + half_w, y - half_h),  # bottom-right
                     (x - half_w, y + half_h),  # top-left
                     (x + half_w, y + half_h),  # top-right
+                    # Edge midpoints
+                    (x, y - half_h),           # bottom edge midpoint
+                    (x, y + half_h),           # top edge midpoint
+                    (x - half_w, y),           # left edge midpoint
+                    (x + half_w, y),           # right edge midpoint
                 ]
 
                 # Also check center point
@@ -1528,10 +1542,10 @@ class ForceDirectedRefiner:
                     fx += self.config.boundary_strength * dx / dist * 2
                     fy += self.config.boundary_strength * dy / dist * 2
 
-                # Check corners
-                for cx, cy in corners:
+                # Check corners and edge midpoints
+                for cx, cy in check_points:
                     if not outline.contains_point(cx, cy, margin=clearance):
-                        # This corner is outside - push component inward
+                        # This point is outside - push component inward
                         # Use cached center for direction calculation
                         dx = polygon_center_x - cx
                         dy = polygon_center_y - cy
@@ -1604,20 +1618,29 @@ class ForceDirectedRefiner:
                 center_x = polygon_center_x
                 center_y = polygon_center_y
 
-                # Check all corners with margin
-                corners = [
-                    (x - half_w, y - half_h),
-                    (x + half_w, y - half_h),
-                    (x - half_w, y + half_h),
-                    (x + half_w, y + half_h),
-                ]
+                # Helper to generate check points (corners + edge midpoints for Issue #20)
+                def get_check_points(cx, cy, hw, hh):
+                    return [
+                        # Corners
+                        (cx - hw, cy - hh),
+                        (cx + hw, cy - hh),
+                        (cx - hw, cy + hh),
+                        (cx + hw, cy + hh),
+                        # Edge midpoints (catch concave intrusions)
+                        (cx, cy - hh),
+                        (cx, cy + hh),
+                        (cx - hw, cy),
+                        (cx + hw, cy),
+                    ]
 
-                # Iteratively move toward center until all corners are inside
+                check_points = get_check_points(x, y, half_w, half_h)
+
+                # Iteratively move toward center until all check points are inside
                 converged = False
                 for _ in range(20):  # Max iterations
                     all_inside = True
-                    for cx, cy in corners:
-                        if not outline.contains_point(cx, cy, margin=clearance):
+                    for px, py in check_points:
+                        if not outline.contains_point(px, py, margin=clearance):
                             all_inside = False
                             break
 
@@ -1631,13 +1654,8 @@ class ForceDirectedRefiner:
                     x += dx * 0.1
                     y += dy * 0.1
 
-                    # Update corners
-                    corners = [
-                        (x - half_w, y - half_h),
-                        (x + half_w, y - half_h),
-                        (x - half_w, y + half_h),
-                        (x + half_w, y + half_h),
-                    ]
+                    # Update check points
+                    check_points = get_check_points(x, y, half_w, half_h)
 
                 # Fallback: if iterations exhausted and still outside, place at center
                 if not converged:
@@ -1672,26 +1690,58 @@ class ForceDirectedRefiner:
 
     def _add_constraint_forces(self, state: PlacementState,
                                forces: Dict[str, List[Force]]):
-        """Add forces for user-defined constraints."""
-        for constraint in self.constraints:
-            # Support both interfaces:
-            # - calculate_forces(state, board, strength) - force_directed.py constraints
-            # - calculate_force(board, ref, strength) - constraints.py constraints
-            if hasattr(constraint, 'calculate_forces'):
-                constraint_forces = constraint.calculate_forces(
-                    state, self.board, self.config.constraint_strength)
-                for ref, (fx, fy) in constraint_forces.items():
-                    if ref in forces:
-                        forces[ref].append(Force(fx, fy, ForceType.CONSTRAINT,
-                                                 getattr(constraint, 'description', '')))
-            elif hasattr(constraint, 'calculate_force'):
-                # Iterate over all components for constraints.py style
-                for ref in state.positions:
-                    fx, fy = constraint.calculate_force(
-                        self.board, ref, self.config.constraint_strength)
-                    if fx != 0 or fy != 0:
-                        forces[ref].append(Force(fx, fy, ForceType.CONSTRAINT,
-                                                 getattr(constraint, 'description', '')))
+        """Add forces for user-defined constraints.
+
+        IMPORTANT: For constraints using the board-only interface (calculate_force),
+        we sync state positions to board components first. This ensures constraints
+        see current positions, not stale initial positions. See Issue #18.
+        """
+        # Check if any constraints use the board-only interface
+        has_board_only_constraints = any(
+            hasattr(c, 'calculate_force') and not hasattr(c, 'calculate_forces')
+            for c in self.constraints
+        )
+
+        # Sync state positions to board for board-only constraints
+        # Store original positions to restore after (avoids side effects)
+        original_positions: Dict[str, Tuple[float, float]] = {}
+        if has_board_only_constraints:
+            for ref, (x, y) in state.positions.items():
+                comp = self.board.components.get(ref)
+                if comp:
+                    original_positions[ref] = (comp.x, comp.y)
+                    comp.x = x
+                    comp.y = y
+
+        try:
+            for constraint in self.constraints:
+                # Support both interfaces:
+                # - calculate_forces(state, board, strength) - state-aware interface
+                # - calculate_force(board, ref, strength) - board-only interface
+                if hasattr(constraint, 'calculate_forces'):
+                    constraint_forces = constraint.calculate_forces(
+                        state, self.board, self.config.constraint_strength)
+                    for ref, (fx, fy) in constraint_forces.items():
+                        if ref in forces:
+                            forces[ref].append(Force(fx, fy, ForceType.CONSTRAINT,
+                                                     getattr(constraint, 'description', '')))
+                elif hasattr(constraint, 'calculate_force'):
+                    # Iterate over all components for constraints.py style
+                    # Board positions are now synced from state
+                    for ref in state.positions:
+                        fx, fy = constraint.calculate_force(
+                            self.board, ref, self.config.constraint_strength)
+                        if fx != 0 or fy != 0:
+                            forces[ref].append(Force(fx, fy, ForceType.CONSTRAINT,
+                                                     getattr(constraint, 'description', '')))
+        finally:
+            # Restore original board positions to avoid side effects
+            # The board is updated once at the end via _apply_to_board()
+            for ref, (orig_x, orig_y) in original_positions.items():
+                comp = self.board.components.get(ref)
+                if comp:
+                    comp.x = orig_x
+                    comp.y = orig_y
 
     def _add_alignment_forces(self, state: PlacementState,
                               forces: Dict[str, List[Force]]):

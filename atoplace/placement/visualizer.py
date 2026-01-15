@@ -12,6 +12,7 @@ Generates interactive HTML reports showing:
 import math
 import json
 import re
+import warnings
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Set
 from pathlib import Path
@@ -952,6 +953,11 @@ class PlacementVisualizer:
     ) -> Path:
         """Export interactive HTML report with all frames.
 
+        .. deprecated::
+            Use :meth:`export_svg_delta_html` instead. This method generates
+            full SVG per frame which results in larger files and slower performance.
+            The SVG delta approach provides 90% smaller files and 5x faster playback.
+
         Args:
             filename: Output filename
             output_dir: Output directory
@@ -959,6 +965,12 @@ class PlacementVisualizer:
         Returns:
             Path to generated HTML file
         """
+        warnings.warn(
+            "export_html_report() is deprecated. Use export_svg_delta_html() instead "
+            "for 90% smaller files and better performance.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
@@ -2313,6 +2325,11 @@ class PlacementVisualizer:
     ) -> Path:
         """Export Canvas-based HTML with delta compression (high performance).
 
+        .. deprecated::
+            Use :meth:`export_svg_delta_html` instead. The SVG delta approach
+            provides equivalent performance with better vector quality at any
+            zoom level and semantic DOM elements for accessibility.
+
         Uses HTML5 Canvas for rendering instead of SVG, with delta-compressed
         frame data. Significantly reduces file size and improves performance.
 
@@ -2337,6 +2354,12 @@ class PlacementVisualizer:
         Returns:
             Path to generated HTML file
         """
+        warnings.warn(
+            "export_canvas_html() is deprecated. Use export_svg_delta_html() instead "
+            "for vector quality at any zoom level.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         from .viewer_template import generate_viewer_html_template
         from .viewer_javascript import generate_viewer_javascript, generate_canvas_render_javascript
 
