@@ -7,12 +7,12 @@ Marketing and product vision live in `README.md`.
 
 ---
 
-## Project Status (2026-01-14)
+## Project Status (2026-01-15)
 
 - **Placement Engine:** Core force-directed solver is implemented with **Star Model** and **Adaptive Damping**.
 - **Legalization:** Professional **Manhattan Legalizer** implemented with grid snapping, PCA-based row/column alignment, and priority-based overlap resolution.
 - **Routing:** Internal **A* Geometric Router** implemented with Greedy Multiplier, Spatial Hash Indexing, obstacle map builder, and net ordering.
-- **CLI Routing:** `atoplace route` command is functional with optional SVG/HTML visualization.
+- **CLI Routing:** `atoplace route` command is functional with optional visualization.
 - **Atopile Integration:** Project detection, `ato.yaml` parsing (fallback parser), and `ato-lock.yaml` module-to-ref mapping are functional.
 - **Validation & MCP:** Pre-route and confidence scoring pipelines are functional; MCP exposes context tools/resources and DRC runner.
 
@@ -21,7 +21,8 @@ Marketing and product vision live in `README.md`.
 ## Known Gaps (track details in `ISSUES.md`)
 
 - ~~**Atopile Persistence:** `atoplace.lock` sidecar logic is planned but not yet implemented.~~ **IMPLEMENTED** - Full sidecar persistence with `atoplace.lock` files.
-- **Routing Advanced:** Differential pair detection and specialized BGA fanout are not yet implemented.
+- **BGA Fanout:** Specialized BGA fanout is not yet implemented (Plan created).
+- **Routing Advanced:** Differential pair detection is not yet implemented.
 - **Routing Fallback:** Freerouting runner is not yet implemented for failed nets.
 - **MCP Routing:** No `route_board` MCP tool yet (CLI-only routing).
 
@@ -110,6 +111,12 @@ To handle 50k+ line board files:
 - [ ] `atoplace.routing.diff_pair`: Dual-grid geometric planner for diff pairs.
 - [ ] `atoplace.routing.freerouting`: Java runner for fallback.
 
+**Phase 2D - BGA Fanout (New):**
+- [ ] `atoplace.routing.fanout.patterns`: Dogbone/VIP geometry generators.
+- [ ] `atoplace.routing.fanout.layer_assigner`: Onion-model ring analysis.
+- [ ] `atoplace.routing.fanout.escape_router`: Spoke routing to clear space.
+- [ ] `atoplace.routing.fanout.generator`: Main FanoutGenerator class.
+
 ### Phase 3: Atopile & NLP
 - [x] Atopile project detection
 - [x] `ato.yaml` nested parser (or PyYAML dependency)
@@ -164,7 +171,11 @@ atoplace/
 │   ├── obstacle_map.py     # World builder
 │   ├── astar_router.py     # Core logic
 │   ├── net_orderer.py      # Difficulty sorting
-│   └── ...
+│   └── fanout/             # BGA Fanout module
+│       ├── generator.py    # FanoutGenerator main class
+│       ├── patterns.py     # Dogbone/VIP patterns
+│       ├── layer_assigner.py  # Onion model layer assignment
+│       └── escape_router.py   # Spoke escape routing
 ├── board/
 │   ├── lock_file.py        # atoplace.lock handler
 │   └── ...

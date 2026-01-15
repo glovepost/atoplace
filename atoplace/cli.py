@@ -13,6 +13,7 @@ import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -443,9 +444,18 @@ def _app_callback(
     ctx.obj = CLIContext(console=console, verbose=verbose, log_path=log_path)
 
 
+def _get_version() -> str:
+    """Get package version from metadata."""
+    try:
+        from importlib.metadata import version
+        return version("atoplace")
+    except Exception:
+        return "0.1.0"  # Fallback for development
+
+
 def _version_callback(value: Optional[bool]) -> None:
     if value:
-        typer.echo("atoplace 0.1.0")
+        typer.echo(f"atoplace {_get_version()}")
         raise typer.Exit()
 
 
@@ -475,9 +485,9 @@ def place(
         help="Skip legalization pass (grid snap, alignment).",
     ),
     use_ato_modules: bool = typer.Option(
-        False,
-        "--use-ato-modules",
-        help="Use atopile module grouping constraints.",
+        True,
+        "--use-ato-modules/--no-use-ato-modules",
+        help="Use atopile module grouping and placement hints.",
     ),
     build: Optional[str] = typer.Option(
         None,
@@ -621,33 +631,6 @@ def place(
         console.print(Panel(summary, border_style="blue"))
         _render_constraint_summary(console, constraints_list)
 
-    if use_ato_modules and is_atopile:
-        from .placement.constraints import GroupingConstraint
-
-        console.print(Rule("Atopile Module Grouping", style="cyan"))
-        modules_to_components: Dict[str, List[str]] = {}
-        for ref, comp in board_obj.components.items():
-            ato_module = comp.properties.get("ato_module")
-            if ato_module:
-                modules_to_components.setdefault(ato_module, []).append(ref)
-
-        table = Table(box=box.SIMPLE, header_style="bold")
-        table.add_column("Module")
-        table.add_column("Components", justify="right")
-        for module_name, comp_refs in modules_to_components.items():
-            if len(comp_refs) >= 2:
-                constraint = GroupingConstraint(
-                    components=comp_refs,
-                    max_spread=15.0,
-                    optimize_bbox=True,  # Enable tight module bounding box
-                    bbox_strength=1.0,
-                    min_clearance=0.25,  # Default clearance, updated after DFM profile
-                    description=f"Group atopile module: {module_name}",
-                )
-                constraints_list.append(constraint)
-                table.add_row(module_name, str(len(comp_refs)))
-        console.print(table)
-
     console.print(Rule("DFM Profile", style="cyan"))
     if dfm:
         try:
@@ -672,6 +655,186 @@ def place(
     dfm_table.add_row("Profile", dfm_profile.name)
     dfm_table.add_row("Min spacing", f"{dfm_profile.min_spacing:.3f} mm")
     console.print(Panel(dfm_table, border_style="cyan"))
+
+    # Build module-derived constraints (atopile groupings + heuristic hints)
+    def _estimate_module_spread(component_refs: List[str]) -> float:
+        """Estimate a reasonable grouping radius based on component areas and clearance."""
+        total_area = 0.0
+        for ref in component_refs:
+            comp = board_obj.components.get(ref)
+            if not comp:
+                continue
+            bbox = comp.get_bounding_box_with_pads()
+            width = max(0.1, bbox[2] - bbox[0])
+            height = max(0.1, bbox[3] - bbox[1])
+            total_area += width * height + (dfm_profile.min_spacing * 4)
+        if total_area <= 0:
+            return 15.0
+        radius = math.sqrt(total_area / math.pi)
+        return max(10.0, radius * 1.6)
+
+    def _nearest_edge(comp_ref: str) -> str:
+        """Pick the nearest board edge for a component."""
+        outline = board_obj.outline
+        comp = board_obj.components.get(comp_ref)
+        if not comp or not outline.has_outline:
+            return "left"
+        distances = {
+            "left": abs((comp.x - outline.origin_x)),
+            "right": abs((outline.origin_x + outline.width) - comp.x),
+            "top": abs((comp.y - outline.origin_y)),
+            "bottom": abs((outline.origin_y + outline.height) - comp.y),
+        }
+        return min(distances, key=distances.get)
+
+    def _collect_atopile_groupings() -> List[object]:
+        """Create grouping + separation constraints from atopile module metadata."""
+        from .placement.constraints import GroupingConstraint, SeparationConstraint
+
+        constraints: List[object] = []
+        modules_to_components: Dict[str, List[str]] = {}
+        for ref, comp in board_obj.components.items():
+            ato_module = comp.properties.get("ato_module")
+            if ato_module:
+                modules_to_components.setdefault(ato_module, []).append(ref)
+
+        if not modules_to_components:
+            return constraints
+
+        table = Table(box=box.SIMPLE, header_style="bold")
+        table.add_column("Module")
+        table.add_column("Components", justify="right")
+        module_spread: Dict[str, float] = {}
+
+        for module_name, comp_refs in modules_to_components.items():
+            if len(comp_refs) < 2:
+                continue
+            spread = _estimate_module_spread(comp_refs)
+            module_spread[module_name] = spread
+            constraint = GroupingConstraint(
+                components=comp_refs,
+                max_spread=spread,
+                optimize_bbox=True,
+                bbox_strength=1.1,
+                min_clearance=dfm_profile.min_spacing,
+                description=f"Group atopile module: {module_name}",
+            )
+            constraints.append(constraint)
+            table.add_row(module_name, str(len(comp_refs)))
+
+        # Optional separation between top-level modules (bounded to avoid N^2 explosions)
+        module_names = list(module_spread.keys())
+        if 2 <= len(module_names) <= 8:
+            roots: Dict[str, List[str]] = {}
+            for name in module_names:
+                root = name.split(".")[0]
+                roots.setdefault(root, []).append(name)
+
+            processed_pairs = set()
+            for names in roots.values():
+                for i, left in enumerate(names):
+                    for right in names[i + 1:]:
+                        pair_key = tuple(sorted((left, right)))
+                        if pair_key in processed_pairs:
+                            continue
+                        processed_pairs.add(pair_key)
+                        spread_a = module_spread[left]
+                        spread_b = module_spread[right]
+                        refs_a = modules_to_components.get(left, [])
+                        refs_b = modules_to_components.get(right, [])
+                        if not refs_a or not refs_b:
+                            continue
+                        constraints.append(
+                            SeparationConstraint(
+                                group_a=refs_a,
+                                group_b=refs_b,
+                                min_separation=max(spread_a, spread_b) * 0.5,
+                                description=f"Separate modules {left} and {right}",
+                            )
+                        )
+
+        if table.rows:
+            console.print(Rule("Atopile Module Grouping", style="cyan"))
+            console.print(table)
+
+        return constraints
+
+    def _build_hint_constraints() -> List[object]:
+        """Translate ModuleDetector placement hints into constraints."""
+        from .placement.constraints import (
+            EdgeConstraint,
+            ProximityConstraint,
+        )
+        hint_constraints: List[object] = []
+
+        # Identify anchor modules/components for hints
+        mcu_refs = [
+            m.primary_component
+            for m in modules
+            if m.module_type.name.lower() == "microcontroller" and m.primary_component
+        ]
+        connector_refs = [
+            m.primary_component
+            for m in modules
+            if m.module_type.name.lower() == "connector" and m.primary_component
+        ]
+
+        for module in modules:
+            if not module.placement_hints:
+                continue
+            primary_ref = module.primary_component
+            if not primary_ref:
+                continue
+
+            edge_hint = module.placement_hints.get("edge_placement")
+            if edge_hint:
+                edge = _nearest_edge(primary_ref)
+                hint_constraints.append(
+                    EdgeConstraint(
+                        component_ref=primary_ref,
+                        edge=edge,
+                        offset=max(dfm_profile.min_trace_to_edge, dfm_profile.min_spacing * 1.5),
+                        priority="required" if edge_hint == "required" else "preferred",
+                        description=f"Place {primary_ref} near {edge} edge",
+                    )
+                )
+
+            if module.placement_hints.get("close_to_mcu") and mcu_refs:
+                target = mcu_refs[0]
+                hint_constraints.append(
+                    ProximityConstraint(
+                        target_ref=primary_ref,
+                        anchor_ref=target,
+                        ideal_distance=5.0,
+                        max_distance=15.0,
+                        priority="required",
+                        description=f"Keep {primary_ref} close to MCU {target}",
+                    )
+                )
+
+            if module.placement_hints.get("near_input") and connector_refs:
+                target = connector_refs[0]
+                hint_constraints.append(
+                    ProximityConstraint(
+                        target_ref=primary_ref,
+                        anchor_ref=target,
+                        ideal_distance=8.0,
+                        max_distance=20.0,
+                        priority="preferred",
+                        description=f"Keep {primary_ref} near connector {target}",
+                    )
+                )
+
+        return hint_constraints
+
+    module_constraints: List[object] = []
+    if is_atopile and use_ato_modules:
+        module_constraints.extend(_collect_atopile_groupings())
+    module_constraints.extend(_build_hint_constraints())
+
+    if module_constraints:
+        constraints_list.extend(module_constraints)
+        _render_constraint_summary(console, module_constraints)
 
     config = RefinementConfig(
         max_iterations=iterations or 500,
@@ -937,9 +1100,12 @@ def validate(
 
 
 @app.command()
-def route(
+def fanout(
     ctx: typer.Context,
     board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
+    component: Optional[str] = typer.Option(
+        None, "-c", "--component", help="Specific component to fanout (e.g., U1). If not specified, auto-detects BGAs."
+    ),
     output: Optional[Path] = typer.Option(
         None, "-o", "--output", help="Output file (default: overwrites input)."
     ),
@@ -949,44 +1115,36 @@ def route(
     build: Optional[str] = typer.Option(
         None, "--build", help="Atopile build name (default: default)."
     ),
-    greedy: float = typer.Option(
-        2.0, "--greedy", "-g",
-        help="A* greedy multiplier (1=optimal, 2-3=fast). Default: 2.0"
+    strategy: str = typer.Option(
+        "auto", "--strategy", "-s",
+        help="Fanout strategy: 'auto' (detect from pitch), 'dogbone', or 'vip'."
     ),
-    grid: float = typer.Option(
-        0.1, "--grid", help="Routing grid size in mm. Default: 0.1"
-    ),
-    visualize: bool = typer.Option(
-        False, "--visualize", "-v", help="Generate routing visualization."
+    no_escape: bool = typer.Option(
+        False, "--no-escape", help="Skip escape routing (only generate vias and pad-to-via traces)."
     ),
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Don't save routed traces to file."
+        False, "--dry-run", help="Don't save fanout to file."
     ),
 ):
-    """Route all nets on a board using A* pathfinding.
+    """Generate BGA/FPGA fanout patterns.
 
-    Uses weighted A* (greedy multiplier) for fast routing with acceptable
-    path quality. Supports multi-layer routing with vias.
-
-    Traces are saved to the output file (or input file if no output specified).
+    Automatically generates escape routing for high-density BGA packages:
+    - Detects BGA components on the board
+    - Creates dogbone or via-in-pad patterns based on pitch
+    - Assigns escape layers using the onion model
+    - Routes escape traces to clear routing space
 
     Example:
-        atoplace route board.kicad_pcb --greedy 2.5 --visualize
-        atoplace route board.kicad_pcb -o routed_board.kicad_pcb
+        atoplace fanout board.kicad_pcb --component U1
+        atoplace fanout board.kicad_pcb --strategy dogbone
     """
-    from .routing import (
-        AStarRouter,
-        RouterConfig,
-        ObstacleMapBuilder,
-        NetOrderer,
-        create_visualizer_from_board,
-    )
+    from .routing.fanout import FanoutGenerator, FanoutStrategy
     from .dfm.profiles import get_profile, get_profile_for_layers
 
     context: CLIContext = ctx.obj
     console = context.console
 
-    console.print(Rule("Routing"))
+    console.print(Rule("BGA Fanout"))
 
     # Load board
     board_obj, pcb_path, _, _ = load_board_from_path(str(board), build, console)
@@ -1007,179 +1165,325 @@ def route(
 
     console.print(f"DFM Profile: [cyan]{dfm_profile.name}[/]")
 
-    # Build obstacle map
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-        transient=True,
-    ) as progress:
-        progress.add_task("Building obstacle map...", total=None)
-        builder = ObstacleMapBuilder(board_obj, dfm_profile)
-        obstacle_index = builder.build()
-        nets = builder.get_net_pads()
+    # Parse strategy
+    strategy_map = {
+        "auto": FanoutStrategy.AUTO,
+        "dogbone": FanoutStrategy.DOGBONE,
+        "vip": FanoutStrategy.VIP,
+    }
+    if strategy.lower() not in strategy_map:
+        console.print(f"[red]Invalid strategy:[/] {strategy}")
+        console.print(f"Available: {', '.join(strategy_map.keys())}")
+        raise typer.Exit(code=1)
+    fanout_strategy = strategy_map[strategy.lower()]
 
-    stats = builder.get_routing_stats()
-    console.print(f"Nets to route: [cyan]{len(nets)}[/] ({stats['total_pads']} pads)")
-    console.print(f"Routing difficulty: [cyan]{stats['estimated_difficulty']}[/]")
+    # Create generator
+    generator = FanoutGenerator(board_obj, dfm_profile)
 
-    # Create visualizer if requested
-    viz = None
-    if visualize:
-        viz = create_visualizer_from_board(board_obj)
-        console.print("Visualization: [cyan]enabled[/]")
+    # Detect or use specified component
+    if component:
+        if component not in board_obj.components:
+            console.print(f"[red]Component not found:[/] {component}")
+            raise typer.Exit(code=1)
+        components_to_fanout = [component]
+    else:
+        components_to_fanout = generator.detect_bgas()
+        if not components_to_fanout:
+            console.print("[yellow]No BGA components detected[/]")
+            raise typer.Exit(code=0)
 
-    # Configure router with board's layer count and default DFM values
-    config = RouterConfig(
-        greedy_weight=greedy,
-        grid_size=grid,
-        trace_width=dfm_profile.min_trace_width,
-        clearance=dfm_profile.min_spacing,
-        layer_count=board_obj.layer_count,
-    )
+    console.print(f"Components to fanout: [cyan]{', '.join(components_to_fanout)}[/]")
 
-    # Build lookup for per-net trace width and clearance from board's net definitions
-    # This allows respecting KiCad's net-class settings
-    net_trace_widths = {}
-    net_clearances = {}
-    for net_name, net_obj in board_obj.nets.items():
-        if net_obj.trace_width is not None:
-            net_trace_widths[net_name] = net_obj.trace_width
-        if net_obj.clearance is not None:
-            net_clearances[net_name] = net_obj.clearance
-
-    if net_trace_widths or net_clearances:
-        console.print(f"Per-net rules: [cyan]{len(net_trace_widths)} widths, {len(net_clearances)} clearances[/]")
-
-    # Create router
-    router = AStarRouter(obstacle_index, config, viz)
-
-    # Order nets by difficulty
-    orderer = NetOrderer(obstacle_index)
-    ordered_nets = orderer.order_nets(nets)
-
-    # Route each net
-    results = {}
-    success_count = 0
-    total_length = 0.0
+    # Generate fanout
+    all_results = {}
     total_vias = 0
-    net_id_to_name = {}  # For saving traces later
+    total_traces = 0
+    total_warnings = []
 
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TimeRemainingColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Routing nets...", total=len(ordered_nets))
+        task = progress.add_task("Generating fanout...", total=len(components_to_fanout))
 
-        for net in ordered_nets:
-            # Use per-net trace width and clearance if available, else DFM defaults
-            trace_width = net_trace_widths.get(net.net_name, config.trace_width)
-            net_clearance = net_clearances.get(net.net_name, config.clearance)
-
-            # Track net_id to name mapping for saving traces
-            net_id_to_name[net.net_id] = net.net_name
-
-            result = router.route_net(
-                pads=net.pads,
-                net_name=net.net_name,
-                net_id=net.net_id,
-                trace_width=trace_width,
-                clearance=net_clearance
+        for ref in components_to_fanout:
+            result = generator.fanout_component(
+                ref,
+                strategy=fanout_strategy,
+                include_escape=not no_escape,
             )
-            results[net.net_name] = result
+            all_results[ref] = result
 
             if result.success:
-                success_count += 1
-                total_length += result.total_length
-                total_vias += result.via_count
-
-                # Add routed traces as obstacles for subsequent nets
-                for seg in result.segments:
-                    seg.net_id = net.net_id
-                    router.add_routed_trace(seg)
-                for via in result.vias:
-                    via.net_id = net.net_id
-                    router.add_routed_via(via)
+                total_vias += len(result.vias)
+                total_traces += len(result.traces)
+                total_warnings.extend(result.warnings)
 
             progress.update(task, advance=1)
 
     # Display results
     console.print()
-    table = Table(title="Routing Results", box=box.ROUNDED)
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", justify="right")
+    table = Table(title="Fanout Results", box=box.ROUNDED)
+    table.add_column("Component", style="cyan")
+    table.add_column("Strategy")
+    table.add_column("Pitch", justify="right")
+    table.add_column("Rings", justify="right")
+    table.add_column("Vias", justify="right")
+    table.add_column("Traces", justify="right")
+    table.add_column("Status")
 
-    table.add_row("Nets routed", f"{success_count}/{len(nets)}")
-    table.add_row("Success rate", f"{100*success_count/max(len(nets),1):.1f}%")
-    table.add_row("Total trace length", f"{total_length:.1f}mm")
-    table.add_row("Total vias", str(total_vias))
+    for ref, result in all_results.items():
+        if result.success:
+            status = "[green]OK[/]"
+        else:
+            status = f"[red]FAIL[/] ({result.failure_reason})"
+
+        table.add_row(
+            ref,
+            result.strategy_used.value if result.success else "-",
+            f"{result.pitch_detected:.2f}mm" if result.success else "-",
+            str(result.ring_count) if result.success else "-",
+            str(len(result.vias)) if result.success else "-",
+            str(len(result.traces)) if result.success else "-",
+            status,
+        )
 
     console.print(table)
 
-    # Show failed nets
-    failed = [name for name, r in results.items() if not r.success]
-    if failed:
-        console.print(f"\n[yellow]Failed nets ({len(failed)}):[/]")
-        for name in failed[:10]:  # Show first 10
-            console.print(f"  - {name}: {results[name].failure_reason}")
-        if len(failed) > 10:
-            console.print(f"  ... and {len(failed) - 10} more")
+    # Summary
+    success_count = sum(1 for r in all_results.values() if r.success)
+    console.print(f"\nSuccess: [cyan]{success_count}/{len(all_results)}[/]")
+    console.print(f"Total vias: [cyan]{total_vias}[/]")
+    console.print(f"Total traces: [cyan]{total_traces}[/]")
 
-    # Export visualization
-    if viz:
-        # Capture final state
-        viz.capture_frame(
-            obstacles=[],
-            pads=[],
-            completed_traces=[seg for r in results.values() for seg in r.segments],
-            completed_vias=[v for r in results.values() for v in r.vias],
-            label="Final routing"
-        )
-        report_path = viz.export_html_report("routing_result.html")
-        console.print(Panel(f"Visualization: {report_path}", border_style="green"))
+    # Warnings
+    if total_warnings:
+        console.print(f"\n[yellow]Warnings ({len(total_warnings)}):[/]")
+        for warn in total_warnings[:10]:
+            console.print(f"  - {warn}")
+        if len(total_warnings) > 10:
+            console.print(f"  ... and {len(total_warnings) - 10} more")
 
-    # Save routed traces to KiCad file
+    # Save fanout
     if not dry_run and success_count > 0:
-        from .board.kicad_adapter import save_routed_traces
-        import shutil
+        # Collect all vias and traces
+        all_vias = []
+        all_traces = []
+        for result in all_results.values():
+            if result.success:
+                all_vias.extend(result.vias)
+                all_traces.extend(result.traces)
 
-        # Collect all successful traces and vias
-        all_segments = [seg for r in results.values() if r.success for seg in r.segments]
-        all_vias = [via for r in results.values() if r.success for via in r.vias]
+        # For now, we'll need to extend the KiCad adapter to save fanout
+        # This is a placeholder - actual implementation depends on KiCad API
+        console.print(f"\n[yellow]Note:[/] Fanout visualization generated. "
+                     f"KiCad file saving for fanout vias/traces not yet implemented.")
+        console.print(f"Generated {len(all_vias)} vias and {len(all_traces)} traces for review.")
 
-        # Determine output path
-        output_path = output if output else pcb_path
-        if output_path != pcb_path:
-            # Copy source to output first to preserve all elements
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(pcb_path, output_path)
-
-        try:
-            save_routed_traces(
-                output_path,
-                all_segments,
-                all_vias,
-                net_id_to_name,
-                board_obj.layer_count
-            )
-            console.print(Panel(
-                f"Saved {len(all_segments)} traces, {len(all_vias)} vias to {output_path}",
-                border_style="green"
-            ))
-        except Exception as e:
-            console.print(f"[red]Failed to save traces:[/] {e}")
     elif dry_run:
-        console.print("[yellow]Dry run - traces not saved[/]")
+        console.print("[yellow]Dry run - fanout not saved[/]")
 
     console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
 
-    # Exit code: 0 if >80% routed, 1 otherwise
-    success_rate = success_count / max(len(nets), 1)
-    raise typer.Exit(code=0 if success_rate >= 0.8 else 1)
+    raise typer.Exit(code=0 if success_count > 0 else 1)
+
+
+@app.command()
+def pinswap(
+    ctx: typer.Context,
+    board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
+    component: Optional[str] = typer.Option(
+        None, "-c", "--component", help="Specific component to optimize (e.g., U1). If not specified, optimizes all."
+    ),
+    output: Optional[Path] = typer.Option(
+        None, "-o", "--output", help="Output file for constraint updates."
+    ),
+    format: str = typer.Option(
+        "xdc", "--format", "-f",
+        help="Constraint output format: 'xdc' (Xilinx), 'qsf' (Intel), 'tcl', 'csv', 'json'."
+    ),
+    build: Optional[str] = typer.Option(
+        None, "--build", help="Atopile build name (default: default)."
+    ),
+    min_improvement: float = typer.Option(
+        5.0, "--min-improvement",
+        help="Minimum improvement percentage to apply swaps. Default: 5.0"
+    ),
+    analyze_only: bool = typer.Option(
+        False, "--analyze", "-a",
+        help="Only analyze swap potential, don't apply changes."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Don't save constraint file or modify board."
+    ),
+):
+    """Optimize pin assignments to reduce routing complexity.
+
+    Detects swappable pin groups on FPGAs, MCUs, and connectors, then uses
+    bipartite matching to find optimal pin-to-net assignments that minimize
+    wire crossings and total wire length.
+
+    This is Phase 0 of the routing pipeline - run before actual routing.
+
+    Examples:
+        atoplace pinswap board.kicad_pcb --analyze
+        atoplace pinswap board.kicad_pcb -c U1 --format xdc
+        atoplace pinswap board.kicad_pcb -o constraints.xdc
+    """
+    from .routing.pinswapper import PinSwapper, SwapConfig, ConstraintFormat
+
+    context: CLIContext = ctx.obj
+    console = context.console
+
+    console.print(Rule("Pin Swap Optimization"))
+
+    # Load board
+    board_obj, pcb_path, _, _ = load_board_from_path(str(board), build, console)
+    if board_obj is None:
+        raise typer.Exit(code=1)
+
+    # Parse output format
+    format_map = {
+        "xdc": ConstraintFormat.XDC,
+        "qsf": ConstraintFormat.QSF,
+        "tcl": ConstraintFormat.TCL,
+        "csv": ConstraintFormat.NETLIST,
+        "json": ConstraintFormat.JSON,
+    }
+    if format.lower() not in format_map:
+        console.print(f"[red]Invalid format:[/] {format}")
+        console.print(f"Available: {', '.join(format_map.keys())}")
+        raise typer.Exit(code=1)
+    constraint_format = format_map[format.lower()]
+
+    # Configure swapper
+    config = SwapConfig(
+        min_improvement=min_improvement,
+    )
+    swapper = PinSwapper(board_obj, config)
+
+    # Analyze or optimize
+    if analyze_only or component:
+        console.print(Rule("Analysis", style="cyan"))
+
+        if component:
+            if component not in board_obj.components:
+                console.print(f"[red]Component not found:[/] {component}")
+                raise typer.Exit(code=1)
+            components_to_analyze = [component]
+        else:
+            # Get all components with swap groups
+            groups = swapper._detector.detect_all()
+            components_to_analyze = list(groups.keys())
+
+        if not components_to_analyze:
+            console.print("[yellow]No swappable components found[/]")
+            raise typer.Exit(code=0)
+
+        for ref in components_to_analyze:
+            analysis = swapper.analyze_component(ref)
+
+            if "error" in analysis:
+                console.print(f"[red]{ref}:[/] {analysis['error']}")
+                continue
+
+            table = Table(title=f"{ref} ({analysis['footprint']})", box=box.ROUNDED)
+            table.add_column("Swap Group", style="cyan")
+            table.add_column("Type")
+            table.add_column("Pins", justify="right")
+            table.add_column("Connected", justify="right")
+            table.add_column("Potential", justify="right")
+            table.add_column("Confidence", justify="right")
+
+            for group in analysis.get("groups", []):
+                table.add_row(
+                    group["name"],
+                    group["type"],
+                    str(group["pins"]),
+                    str(group["connected_pins"]),
+                    group["potential_improvement"],
+                    f"{group['confidence']:.0%}",
+                )
+
+            console.print(table)
+            console.print(f"Current crossings: [cyan]{analysis['current_crossings']}[/]")
+            console.print()
+
+        if analyze_only:
+            raise typer.Exit(code=0)
+
+    # Run optimization
+    console.print(Rule("Optimization", style="cyan"))
+
+    if component:
+        results = {component: swapper.optimize_component(component, apply=not dry_run)}
+    else:
+        results = swapper.optimize_all(apply=not dry_run)
+
+    # Display results
+    console.print()
+    table = Table(title="Pin Swap Results", box=box.ROUNDED)
+    table.add_column("Component", style="cyan")
+    table.add_column("Groups", justify="right")
+    table.add_column("Swaps", justify="right")
+    table.add_column("Crossing Δ", justify="right")
+    table.add_column("Wire Δ", justify="right")
+    table.add_column("Status")
+
+    total_swaps = 0
+    for ref, result in results.items():
+        if result.success:
+            total_swaps += result.total_swaps
+            crossing_delta = result.original_crossings - result.final_crossings
+            crossing_pct = f"{result.crossing_improvement:.1f}%" if result.original_crossings > 0 else "N/A"
+            wire_pct = f"{result.wire_improvement:.1f}%" if result.original_wire_length > 0 else "N/A"
+            status = "[green]OK[/]"
+        else:
+            crossing_delta = 0
+            crossing_pct = "N/A"
+            wire_pct = "N/A"
+            status = f"[red]FAIL[/] ({result.failure_reason})"
+
+        table.add_row(
+            ref,
+            str(result.groups_detected),
+            str(result.total_swaps),
+            f"-{crossing_delta} ({crossing_pct})" if crossing_delta > 0 else crossing_pct,
+            wire_pct,
+            status,
+        )
+
+    console.print(table)
+
+    # Get crossing analysis
+    crossing_result = swapper.get_crossing_analysis()
+    console.print(f"\nTotal ratsnest crossings: [cyan]{crossing_result.total_crossings}[/]")
+    console.print(f"Crossing density: [cyan]{crossing_result.crossing_density:.2f}[/] crossings/edge")
+
+    # Summary
+    console.print(f"\n[bold]Total swaps performed:[/bold] {total_swaps}")
+
+    # Export constraints
+    if total_swaps > 0 and not dry_run:
+        if output:
+            swapper.export_constraints(output, constraint_format)
+            console.print(f"[green]Constraints saved to:[/green] {output}")
+        else:
+            console.print(Rule("Constraint Preview", style="cyan"))
+            preview = swapper.get_constraint_preview(constraint_format)
+            console.print(preview[:2000])  # Limit preview size
+            if len(preview) > 2000:
+                console.print(f"... ({len(preview) - 2000} more characters)")
+
+    elif dry_run:
+        console.print("[yellow]Dry run - no changes saved[/]")
+
+    console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
+
+    raise typer.Exit(code=0 if total_swaps > 0 else 1)
 
 
 @app.command()
@@ -1569,6 +1873,279 @@ Modification examples:
                 console.print(Panel(f"Could not parse: {user_input}", border_style="red"))
 
     console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
+
+
+@app.command()
+def route(
+    ctx: typer.Context,
+    board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
+    output: Optional[Path] = typer.Option(
+        None, "-o", "--output", help="Output PCB file path."
+    ),
+    dfm: Optional[str] = typer.Option(
+        None, "--dfm", help="DFM profile name (e.g., jlcpcb_standard)."
+    ),
+    build: Optional[str] = typer.Option(
+        None, "--build", help="Atopile build name (default: default)."
+    ),
+    visualize: bool = typer.Option(
+        False, "--visualize", "-v", help="Generate routing visualization."
+    ),
+    diff_pair: Optional[List[str]] = typer.Option(
+        None, "--diff-pair", "-d",
+        help="Diff pair in format NAME:POS_NET:NEG_NET. Can specify multiple."
+    ),
+    critical_net: Optional[List[str]] = typer.Option(
+        None, "--critical", "-c",
+        help="Net name to route with high priority. Can specify multiple."
+    ),
+    detect_diff_pairs: bool = typer.Option(
+        False, "--detect-diff-pairs", help="Auto-detect differential pairs from net names."
+    ),
+    skip_fanout: bool = typer.Option(
+        False, "--skip-fanout", help="Skip BGA fanout phase."
+    ),
+    greedy: float = typer.Option(
+        2.0, "--greedy", "-g",
+        help="A* greedy multiplier (1=optimal, 2-3=fast). Default: 2.0"
+    ),
+    grid: float = typer.Option(
+        0.1, "--grid", help="Routing grid size in mm. Default: 0.1"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Don't save routed traces to file."
+    ),
+):
+    """Route all nets on a PCB board.
+
+    Uses the multi-phase routing pipeline:
+    1. Fanout & Escape: BGA/QFN escape routing
+    2. Critical Nets: Differential pairs
+    3. General Routing: A* with greedy multiplier
+
+    Routed traces are saved to the output file (or input file if no output specified).
+
+    Examples:
+        atoplace route board.kicad_pcb
+        atoplace route board.kicad_pcb --visualize
+        atoplace route board.kicad_pcb -d USB:USB_D+:USB_D-
+        atoplace route board.kicad_pcb --detect-diff-pairs
+        atoplace route board.kicad_pcb --greedy 2.5 --grid 0.05
+        atoplace route board.kicad_pcb -o routed_board.kicad_pcb --dry-run
+    """
+    from .routing import RoutingManager, RoutingManagerConfig, DiffPairDetector, RouterConfig
+    from .dfm.profiles import get_profile, get_profile_for_layers
+
+    context = _get_context(ctx)
+    console = context.console
+
+    console.print(Rule("Load Board", style="cyan"))
+    board_obj, pcb_path, _, _ = load_board_from_path(str(board), build, console)
+    if board_obj is None or pcb_path is None:
+        raise typer.Exit(code=1)
+
+    # Get DFM profile
+    if dfm:
+        try:
+            dfm_profile = get_profile(dfm)
+        except ValueError as exc:
+            from .dfm.profiles import list_profiles
+            console.print(
+                Panel(
+                    f"[red]Invalid DFM profile[/red]: {exc}\n"
+                    f"Available: {', '.join(list_profiles())}",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(code=1)
+    else:
+        dfm_profile = get_profile_for_layers(board_obj.layer_count)
+
+    # Display board summary
+    _render_board_summary(console, board_obj, None)
+
+    # Configure router with user-specified parameters
+    router_config = RouterConfig(
+        greedy_weight=greedy,
+        grid_size=grid,
+        trace_width=dfm_profile.min_trace_width,
+        clearance=dfm_profile.min_spacing,
+        layer_count=board_obj.layer_count,
+    )
+
+    # Configure routing manager
+    config = RoutingManagerConfig(
+        visualize=visualize,
+        enable_fanout=not skip_fanout,
+        output_dir=str(output.parent) if output else ".",
+        router_config=router_config,
+    )
+    manager = RoutingManager(board_obj, dfm_profile, config)
+
+    console.print(f"[cyan]Greedy multiplier:[/cyan] {greedy}")
+    console.print(f"[cyan]Grid size:[/cyan] {grid}mm")
+
+    # Auto-detect diff pairs if requested
+    if detect_diff_pairs:
+        console.print(Rule("Detect Differential Pairs", style="cyan"))
+        net_names = list(board_obj.nets.keys())
+        detector = DiffPairDetector(net_names)
+        detected_pairs = detector.detect()
+
+        if detected_pairs:
+            table = Table(title=f"Detected {len(detected_pairs)} Diff Pairs", box=box.SIMPLE)
+            table.add_column("Name")
+            table.add_column("Positive")
+            table.add_column("Negative")
+            table.add_column("Pattern")
+
+            for pair in detected_pairs:
+                manager.add_diff_pair(pair.name, pair.positive_net, pair.negative_net)
+                table.add_row(pair.name, pair.positive_net, pair.negative_net, pair.pattern.value)
+
+            console.print(table)
+        else:
+            console.print("[yellow]No differential pairs detected[/yellow]")
+
+    # Add manually specified diff pairs
+    if diff_pair:
+        for dp_str in diff_pair:
+            parts = dp_str.split(":")
+            if len(parts) >= 3:
+                name, pos_net, neg_net = parts[0], parts[1], parts[2]
+                manager.add_diff_pair(name, pos_net, neg_net)
+                console.print(f"[green]Added diff pair:[/green] {name} ({pos_net}/{neg_net})")
+            else:
+                console.print(f"[red]Invalid diff pair format:[/red] {dp_str}")
+
+    # Add critical nets
+    if critical_net:
+        manager.set_critical_nets(list(critical_net))
+        console.print(f"[green]Critical nets:[/green] {', '.join(critical_net)}")
+
+    # Run routing with progress display
+    console.print(Rule("Routing", style="cyan"))
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Routing...", total=100)
+
+        def progress_callback(phase: str, pct: float):
+            progress.update(task, completed=int(pct * 100), description=f"[cyan]{phase}[/cyan]")
+
+        manager.set_progress_callback(progress_callback)
+        result = manager.route_all()
+
+    # Display results
+    console.print(Rule("Routing Results", style="cyan"))
+
+    # Summary table
+    table = Table(box=box.SIMPLE, show_header=False)
+    table.add_column("Metric", style="bold")
+    table.add_column("Value")
+
+    table.add_row("Total Nets", str(result.total_nets))
+    table.add_row("Routed", f"[green]{result.routed_nets}[/green]")
+    table.add_row("Failed", f"[red]{result.failed_nets}[/red]" if result.failed_nets > 0 else "0")
+    table.add_row("Completion", f"{result.completion_rate:.1f}%")
+    table.add_row("Total Length", f"{result.total_length:.1f} mm")
+    table.add_row("Total Vias", str(result.total_vias))
+    table.add_row("Phases", ", ".join(p.value for p in result.phases_completed))
+
+    console.print(Panel(table, title="Summary", border_style="cyan"))
+
+    # Show failed nets if any
+    if result.failed_nets > 0:
+        failed_table = Table(title="Failed Nets", box=box.SIMPLE)
+        failed_table.add_column("Net")
+        failed_table.add_column("Reason")
+
+        count = 0
+        for net_name, net_result in result.net_results.items():
+            if not net_result.success and count < 20:
+                failed_table.add_row(net_name, net_result.failure_reason or "Unknown")
+                count += 1
+
+        if count == 20:
+            failed_table.add_row("...", f"({result.failed_nets - 20} more)")
+
+        console.print(failed_table)
+
+    # Show errors and warnings
+    if result.errors:
+        for error in result.errors:
+            console.print(f"[red]Error:[/red] {error}")
+
+    if result.warnings:
+        for warning in result.warnings:
+            console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+    # Save routed traces to KiCad file
+    if result.routed_nets > 0 and not dry_run:
+        from .board.kicad_adapter import save_routed_traces
+        import shutil
+
+        # Collect all successful traces and vias from routing results
+        all_segments = []
+        all_vias = []
+        net_id_to_name = {}
+
+        for net_name, net_result in result.net_results.items():
+            if net_result.success:
+                all_segments.extend(net_result.segments)
+                all_vias.extend(net_result.vias)
+                # Build net_id to name mapping from segments/vias
+                for seg in net_result.segments:
+                    if seg.net_id is not None:
+                        net_id_to_name[seg.net_id] = net_name
+                for via in net_result.vias:
+                    if via.net_id is not None:
+                        net_id_to_name[via.net_id] = net_name
+
+        # Determine output path
+        output_path = output if output else pcb_path
+        if output_path != pcb_path:
+            # Copy source to output first to preserve all elements
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(pcb_path, output_path)
+
+        try:
+            save_routed_traces(
+                output_path,
+                all_segments,
+                all_vias,
+                net_id_to_name,
+                board_obj.layer_count
+            )
+            console.print(Panel(
+                f"Saved {len(all_segments)} traces, {len(all_vias)} vias to {output_path}",
+                border_style="green"
+            ))
+        except Exception as e:
+            console.print(f"[red]Failed to save traces:[/] {e}")
+            console.print(
+                Panel(
+                    "[yellow]Note:[/yellow] Routing completed but trace saving failed. "
+                    "Use the visualization output to review routing.",
+                    border_style="yellow"
+                )
+            )
+    elif dry_run and result.routed_nets > 0:
+        console.print("[yellow]Dry run - traces not saved to file[/yellow]")
+
+    if visualize:
+        viz_path = Path(config.output_dir) / "routing_result.html"
+        console.print(f"[green]Visualization:[/green] {viz_path}")
+
+    console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
+
+    raise typer.Exit(code=0 if result.success else 1)
 
 
 def main():

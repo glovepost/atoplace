@@ -48,9 +48,13 @@ mcp = [
 kipy = [
     "kicad-python>=0.4.0",  # Official KiCad IPC API (KiCad 9+)
 ]
+streaming = [
+    "websockets>=12.0",
+]
 all = [
     "mcp>=1.0.0",
     "kicad-python>=0.4.0",
+    "websockets>=12.0",
 ]
 
 [project.scripts]

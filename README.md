@@ -40,6 +40,7 @@ PCB layout automation has historically been "black box" and "messy"—producing 
 - **🔍 Confidence Scoring**: Automated assessment of your board's routability, signal integrity risks, and DFM compliance.
 - **💬 Natural Language Control**: "Move the USB connector to the left edge", "Align these capacitors", "Keep the crystal near the MCU".
 - **🔌 Atopile Native**: First-class support for `atopile` projects with `ato-lock.yaml` parsing, module-aware grouping, and **`atoplace.lock` sidecar persistence** to preserve placements across rebuilds.
+- **📊 Interactive Visualization**: SVG/Canvas-based visualization with delta compression, proper pad rotation, and step-by-step algorithm playback for debugging and analysis.
 
 ## 🛠️ Installation
 
@@ -128,7 +129,9 @@ atoplace/
 ├── placement/      # Force-directed physics & Manhattan Legalizer
 │   ├── force_directed.py   # Physics Engine (Star Model)
 │   ├── legalizer.py        # Manhattan Pipeline (REQ-P-03)
-│   └── module_detector.py  # Hierarchy Analysis
+│   ├── module_detector.py  # Hierarchy Analysis
+│   ├── visualizer.py       # SVG/Canvas visualization with delta compression
+│   └── canvas_renderer.py  # High-performance Canvas rendering
 ├── routing/        # A* Geometric Router
 │   ├── astar_router.py     # Core A* with Greedy Multiplier
 │   ├── spatial_index.py    # O(~1) collision detection

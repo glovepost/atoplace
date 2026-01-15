@@ -455,3 +455,112 @@ rule into automation.
 - Applies to: High-speed serial connectors.
 - Rationale: Preserves impedance and reduces skew.
 - Source: IPC-2141 (Controlled Impedance Circuit Boards and High-Speed Signal Propagation).
+
+## 23. Automated Placement Rules
+
+### 23.1 Grid Alignment (Quantization)
+- Rule: Snap all component centroids to a defined grid hierarchy based on component type.
+  - Primary Grid: 0.5mm (ICs, connectors).
+  - Secondary Grid: 0.1mm (Fine-pitch passives like 0201/0402).
+  - Rotation: 90° increments standard; 45° allowed for specific density requirements.
+- Applies to: All components during legalization phase.
+- Rationale: Ensures professional, manufacturable layout aesthetics and alignment.
+- Source: Internal Research (Manhattan Placement Strategy).
+
+### 23.2 Row/Column Alignment
+- Rule: Group similar components (e.g., decoupling caps, pull-up resistors) into linear rows or columns.
+  - Row Mode: Align Y coordinates to median; sort by X.
+  - Column Mode: Align X coordinates to median; sort by Y.
+- Applies to: Passive clusters within 10mm radius.
+- Rationale: Improves visual organization and simplifies routing channels.
+- Source: Internal Research (Manhattan Placement Strategy).
+
+### 23.3 Overlap Resolution Priority
+- Rule: When resolving overlaps, move lower-priority components first.
+  - Priority Order: Locked > Large ICs > Connectors > Passives.
+- Applies to: Legalization phase (Shove algorithm).
+- Rationale: Preserves placement of critical/large components while shifting flexible passives.
+- Source: Internal Research (Manhattan Placement Strategy).
+
+## 24. Advanced Routing Rules
+
+### 24.1 Differential Pair Coupling
+- Rule: Route differential pairs as a coupled entity using a virtual centerline; maintain constant gap ($g$) and width ($w$).
+- Applies to: Differential pairs (USB, PCIe, LVDS).
+- Rationale: Maintains constant differential impedance.
+- Source: Internal Research (Diff Pair Routing Strategies).
+
+### 24.2 Phase Matching
+- Rule: Compensate for skew at corners by adding length to the inner trace immediately after the bend ("structure" generation).
+- Applies to: High-speed differential pairs exceeding skew tolerance.
+- Rationale: Prevents common-mode conversion and timing errors.
+- Source: Internal Research (Diff Pair Routing Strategies).
+
+### 24.3 Uncoupling Penalty
+- Rule: Apply a high cost penalty for any segment where the differential pair splits (uncouples) around an obstacle.
+- Applies to: Differential pair routing.
+- Rationale: Uncoupling disrupts impedance and increases EMI.
+- Source: Internal Research (Diff Pair Routing Strategies).
+
+### 24.4 Bus Routing (River Routing)
+- Rule: Route parallel buses as a ribbon; ensure start/end pin ordering is planar (e.g., [1,2,3] -> [1,2,3]). If ordering is reversed ([1,2,3] -> [3,2,1]), a layer change/twist is required.
+- Applies to: Parallel buses (DDR, SDRAM).
+- Rationale: Prevents track crossing and optimizes space.
+- Source: Internal Research (Diff Pair Routing Strategies).
+
+## 25. BGA and High-Density Fanout
+
+### 25.1 Fanout Pattern Selection
+- Rule: Select fanout geometry based on ball pitch:
+  - Pitch >= 0.65mm: Use Dogbone fanout (Via offset from pad).
+  - Pitch <= 0.5mm: Use Via-in-Pad (VIP) with plugged/capped vias.
+- Applies to: BGA, CSP, QFN packages.
+- Rationale: Physical clearance limitations prevent dogbone routing at fine pitches.
+- Source: Internal Research (BGA Fanout Algorithms).
+
+### 25.2 Layer Assignment (Onion Strategy)
+- Rule: Assign BGA pin rows to layers radially:
+  - Outermost rows -> Top Layer.
+  - Second ring -> Bottom Layer (via).
+  - Third ring -> Inner Layer 1 (via).
+  - Center pins -> Deepest layers.
+- Applies to: High-pin-count BGAs (>100 pins).
+- Rationale: Prevents blocking escape paths for inner pins.
+- Source: Internal Research (BGA Fanout Algorithms).
+
+### 25.3 Differential Pair Fanout
+- Rule: Maintain symmetry in differential pair fanout; avoid standard diagonal dogbones that induce skew. Use "flag" fanout or perpendicular vias.
+- Applies to: High-speed differential pairs under BGAs.
+- Rationale: Asymmetric via placement creates uncompensated phase skew.
+- Source: Internal Research (BGA Fanout Algorithms).
+
+## 26. FPGA Optimization Rules
+
+### 26.1 Pin Swapping optimization
+- Rule: When reconfigurable IO is available (FPGA/MCU), swap pin assignments to minimize total ratsnest crossing number before routing.
+- Applies to: FPGA banks, GPIO ports.
+- Rationale: Reduces layer transitions and via count by untangling connections at the source.
+- Source: Internal Research (FPGA Routing Strategies).
+
+### 26.2 FPGA Decoupling
+- Rule: Place high-frequency capacitors (0201/0402) directly on the reverse side of the PCB under the BGA, utilizing the "via forest" for low-inductance connection.
+- Applies to: FPGA core voltage rails.
+- Rationale: Minimizes loop inductance for high di/dt current demands.
+- Source: Internal Research (FPGA Routing Strategies).
+
+## 27. Constraint Definition Language
+
+### 27.1 Grouping Primitives
+- **Group:** Force a set of components to move together as a rigid or semi-rigid body.
+- **Cluster:** Loose grouping where components attract but can flow around internal obstacles.
+- **Pair:** Strict 1:1 association (e.g., Decoupling Cap + IC Pin).
+
+### 27.2 Alignment Primitives
+- **Align (Row/Column):** Force centroids to share a common X or Y axis.
+- **Flow:** Order components sequentially (A -> B -> C) to minimize total wire length.
+- **Stack:** Place components adjacent to each other with minimal clearance (e.g., memory chips).
+
+### 27.3 Anchoring Primitives
+- **Anchor:** Lock a component (usually a connector or main IC) to a specific board coordinate.
+- **Region:** Restrict a group of components to a bounded box (e.g., "Top-Left", "Analog Zone").
+- **Edge:** Constrain component to within `dist` of board outline.

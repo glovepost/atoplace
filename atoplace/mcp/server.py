@@ -28,7 +28,32 @@ import logging
 import os
 
 # Configure logging - use file to keep STDIO clean for MCP protocol
-LOG_FILE = os.environ.get("ATOPLACE_LOG", "/tmp/atoplace.log")
+def _get_default_log_path() -> str:
+    """Get secure default log file path.
+
+    Uses user-specific directory to avoid world-readable /tmp.
+    Falls back to /tmp if user directory is not available.
+    """
+    # Try user's cache directory first (not world-readable)
+    home = Path.home()
+    cache_dir = home / ".cache" / "atoplace"
+
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Set restrictive permissions (owner only)
+        cache_dir.chmod(0o700)
+        return str(cache_dir / "mcp-server.log")
+    except (OSError, PermissionError):
+        # Fall back to /tmp with unique filename
+        import getpass
+        try:
+            username = getpass.getuser()
+        except Exception:
+            username = "unknown"
+        return f"/tmp/atoplace-{username}.log"
+
+
+LOG_FILE = os.environ.get("ATOPLACE_LOG", _get_default_log_path())
 _log_configured = False
 
 def _configure_logging():
@@ -40,13 +65,23 @@ def _configure_logging():
     # Only add file handler if not already configured
     root = logging.getLogger()
     if not root.handlers:
-        handler = logging.FileHandler(LOG_FILE, mode="a")
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)s [%(name)s] %(message)s",
-            datefmt="%H:%M:%S"
-        ))
-        root.addHandler(handler)
-        root.setLevel(logging.INFO)
+        try:
+            handler = logging.FileHandler(LOG_FILE, mode="a")
+            handler.setFormatter(logging.Formatter(
+                "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+                datefmt="%H:%M:%S"
+            ))
+            root.addHandler(handler)
+            root.setLevel(logging.INFO)
+
+            # Try to set restrictive permissions on log file
+            try:
+                os.chmod(LOG_FILE, 0o600)
+            except (OSError, PermissionError):
+                pass  # Best effort - may fail on some systems
+        except (OSError, PermissionError) as e:
+            # If file logging fails, just skip it (MCP needs clean STDIO)
+            pass
     _log_configured = True
 
 _configure_logging()
@@ -79,23 +114,109 @@ mcp = FastMCP("atoplace")
 # Prefer KIPY (live KiCad 9+), fall back to RPC, then IPC, then direct
 from .backends import create_session_with_fallback, get_backend_mode, BackendMode, BackendNotAvailableError
 
-# Determine preferred backend from environment
-preferred = BackendMode.KIPY  # Default to KIPY for bleeding-edge
-env_backend = os.environ.get("ATOPLACE_BACKEND", "").lower()
-if env_backend == "rpc":
-    preferred = BackendMode.DIRECT  # RPC uses direct mode internally
-elif env_backend == "ipc":
-    preferred = BackendMode.IPC
-elif env_backend == "direct":
-    preferred = BackendMode.DIRECT
 
-try:
-    session, actual_mode = create_session_with_fallback(preferred)
-    logger.info("MCP server using %s mode", actual_mode.value)
-except BackendNotAvailableError as e:
-    logger.error("No backends available: %s. Starting with empty session.", e)
-    session = Session()
-    actual_mode = BackendMode.DIRECT
+class SessionProvider:
+    """
+    Session provider for dependency injection.
+
+    This class manages the MCP server session and allows tests to inject
+    mock sessions without modifying the module's global state.
+
+    Usage:
+        # In tests, replace the session:
+        from atoplace.mcp.server import session_provider
+        session_provider.set_session(mock_session)
+
+        # Reset after test:
+        session_provider.reset()
+    """
+
+    def __init__(self):
+        self._session: Optional[Session] = None
+        self._actual_mode: Optional[BackendMode] = None
+        self._initialized = False
+
+    def _initialize(self):
+        """Initialize session with backend fallback chain."""
+        if self._initialized:
+            return
+
+        # Determine preferred backend from environment
+        preferred = BackendMode.KIPY  # Default to KIPY for bleeding-edge
+        env_backend = os.environ.get("ATOPLACE_BACKEND", "").lower()
+        if env_backend == "rpc":
+            preferred = BackendMode.DIRECT  # RPC uses direct mode internally
+        elif env_backend == "ipc":
+            preferred = BackendMode.IPC
+        elif env_backend == "direct":
+            preferred = BackendMode.DIRECT
+
+        try:
+            self._session, self._actual_mode = create_session_with_fallback(preferred)
+            logger.info("MCP server using %s mode", self._actual_mode.value)
+        except BackendNotAvailableError as e:
+            logger.error("No backends available: %s. Starting with empty session.", e)
+            self._session = Session()
+            self._actual_mode = BackendMode.DIRECT
+
+        self._initialized = True
+
+    @property
+    def session(self) -> Session:
+        """Get the current session, initializing if needed."""
+        self._initialize()
+        return self._session
+
+    @property
+    def actual_mode(self) -> BackendMode:
+        """Get the actual backend mode."""
+        self._initialize()
+        return self._actual_mode
+
+    def set_session(self, new_session: Session, mode: BackendMode = BackendMode.DIRECT):
+        """
+        Replace the session (for testing).
+
+        Args:
+            new_session: The session to use
+            mode: The backend mode to report
+        """
+        self._session = new_session
+        self._actual_mode = mode
+        self._initialized = True
+
+    def reset(self):
+        """Reset to uninitialized state (for testing)."""
+        self._session = None
+        self._actual_mode = None
+        self._initialized = False
+
+
+# Global session provider instance
+session_provider = SessionProvider()
+
+# For backward compatibility, expose session and actual_mode as module-level attributes
+# These are properties that delegate to the session provider
+class _SessionProxy:
+    """Proxy that delegates to session_provider for backward compatibility."""
+    def __getattr__(self, name):
+        return getattr(session_provider.session, name)
+
+    def __setattr__(self, name, value):
+        setattr(session_provider.session, name, value)
+
+
+session = _SessionProxy()
+
+
+def _get_actual_mode() -> BackendMode:
+    """Get actual backend mode from session provider."""
+    return session_provider.actual_mode
+
+# Initialize immediately (preserves original behavior)
+# Can be deferred by setting ATOPLACE_LAZY_INIT=1
+if not os.environ.get("ATOPLACE_LAZY_INIT"):
+    session_provider._initialize()
 
 
 # =============================================================================
@@ -146,6 +267,70 @@ def _validate_refs(refs: List[str]) -> Optional[str]:
     return None
 
 
+# Path validation constants
+# Allowed paths can be configured via environment variable
+ALLOWED_PATH_ROOTS = os.environ.get("ATOPLACE_ALLOWED_PATHS", "").split(":") if os.environ.get("ATOPLACE_ALLOWED_PATHS") else []
+BLOCKED_PATH_PATTERNS = [
+    "/etc/", "/var/", "/usr/", "/bin/", "/sbin/",  # System directories
+    "/.ssh/", "/.gnupg/", "/.aws/", "/.config/",   # Sensitive user directories
+    "/credentials", "/secrets", "/private",         # Common sensitive paths
+]
+
+
+def _validate_path(path: str, operation: str = "access") -> Optional[str]:
+    """
+    Validate file path for security.
+
+    Checks:
+    1. Path must exist or be in a valid parent directory
+    2. Path must not contain traversal sequences
+    3. Path must not access blocked directories
+    4. If ATOPLACE_ALLOWED_PATHS is set, path must be under an allowed root
+
+    Args:
+        path: File path to validate
+        operation: Operation being performed (for error messages)
+
+    Returns:
+        Error message if path is invalid, None if valid
+    """
+    try:
+        # Resolve to absolute path, following symlinks
+        resolved = Path(path).resolve()
+        path_str = str(resolved).lower()
+
+        # Check for path traversal attempts
+        if ".." in path:
+            return f"Path traversal not allowed: {path}"
+
+        # Check for blocked patterns
+        for pattern in BLOCKED_PATH_PATTERNS:
+            if pattern.lower() in path_str:
+                return f"Access to {pattern} is not allowed"
+
+        # If allowed paths are configured, enforce them
+        if ALLOWED_PATH_ROOTS:
+            is_allowed = False
+            for allowed in ALLOWED_PATH_ROOTS:
+                if allowed and str(resolved).startswith(str(Path(allowed).resolve())):
+                    is_allowed = True
+                    break
+            if not is_allowed:
+                return f"Path not in allowed directories. Set ATOPLACE_ALLOWED_PATHS to configure."
+
+        # For load operations, check file extension
+        if operation == "load":
+            suffix = resolved.suffix.lower()
+            allowed_extensions = {".kicad_pcb", ".kicad_pcb-bak"}
+            if suffix not in allowed_extensions and not resolved.is_dir():
+                return f"Invalid file type '{suffix}'. Only .kicad_pcb files are supported."
+
+        return None
+
+    except Exception as e:
+        return f"Invalid path: {e}"
+
+
 # =============================================================================
 # Board Management Tools
 # =============================================================================
@@ -159,13 +344,18 @@ def load_board(path: str) -> str:
     In other modes, loads the specified file.
     """
     try:
+        # Validate path for security
+        if err := _validate_path(path, operation="load"):
+            logger.warning("Path validation failed: %s", err)
+            return _error_response(err, "invalid_path")
+
         session.load(Path(path))
         logger.info("Loaded board: %d components, %d nets",
                    len(session.board.components), len(session.board.nets))
         return _success_response({
             "component_count": len(session.board.components),
             "net_count": len(session.board.nets),
-            "backend": actual_mode.value
+            "backend": _get_actual_mode().value
         })
     except Exception as e:
         logger.error("Load failed: %s", e)
@@ -192,6 +382,13 @@ def save_board(path: Optional[str] = None) -> str:
     """
     try:
         _require_board()
+
+        # Validate path for security if provided
+        if path:
+            if err := _validate_path(path, operation="save"):
+                logger.warning("Path validation failed: %s", err)
+                return _error_response(err, "invalid_path")
+
         output_path = session.save(Path(path) if path else None)
         logger.info("Saved board to: %s", output_path)
         return _success_response({"path": str(output_path)})
@@ -1036,6 +1233,798 @@ def get_atopile_context(ato_path: Optional[str] = None) -> str:
 
 
 # =============================================================================
+# BGA Fanout Tools
+# =============================================================================
+
+@mcp.tool()
+def detect_bga_components() -> str:
+    """
+    Detect BGA-like components on the board.
+
+    Identifies components that likely need fanout routing based on:
+    - Footprint name patterns (BGA, LGA, QFN, FPGA, etc.)
+    - Number of pads (grid-like arrangements)
+    - Pad arrangement (regular grid pattern)
+
+    Returns:
+        JSON with list of detected BGA component references and basic info
+    """
+    try:
+        _require_board()
+        from ..routing.fanout import FanoutGenerator
+
+        generator = FanoutGenerator(session.board)
+        bga_refs = generator.detect_bgas()
+
+        # Get basic info for each detected BGA
+        bga_info = []
+        for ref in bga_refs:
+            comp = session.board.components.get(ref)
+            if comp:
+                pitch = generator.measure_pitch(comp)
+                bga_info.append({
+                    "ref": ref,
+                    "footprint": comp.footprint,
+                    "pad_count": len(comp.pads),
+                    "pitch_mm": round(pitch, 3) if pitch > 0 else None,
+                    "position": {"x": round(comp.x, 3), "y": round(comp.y, 3)},
+                })
+
+        return json.dumps({
+            "detected_count": len(bga_refs),
+            "components": bga_info,
+        }, indent=2)
+
+    except Exception as e:
+        logger.error("BGA detection failed: %s", e, exc_info=True)
+        return _error_response(str(e), "detection_failed")
+
+
+@mcp.tool()
+def fanout_component(
+    ref: str,
+    strategy: str = "auto",
+    include_escape: bool = True
+) -> str:
+    """
+    Generate fanout pattern for a specific BGA component.
+
+    Creates escape routing vias and traces for high-density BGA packages:
+    - Dogbone pattern for pitch >= 0.65mm
+    - Via-in-Pad (VIP) for pitch <= 0.5mm
+    - Layer assignment using onion model
+    - Escape routing to clear space
+
+    Args:
+        ref: Component reference (e.g., "U1")
+        strategy: "auto" (detect from pitch), "dogbone", or "vip"
+        include_escape: Include escape routing from vias to board edge
+
+    Returns:
+        JSON with generated vias, traces, and statistics
+    """
+    try:
+        _require_board()
+        from ..routing.fanout import FanoutGenerator, FanoutStrategy
+
+        # Map strategy string to enum
+        strategy_map = {
+            "auto": FanoutStrategy.AUTO,
+            "dogbone": FanoutStrategy.DOGBONE,
+            "vip": FanoutStrategy.VIP,
+        }
+        if strategy.lower() not in strategy_map:
+            return _error_response(
+                f"Invalid strategy: {strategy}. Use: auto, dogbone, vip",
+                "invalid_strategy"
+            )
+
+        generator = FanoutGenerator(session.board)
+        result = generator.fanout_component(
+            ref,
+            strategy=strategy_map[strategy.lower()],
+            include_escape=include_escape,
+        )
+
+        if not result.success:
+            return _error_response(result.failure_reason, "fanout_failed")
+
+        # Build response
+        vias_data = [
+            {
+                "x": round(v.x, 3),
+                "y": round(v.y, 3),
+                "drill": v.drill_diameter,
+                "pad": v.pad_diameter,
+                "start_layer": v.start_layer,
+                "end_layer": v.end_layer,
+                "net": v.net_name,
+                "pad_number": v.pad_number,
+            }
+            for v in result.vias
+        ]
+
+        traces_data = [
+            {
+                "start": {"x": round(t.start[0], 3), "y": round(t.start[1], 3)},
+                "end": {"x": round(t.end[0], 3), "y": round(t.end[1], 3)},
+                "width": t.width,
+                "layer": t.layer,
+                "net": t.net_name,
+            }
+            for t in result.traces
+        ]
+
+        return json.dumps({
+            "success": True,
+            "component": ref,
+            "strategy_used": result.strategy_used.value,
+            "pitch_mm": round(result.pitch_detected, 3),
+            "ring_count": result.ring_count,
+            "via_count": len(result.vias),
+            "trace_count": len(result.traces),
+            "vias": vias_data,
+            "traces": traces_data,
+            "stats": result.stats,
+            "warnings": result.warnings,
+        }, indent=2)
+
+    except Exception as e:
+        logger.error("Fanout generation failed: %s", e, exc_info=True)
+        return _error_response(str(e), "fanout_failed")
+
+
+@mcp.tool()
+def fanout_all_bgas(
+    strategy: str = "auto",
+    include_escape: bool = True
+) -> str:
+    """
+    Generate fanout for all detected BGA components on the board.
+
+    Automatically detects BGA components and generates escape routing for each.
+
+    Args:
+        strategy: "auto" (detect from pitch), "dogbone", or "vip"
+        include_escape: Include escape routing from vias to board edge
+
+    Returns:
+        JSON with summary and per-component results
+    """
+    try:
+        _require_board()
+        from ..routing.fanout import FanoutGenerator, FanoutStrategy
+
+        # Map strategy string to enum
+        strategy_map = {
+            "auto": FanoutStrategy.AUTO,
+            "dogbone": FanoutStrategy.DOGBONE,
+            "vip": FanoutStrategy.VIP,
+        }
+        if strategy.lower() not in strategy_map:
+            return _error_response(
+                f"Invalid strategy: {strategy}. Use: auto, dogbone, vip",
+                "invalid_strategy"
+            )
+
+        generator = FanoutGenerator(session.board)
+        results = generator.fanout_all_bgas(
+            strategy=strategy_map[strategy.lower()],
+            include_escape=include_escape,
+        )
+
+        # Build summary
+        success_count = sum(1 for r in results.values() if r.success)
+        total_vias = sum(len(r.vias) for r in results.values() if r.success)
+        total_traces = sum(len(r.traces) for r in results.values() if r.success)
+
+        # Per-component summary
+        component_results = []
+        for ref, result in results.items():
+            comp_result = {
+                "ref": ref,
+                "success": result.success,
+            }
+            if result.success:
+                comp_result.update({
+                    "strategy": result.strategy_used.value,
+                    "pitch_mm": round(result.pitch_detected, 3),
+                    "rings": result.ring_count,
+                    "vias": len(result.vias),
+                    "traces": len(result.traces),
+                })
+            else:
+                comp_result["failure_reason"] = result.failure_reason
+            component_results.append(comp_result)
+
+        return json.dumps({
+            "success": success_count > 0,
+            "total_components": len(results),
+            "successful": success_count,
+            "failed": len(results) - success_count,
+            "total_vias": total_vias,
+            "total_traces": total_traces,
+            "components": component_results,
+        }, indent=2)
+
+    except Exception as e:
+        logger.error("Fanout all BGAs failed: %s", e, exc_info=True)
+        return _error_response(str(e), "fanout_failed")
+
+
+@mcp.tool()
+def get_fanout_preview(ref: str) -> str:
+    """
+    Get a preview of fanout parameters for a component without generating.
+
+    Analyzes the component to determine:
+    - Detected pitch
+    - Recommended strategy
+    - Number of rings
+    - Layer assignments
+
+    Args:
+        ref: Component reference (e.g., "U1")
+
+    Returns:
+        JSON with fanout analysis and recommendations
+    """
+    try:
+        _require_board()
+        from ..routing.fanout import FanoutGenerator, LayerAssigner
+
+        comp = session.board.components.get(ref)
+        if not comp:
+            return _error_response(f"Component not found: {ref}", "not_found")
+
+        generator = FanoutGenerator(session.board)
+
+        # Check if it's a BGA candidate
+        is_bga = generator._is_bga_candidate(comp)
+
+        # Measure pitch
+        pitch = generator.measure_pitch(comp)
+
+        # Determine strategy
+        recommended_strategy = "dogbone" if pitch > 0.5 else "vip"
+
+        # Analyze rings
+        pads_data = []
+        for pad in comp.pads:
+            abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
+            pads_data.append((pad.number, abs_x, abs_y))
+
+        layer_assigner = LayerAssigner(layer_count=session.board.layer_count)
+        rings = layer_assigner.analyze_rings(pads_data, pitch)
+        layer_mapping = layer_assigner.assign_layers(rings, strategy="balanced")
+
+        # Build ring info
+        ring_info = [
+            {
+                "index": ring.index,
+                "pin_count": ring.pin_count,
+                "assigned_layer": layer_mapping.ring_to_layer.get(ring.index, 0),
+            }
+            for ring in rings
+        ]
+
+        return json.dumps({
+            "ref": ref,
+            "is_bga_candidate": is_bga,
+            "footprint": comp.footprint,
+            "pad_count": len(comp.pads),
+            "pitch_mm": round(pitch, 3) if pitch > 0 else None,
+            "recommended_strategy": recommended_strategy if is_bga else None,
+            "ring_count": len(rings),
+            "rings": ring_info,
+            "layers_needed": sorted(layer_mapping.layer_to_pads.keys()) if layer_mapping else [],
+            "board_layers": session.board.layer_count,
+        }, indent=2)
+
+    except Exception as e:
+        logger.error("Fanout preview failed: %s", e, exc_info=True)
+        return _error_response(str(e), "preview_failed")
+
+
+# =============================================================================
+# Routing Tools
+# =============================================================================
+
+@mcp.tool()
+def route_board(
+    visualize: bool = False,
+    diff_pairs: Optional[List[str]] = None,
+    critical_nets: Optional[List[str]] = None
+) -> str:
+    """
+    Route all nets on the board using the multi-phase routing pipeline.
+
+    The routing pipeline executes in phases:
+    1. Fanout & Escape: BGA/QFN escape routing
+    2. Critical Nets: Differential pairs (if specified)
+    3. General Routing: A* with greedy multiplier for all remaining nets
+
+    Args:
+        visualize: Generate HTML visualization of routing process
+        diff_pairs: List of diff pair definitions in format "NAME:POS_NET:NEG_NET"
+                   e.g., ["USB:USB_D+:USB_D-", "HDMI0:HDMI_TX0_P:HDMI_TX0_N"]
+        critical_nets: List of net names to route with high priority
+
+    Returns:
+        JSON with routing statistics and per-net results
+    """
+    try:
+        _require_board()
+        from ..routing import RoutingManager, RoutingManagerConfig
+
+        config = RoutingManagerConfig(visualize=visualize)
+        manager = RoutingManager(session.board, config=config)
+
+        # Parse and add diff pairs
+        if diff_pairs:
+            for dp_str in diff_pairs:
+                parts = dp_str.split(":")
+                if len(parts) >= 3:
+                    name, pos_net, neg_net = parts[0], parts[1], parts[2]
+                    manager.add_diff_pair(name, pos_net, neg_net)
+                    logger.info(f"Added diff pair: {name} ({pos_net}/{neg_net})")
+
+        # Add critical nets
+        if critical_nets:
+            manager.set_critical_nets(critical_nets)
+
+        # Run routing
+        result = manager.route_all()
+
+        # Build response
+        net_summaries = []
+        for net_name, net_result in result.net_results.items():
+            net_summaries.append({
+                "net": net_name,
+                "success": net_result.success,
+                "length_mm": round(net_result.total_length, 2),
+                "vias": net_result.via_count,
+                "segments": len(net_result.segments),
+                "failure_reason": net_result.failure_reason if not net_result.success else None
+            })
+
+        return json.dumps({
+            "success": result.success,
+            "completion_rate": round(result.completion_rate, 1),
+            "total_nets": result.total_nets,
+            "routed_nets": result.routed_nets,
+            "failed_nets": result.failed_nets,
+            "total_length_mm": round(result.total_length, 1),
+            "total_vias": result.total_vias,
+            "phases_completed": [p.value for p in result.phases_completed],
+            "nets": net_summaries[:50],  # Limit to 50 for response size
+            "truncated": len(net_summaries) > 50,
+            "errors": result.errors,
+            "warnings": result.warnings
+        }, indent=2)
+
+    except Exception as e:
+        logger.error("Board routing failed: %s", e, exc_info=True)
+        return _error_response(str(e), "routing_failed")
+
+
+@mcp.tool()
+def route_net(net_name: str, visualize: bool = False) -> str:
+    """
+    Route a single net by name.
+
+    Uses A* with greedy multiplier for fast pathfinding.
+
+    Args:
+        net_name: Name of the net to route
+        visualize: Generate visualization of routing process
+
+    Returns:
+        JSON with routing result
+    """
+    try:
+        _require_board()
+        from ..routing import RoutingManager, RoutingManagerConfig
+
+        config = RoutingManagerConfig(visualize=visualize)
+        manager = RoutingManager(session.board, config=config)
+
+        result = manager.route_net(net_name)
+
+        segments_data = [
+            {
+                "start": {"x": round(s.start[0], 3), "y": round(s.start[1], 3)},
+                "end": {"x": round(s.end[0], 3), "y": round(s.end[1], 3)},
+                "layer": s.layer,
+                "width": s.width
+            }
+            for s in result.segments
+        ]
+
+        vias_data = [
+            {
+                "x": round(v.x, 3),
+                "y": round(v.y, 3),
+                "drill": v.drill_diameter,
+                "pad": v.pad_diameter
+            }
+            for v in result.vias
+        ]
+
+        return json.dumps({
+            "success": result.success,
+            "net": net_name,
+            "length_mm": round(result.total_length, 2),
+            "via_count": result.via_count,
+            "segment_count": len(result.segments),
+            "iterations": result.iterations,
+            "explored_nodes": result.explored_count,
+            "segments": segments_data,
+            "vias": vias_data,
+            "failure_reason": result.failure_reason if not result.success else None
+        }, indent=2)
+
+    except Exception as e:
+        logger.error("Net routing failed: %s", e, exc_info=True)
+        return _error_response(str(e), "routing_failed")
+
+
+@mcp.tool()
+def detect_diff_pairs() -> str:
+    """
+    Auto-detect differential pairs from net names.
+
+    Identifies common diff pair patterns:
+    - USB_D+/USB_D-
+    - NET_P/NET_N
+    - LVDS_TX_POS/LVDS_TX_NEG
+    - etc.
+
+    Returns:
+        JSON with detected differential pairs
+    """
+    try:
+        _require_board()
+        from ..routing import DiffPairDetector
+
+        # Get all net names
+        net_names = list(session.board.nets.keys())
+
+        detector = DiffPairDetector(net_names)
+        pairs = detector.detect()
+
+        pairs_data = [
+            {
+                "name": p.name,
+                "positive_net": p.positive_net,
+                "negative_net": p.negative_net,
+                "pattern": p.pattern.value,
+                "confidence": p.confidence
+            }
+            for p in pairs
+        ]
+
+        return json.dumps({
+            "detected_count": len(pairs),
+            "total_nets": len(net_names),
+            "diff_pairs": pairs_data
+        }, indent=2)
+
+    except Exception as e:
+        logger.error("Diff pair detection failed: %s", e, exc_info=True)
+        return _error_response(str(e), "detection_failed")
+
+
+@mcp.tool()
+def get_routing_preview() -> str:
+    """
+    Get a preview of routing parameters and estimated complexity.
+
+    Analyzes the board to provide:
+    - Net count and classification
+    - Estimated routing difficulty
+    - Detected BGA components requiring fanout
+    - Identified differential pairs
+
+    Returns:
+        JSON with routing analysis and recommendations
+    """
+    try:
+        _require_board()
+        from ..routing import DiffPairDetector
+        from ..routing.fanout import FanoutGenerator
+
+        # Count nets by pad count
+        net_stats = {"single_pad": 0, "two_pad": 0, "multi_pad": 0}
+        total_pads = 0
+        for net_name, net in session.board.nets.items():
+            pad_count = len(net.pads) if hasattr(net, 'pads') else 0
+            total_pads += pad_count
+            if pad_count <= 1:
+                net_stats["single_pad"] += 1
+            elif pad_count == 2:
+                net_stats["two_pad"] += 1
+            else:
+                net_stats["multi_pad"] += 1
+
+        # Detect diff pairs
+        net_names = list(session.board.nets.keys())
+        detector = DiffPairDetector(net_names)
+        diff_pairs = detector.detect()
+
+        # Detect BGAs
+        generator = FanoutGenerator(session.board)
+        bga_refs = generator.detect_bgas()
+
+        # Estimate complexity
+        complexity = "simple"
+        if len(bga_refs) > 0:
+            complexity = "complex"
+        elif len(diff_pairs) > 2:
+            complexity = "moderate"
+        elif len(session.board.nets) > 100:
+            complexity = "moderate"
+
+        return json.dumps({
+            "net_count": len(session.board.nets),
+            "component_count": len(session.board.components),
+            "layer_count": session.board.layer_count,
+            "net_stats": net_stats,
+            "diff_pairs_detected": len(diff_pairs),
+            "diff_pair_names": [p.name for p in diff_pairs],
+            "bga_components": bga_refs,
+            "estimated_complexity": complexity,
+            "recommendations": {
+                "enable_fanout": len(bga_refs) > 0,
+                "route_diff_pairs_first": len(diff_pairs) > 0,
+                "estimated_routing_time": "quick" if complexity == "simple" else "moderate"
+            }
+        }, indent=2)
+
+    except Exception as e:
+        logger.error("Routing preview failed: %s", e, exc_info=True)
+        return _error_response(str(e), "preview_failed")
+
+
+# =============================================================================
+# Pin Swap Optimization Tools
+# =============================================================================
+
+@mcp.tool()
+def analyze_pin_swaps(ref: Optional[str] = None) -> str:
+    """
+    Analyze potential pin swaps for routing optimization.
+
+    Detects swappable pin groups on FPGAs, MCUs, and connectors. Reports
+    potential improvement from optimizing pin assignments.
+
+    Args:
+        ref: Specific component reference (e.g., "U1"). If None, analyzes all.
+
+    Returns:
+        JSON with detected swap groups and improvement potential
+    """
+    try:
+        _require_board()
+        from ..routing.pinswapper import PinSwapper, SwapConfig
+
+        config = SwapConfig()
+        swapper = PinSwapper(session.board, config)
+
+        if ref:
+            # Analyze single component
+            analysis = swapper.analyze_component(ref)
+            if "error" in analysis:
+                return _error_response(analysis["error"], "analysis_failed")
+
+            return json.dumps({
+                "component": ref,
+                "analysis": analysis
+            }, indent=2)
+        else:
+            # Analyze all swappable components
+            groups = swapper._detector.detect_all()
+            analyses = []
+
+            for comp_ref in groups.keys():
+                analysis = swapper.analyze_component(comp_ref)
+                if "error" not in analysis:
+                    analyses.append({
+                        "component": comp_ref,
+                        "swap_groups": analysis.get("swap_groups", 0),
+                        "current_crossings": analysis.get("current_crossings", 0),
+                        "groups": analysis.get("groups", [])
+                    })
+
+            # Get global crossing stats
+            crossing_result = swapper.get_crossing_analysis()
+
+            return json.dumps({
+                "components_with_swaps": len(analyses),
+                "total_crossings": crossing_result.total_crossings,
+                "crossing_density": round(crossing_result.crossing_density, 2),
+                "analyses": analyses[:20],  # Limit response size
+                "truncated": len(analyses) > 20
+            }, indent=2)
+
+    except Exception as e:
+        logger.error("Pin swap analysis failed: %s", e, exc_info=True)
+        return _error_response(str(e), "analysis_failed")
+
+
+@mcp.tool()
+def optimize_pin_swaps(
+    ref: Optional[str] = None,
+    min_improvement: float = 5.0,
+    apply: bool = True
+) -> str:
+    """
+    Optimize pin assignments to reduce routing complexity.
+
+    Uses bipartite matching (Hungarian algorithm) to find optimal pin-to-net
+    assignments that minimize wire length and crossings.
+
+    Args:
+        ref: Specific component to optimize. If None, optimizes all.
+        min_improvement: Minimum improvement % to apply swaps (default: 5.0)
+        apply: Whether to apply swaps to the board (default: True)
+
+    Returns:
+        JSON with optimization results and swaps performed
+    """
+    try:
+        _require_board()
+        from ..routing.pinswapper import PinSwapper, SwapConfig
+
+        config = SwapConfig(min_improvement=min_improvement)
+        swapper = PinSwapper(session.board, config)
+
+        if ref:
+            result = swapper.optimize_component(ref, apply=apply)
+            results = {ref: result}
+        else:
+            results = swapper.optimize_all(apply=apply)
+
+        # Build response
+        result_data = []
+        total_swaps = 0
+        for comp_ref, result in results.items():
+            total_swaps += result.total_swaps
+            result_data.append({
+                "component": comp_ref,
+                "success": result.success,
+                "groups_detected": result.groups_detected,
+                "groups_optimized": result.groups_optimized,
+                "swaps_performed": result.total_swaps,
+                "crossing_improvement": f"{result.crossing_improvement:.1f}%",
+                "wire_improvement": f"{result.wire_improvement:.1f}%",
+                "failure_reason": result.failure_reason if not result.success else None
+            })
+
+        # Get crossing stats
+        crossing_result = swapper.get_crossing_analysis()
+
+        return json.dumps({
+            "success": total_swaps > 0,
+            "total_swaps": total_swaps,
+            "components_optimized": len([r for r in results.values() if r.total_swaps > 0]),
+            "total_crossings": crossing_result.total_crossings,
+            "results": result_data,
+            "constraint_updates_pending": swapper.pending_constraint_count
+        }, indent=2)
+
+    except Exception as e:
+        logger.error("Pin swap optimization failed: %s", e, exc_info=True)
+        return _error_response(str(e), "optimization_failed")
+
+
+@mcp.tool()
+def get_crossing_analysis() -> str:
+    """
+    Analyze ratsnest crossings on the board.
+
+    Counts wire crossings to measure routing complexity. Lower crossing
+    count = easier routing. Use this before and after pin swaps to
+    measure improvement.
+
+    Returns:
+        JSON with crossing statistics and worst nets
+    """
+    try:
+        _require_board()
+        from ..routing.pinswapper import CrossingCounter
+
+        counter = CrossingCounter(session.board)
+        result = counter.count_all()
+
+        return json.dumps({
+            "total_crossings": result.total_crossings,
+            "edges_analyzed": result.edges_analyzed,
+            "crossing_density": round(result.crossing_density, 3),
+            "crossings_by_component": dict(sorted(
+                result.crossings_by_component.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:20]),
+            "worst_nets": result.worst_nets[:10],
+            "crossing_pairs_sample": result.crossing_pairs[:10]
+        }, indent=2)
+
+    except Exception as e:
+        logger.error("Crossing analysis failed: %s", e, exc_info=True)
+        return _error_response(str(e), "analysis_failed")
+
+
+@mcp.tool()
+def export_pin_constraints(
+    format: str = "xdc",
+    output_path: Optional[str] = None
+) -> str:
+    """
+    Export pin swap constraints to a file.
+
+    Generates constraint file updates for FPGA tools reflecting the
+    optimized pin assignments.
+
+    Args:
+        format: Output format ("xdc", "qsf", "tcl", "csv", "json")
+        output_path: Optional file path. If None, returns content as string.
+
+    Returns:
+        JSON with constraint file content or path
+    """
+    try:
+        _require_board()
+        from ..routing.pinswapper import PinSwapper, SwapConfig, ConstraintFormat
+
+        format_map = {
+            "xdc": ConstraintFormat.XDC,
+            "qsf": ConstraintFormat.QSF,
+            "tcl": ConstraintFormat.TCL,
+            "csv": ConstraintFormat.NETLIST,
+            "json": ConstraintFormat.JSON,
+        }
+        if format.lower() not in format_map:
+            return _error_response(
+                f"Invalid format: {format}. Use: xdc, qsf, tcl, csv, json",
+                "invalid_format"
+            )
+
+        constraint_format = format_map[format.lower()]
+
+        # Create swapper and run optimization
+        config = SwapConfig()
+        swapper = PinSwapper(session.board, config)
+        swapper.optimize_all(apply=False)  # Don't apply, just generate constraints
+
+        if swapper.pending_constraint_count == 0:
+            return json.dumps({
+                "success": False,
+                "message": "No pin swaps to export. Run optimize_pin_swaps first."
+            })
+
+        if output_path:
+            swapper.export_constraints(Path(output_path), constraint_format)
+            return json.dumps({
+                "success": True,
+                "path": output_path,
+                "constraint_count": swapper.pending_constraint_count
+            })
+        else:
+            content = swapper.get_constraint_preview(constraint_format)
+            return json.dumps({
+                "success": True,
+                "format": format,
+                "constraint_count": swapper.pending_constraint_count,
+                "content": content
+            }, indent=2)
+
+    except Exception as e:
+        logger.error("Constraint export failed: %s", e, exc_info=True)
+        return _error_response(str(e), "export_failed")
+
+
+# =============================================================================
 # MCP Resources
 # =============================================================================
 
@@ -1053,7 +2042,7 @@ def main():
         print("Error: MCP package not installed.")
         return
 
-    logger.info("Starting AtoPlace MCP server with backend: %s", actual_mode.value)
+    logger.info("Starting AtoPlace MCP server with backend: %s", _get_actual_mode().value)
     mcp.run()
 
 if __name__ == "__main__":

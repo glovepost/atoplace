@@ -11,17 +11,37 @@ Based on research in layout_rules_research.md:
 - Maintain modularity (analog/digital/RF separation)
 """
 
+import hashlib
 import logging
 import math
-import random
-import numpy as np
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional, Set, Callable
+from typing import Dict, List, Tuple, Optional, Set, Callable, Iterable
 from enum import Enum
 
 from ..board.abstraction import Board, Component, Net
 
 logger = logging.getLogger(__name__)
+
+
+def _deterministic_jitter(key: str, scale: float = 0.5) -> Tuple[float, float]:
+    """Generate deterministic jitter based on a string key.
+
+    Uses MD5 hash to produce reproducible pseudo-random offsets,
+    ensuring placement results are consistent across runs.
+
+    Args:
+        key: String to hash (e.g., "ref1_ref2" for component pairs)
+        scale: Maximum offset magnitude (default 0.5mm)
+
+    Returns:
+        (dx, dy) offset tuple in range [-scale, scale]
+    """
+    h = hashlib.md5(key.encode()).hexdigest()
+    # Use first 8 hex chars for x, next 8 for y
+    x_val = int(h[:8], 16) / 0xFFFFFFFF  # Normalize to [0, 1]
+    y_val = int(h[8:16], 16) / 0xFFFFFFFF
+    # Convert to [-scale, scale]
+    return (x_val * 2 * scale - scale, y_val * 2 * scale - scale)
 
 
 class ForceType(Enum):
@@ -92,6 +112,11 @@ class RefinementConfig:
     max_attraction_distance: float = 50.0  # mm - cap attraction beyond this
     repulsion_cutoff: float = 20.0  # mm - no repulsion beyond this distance (reduced from 50)
 
+    # Decoupling capacitor placement
+    decoupling_strength_multiplier: float = 100.0  # Multiplier on attraction_strength for decoupling caps
+    decoupling_target_distance: float = 5.0  # mm - target distance from IC power pins
+    decoupling_max_distance: float = 10.0  # mm - maximum acceptable distance (triggers stronger pull)
+
     # Grid alignment
     grid_size: float = 0.0  # 0 = no grid snapping
     snap_to_grid: bool = False
@@ -102,6 +127,19 @@ class RefinementConfig:
     # Anchor/center mode
     auto_anchor_largest_ic: bool = True  # Auto-lock largest IC at center as anchor
     initial_radius: float = 30.0  # mm - move distant components within this radius at start
+
+    # Module cohesion
+    module_cohesion_strength: float = 1.0  # Base cohesion force per module level
+    module_cohesion_depth_multiplier: float = 1.4  # Stronger pull for deeper modules
+    module_compact_clearance: float = 0.02  # Preferred clearance above min for same-module pairs
+    module_bbox_strength: float = 1.1  # Extra bbox shrink for module grouping constraints
+
+    # Discrete rotation search
+    enable_discrete_rotation: bool = True  # Enable discrete rotation optimization
+    rotation_search_interval: int = 10  # Iterations between rotation passes
+    rotation_angles: Tuple[int, ...] = (0, 90, 180, 270)
+    rotation_overlap_weight: float = 1.0  # Overlap penalty weight
+    rotation_boundary_weight: float = 5.0  # Boundary penalty weight
 
 
 class ForceDirectedRefiner:
@@ -150,6 +188,20 @@ class ForceDirectedRefiner:
         if self.config.auto_anchor_largest_ic:
             self._setup_anchor()
 
+        # Cache for per-pair spacing derived from nets/DFM
+        self._pair_clearance_cache: Dict[Tuple[str, str], Tuple[float, float]] = {}
+
+        # Module grouping caches
+        self._module_groups: Dict[str, Set[str]] = {}
+        self._module_hierarchy: Dict[str, Set[str]] = {}
+        self._module_depths: Dict[str, int] = {}
+        self._module_spreads: Dict[str, float] = {}
+        self._module_tree_built = False
+
+        # Rotation helpers
+        self._rotation_constraint_refs: Set[str] = set()
+        self._rotation_extents_cache: Dict[Tuple[str, int], Tuple[float, float, float, float]] = {}
+
     def add_constraint(self, constraint: 'PlacementConstraint'):
         """Add a placement constraint."""
         self.constraints.append(constraint)
@@ -178,7 +230,9 @@ class ForceDirectedRefiner:
 
             rot = state.rotations.get(ref, comp.rotation)
             # Component x,y is now the centroid (as of the origin offset fix)
-            components[ref] = (x, y, rot, comp.width, comp.height)
+            # Store only mutable state (position, rotation)
+            # Width/height are in visualizer.static_props
+            components[ref] = (x, y, rot)
 
             # Extract pads - need to compute pad positions relative to centroid
             # Pad.x,y is relative to KiCad origin, so we need to offset by -origin_offset
@@ -251,8 +305,14 @@ class ForceDirectedRefiner:
         Returns:
             Final PlacementState with optimized positions
         """
+        # Ensure module constraints are available before starting
+        self._add_module_constraints_if_missing()
+        self._rotation_constraint_refs = self._collect_rotation_constraint_refs()
+
         # Initialize state
         state = self._initialize_state()
+        # Reset caches per run
+        self._pair_clearance_cache = {}
         if logger.isEnabledFor(logging.DEBUG):
             locked = sum(1 for ref in state.positions if self._is_component_locked(ref))
             logger.debug(
@@ -277,6 +337,8 @@ class ForceDirectedRefiner:
                 active_forces.append("boundary")
             else:
                 logger.debug("  Note: No board outline - boundary forces disabled")
+            if self.config.module_cohesion_strength > 0 and self.modules:
+                active_forces.append("module-cohesion")
             if self.constraints:
                 active_forces.append(f"constraint ({len(self.constraints)} constraints)")
             else:
@@ -327,6 +389,9 @@ class ForceDirectedRefiner:
 
             # Apply rotation constraints
             self._apply_rotation_constraints(state)
+
+            # Optional discrete rotation search
+            self._apply_discrete_rotation_search(state, iteration)
 
             # Calculate total system energy
             state.total_energy = self._calculate_energy(state, forces)
@@ -578,6 +643,153 @@ class ForceDirectedRefiner:
             velocities=velocities,
         )
 
+    def _module_key(self, ref: str) -> Optional[str]:
+        """Return the module name for a component (None if unassigned)."""
+        module = self.modules.get(ref)
+        if not module or module == "unassigned":
+            return None
+        return module
+
+    def _ensure_module_groups(self):
+        """Build module grouping and hierarchy caches from self.modules."""
+        if self._module_tree_built:
+            return
+
+        groups: Dict[str, Set[str]] = {}
+        for ref, module in self.modules.items():
+            if not module or module == "unassigned":
+                continue
+            if ref not in self.board.components:
+                continue
+            groups.setdefault(module, set()).add(ref)
+
+        hierarchy: Dict[str, Set[str]] = {}
+        depths: Dict[str, int] = {}
+        for module_name, refs in groups.items():
+            parts = module_name.split(".")
+            for depth in range(1, len(parts) + 1):
+                parent = ".".join(parts[:depth])
+                hierarchy.setdefault(parent, set()).update(refs)
+                depths[parent] = parent.count(".")
+
+        self._module_groups = groups
+        self._module_hierarchy = hierarchy
+        self._module_depths = depths
+        self._module_tree_built = True
+
+    def _estimate_module_spread(self, refs: Iterable[str]) -> float:
+        """Estimate grouping radius based on component areas and clearance."""
+        total_area = 0.0
+        for ref in refs:
+            comp = self.board.components.get(ref)
+            if not comp:
+                continue
+            bbox = comp.get_bounding_box_with_pads()
+            width = max(0.1, bbox[2] - bbox[0])
+            height = max(0.1, bbox[3] - bbox[1])
+            total_area += width * height + (self.config.min_clearance * 4)
+        if total_area <= 0:
+            return 15.0
+        radius = math.sqrt(total_area / math.pi)
+        return max(10.0, radius * 1.6)
+
+    def _add_module_constraints_if_missing(self):
+        """Auto-add grouping constraints for modules when not already present."""
+        from .constraints import GroupingConstraint
+
+        self._ensure_module_groups()
+        if not self._module_groups:
+            return
+
+        existing_groups = []
+        for constraint in self.constraints:
+            if isinstance(constraint, GroupingConstraint):
+                existing_groups.append(set(constraint.components))
+
+        for module_name, refs in self._module_groups.items():
+            if len(refs) < 2:
+                continue
+            ref_set = set(refs)
+            if any(ref_set == existing for existing in existing_groups):
+                continue
+
+            spread = self._estimate_module_spread(refs)
+            constraint = GroupingConstraint(
+                components=sorted(refs),
+                max_spread=spread,
+                optimize_bbox=True,
+                bbox_strength=self.config.module_bbox_strength,
+                min_clearance=self.config.min_clearance,
+                description=f"Group module: {module_name}",
+            )
+            self.constraints.append(constraint)
+            existing_groups.append(ref_set)
+
+    def _add_module_cohesion_forces(self, state: PlacementState,
+                                    forces: Dict[str, List[Force]]):
+        """Add hierarchical cohesion forces for module groups."""
+        if self.config.module_cohesion_strength <= 0:
+            return
+
+        self._ensure_module_groups()
+        if not self._module_hierarchy:
+            return
+
+        for module_name, refs in self._module_hierarchy.items():
+            active_refs = []
+            for ref in refs:
+                comp = self.board.components.get(ref)
+                if not comp or comp.dnp:
+                    continue
+                if ref not in state.positions:
+                    continue
+                active_refs.append(ref)
+
+            if len(active_refs) < 2:
+                continue
+
+            spread = self._module_spreads.get(module_name)
+            if spread is None:
+                spread = self._estimate_module_spread(active_refs)
+                self._module_spreads[module_name] = spread
+
+            cx = sum(state.positions[ref][0] for ref in active_refs) / len(active_refs)
+            cy = sum(state.positions[ref][1] for ref in active_refs) / len(active_refs)
+            depth = self._module_depths.get(module_name, 0)
+            strength = self.config.module_cohesion_strength * (
+                self.config.module_cohesion_depth_multiplier ** depth
+            )
+
+            for ref in active_refs:
+                if self._is_component_locked(ref):
+                    continue
+                x, y = state.positions[ref]
+                dx = cx - x
+                dy = cy - y
+                distance = math.sqrt(dx * dx + dy * dy)
+                if distance <= spread / 2 or distance < 0.1:
+                    continue
+                force_mag = strength * (distance - spread / 2) / distance
+                forces[ref].append(Force(force_mag * dx, force_mag * dy,
+                                         ForceType.CONSTRAINT,
+                                         f"module_{module_name}"))
+
+    def _collect_rotation_constraint_refs(self) -> Set[str]:
+        """Collect refs that have explicit rotation constraints."""
+        constrained: Set[str] = set()
+        for constraint in self.constraints:
+            if hasattr(constraint, 'get_target_rotation'):
+                target_rot = constraint.get_target_rotation()
+                if target_rot is not None:
+                    ref = getattr(constraint, 'component_ref', None)
+                    if ref:
+                        constrained.add(ref)
+            elif hasattr(constraint, 'rotation') and constraint.rotation is not None:
+                ref = getattr(constraint, 'component_ref', None)
+                if ref:
+                    constrained.add(ref)
+        return constrained
+
     def _is_component_locked(self, ref: str) -> bool:
         """Check if a component should be treated as locked."""
         # Anchors are always locked (top and bottom layers)
@@ -742,10 +954,10 @@ class ForceDirectedRefiner:
                     comp.x = target_x + dx * scale
                     comp.y = target_y + dy * scale
                 else:
-                    # Component at same position as center - add random offset
-                    angle = random.uniform(0, 2 * math.pi)
-                    comp.x = target_x + radius * 0.5 * math.cos(angle)
-                    comp.y = target_y + radius * 0.5 * math.sin(angle)
+                    # Component at same position as center - add deterministic offset
+                    jitter_dx, jitter_dy = _deterministic_jitter(ref, scale=radius * 0.5)
+                    comp.x = target_x + jitter_dx
+                    comp.y = target_y + jitter_dy
 
                 if is_bottom:
                     moved_bottom += 1
@@ -769,20 +981,57 @@ class ForceDirectedRefiner:
         # 2. Attraction forces (net connectivity)
         self._add_attraction_forces(state, forces)
 
-        # 3. Center attraction (compaction toward anchor/center)
+        # 3. Module cohesion forces (hierarchical grouping)
+        self._add_module_cohesion_forces(state, forces)
+
+        # 4. Center attraction (compaction toward anchor/center)
         self._add_center_forces(state, forces)
 
-        # 4. Boundary forces
+        # 5. Boundary forces
         self._add_boundary_forces(state, forces)
 
-        # 5. Constraint forces
+        # 6. Constraint forces
         self._add_constraint_forces(state, forces)
 
-        # 6. Alignment forces (optional)
+        # 7. Alignment forces (optional)
         if self.config.snap_to_grid and self.config.grid_size > 0:
             self._add_alignment_forces(state, forces)
 
         return forces
+
+    def _get_pair_clearance(self, ref1: str, ref2: str) -> Tuple[float, float]:
+        """Compute min/preferred clearance between two components using net rules."""
+        key = tuple(sorted((ref1, ref2)))
+        if key in self._pair_clearance_cache:
+            return self._pair_clearance_cache[key]
+
+        min_clearance = self.config.min_clearance
+        preferred = self.config.preferred_clearance
+
+        nets_between = self.board.get_nets_between(ref1, ref2)
+        for net in nets_between:
+            if net.clearance is not None:
+                min_clearance = max(min_clearance, net.clearance)
+                preferred = max(preferred, net.clearance * 2)
+            if net.trace_width is not None:
+                preferred = max(preferred, net.trace_width + min_clearance)
+            if net.is_differential:
+                preferred = max(preferred, min_clearance * 1.2)
+
+        # Ensure preferred >= min clearance by a small margin
+        preferred = max(preferred, min_clearance + 0.05)
+
+        # Allow tighter spacing within the same module
+        module1 = self._module_key(ref1)
+        module2 = self._module_key(ref2)
+        if module1 and module1 == module2:
+            preferred = max(
+                min_clearance,
+                min(preferred, min_clearance + self.config.module_compact_clearance)
+            )
+
+        self._pair_clearance_cache[key] = (min_clearance, preferred)
+        return min_clearance, preferred
 
     def _add_repulsion_forces(self, state: PlacementState,
                               forces: Dict[str, List[Force]]):
@@ -844,14 +1093,16 @@ class ForceDirectedRefiner:
                 if distance > cutoff_distance:
                     continue
 
+                pair_min_clearance, pair_preferred = self._get_pair_clearance(ref1, ref2)
+
                 # AABB overlap detection - check if bounding boxes overlap
                 # along each axis independently
-                overlap_x = (half_w1 + half_w2 + self.config.min_clearance) - abs(dx)
-                overlap_y = (half_h1 + half_h2 + self.config.min_clearance) - abs(dy)
+                overlap_x = (half_w1 + half_w2 + pair_min_clearance) - abs(dx)
+                overlap_y = (half_h1 + half_h2 + pair_min_clearance) - abs(dy)
 
                 # Preferred separation for comfortable spacing
-                preferred_sep_x = half_w1 + half_w2 + self.config.preferred_clearance
-                preferred_sep_y = half_h1 + half_h2 + self.config.preferred_clearance
+                preferred_sep_x = half_w1 + half_w2 + pair_preferred
+                preferred_sep_y = half_h1 + half_h2 + pair_preferred
 
                 if overlap_x > 0 and overlap_y > 0:
                     # Components are overlapping or too close - strong repulsion
@@ -880,7 +1131,7 @@ class ForceDirectedRefiner:
                     # Use max shortfall to ensure proper spacing on the tighter axis
                     shortfall_x = preferred_sep_x - abs(dx)
                     shortfall_y = preferred_sep_y - abs(dy)
-                    max_shortfall = self.config.preferred_clearance - self.config.min_clearance
+                    max_shortfall = max(pair_preferred - pair_min_clearance, 0.01)
 
                     if max_shortfall > 0:
                         # Use max to respond to worst-case axis (prevents under-repulsion)
@@ -922,161 +1173,237 @@ class ForceDirectedRefiner:
             if len(net.connections) < 2:
                 continue
 
-            # Count pins per component for proper weighting
-            # Components with multiple pins on a net should have stronger attraction
-            # Skip DNP (Do Not Populate) components
-            pin_counts: Dict[str, int] = {}
+            # Count pins per component for proper weighting, grouped by module
+            pin_counts_by_module: Dict[str, Dict[str, int]] = {}
             for ref, _ in net.connections:
-                if ref in state.positions:
-                    comp = self.board.components.get(ref)
-                    if comp and comp.dnp:
-                        continue  # Skip unpopulated components
-                    pin_counts[ref] = pin_counts.get(ref, 0) + 1
+                if ref not in state.positions:
+                    continue
+                comp = self.board.components.get(ref)
+                if comp and comp.dnp:
+                    continue
+                module_key = self._module_key(ref) if self.modules else None
+                if module_key is None:
+                    module_key = "__unassigned__"
+                pin_counts = pin_counts_by_module.setdefault(module_key, {})
+                pin_counts[ref] = pin_counts.get(ref, 0) + 1
 
-            refs = list(pin_counts.keys())
-            num_refs = len(refs)
+            for module_key, pin_counts in pin_counts_by_module.items():
+                refs = list(pin_counts.keys())
+                num_refs = len(refs)
+                if num_refs < 2:
+                    continue
 
-            if num_refs < 2:
-                continue
+                # Base strength, significantly boosted for power/ground nets
+                base_strength = self.config.attraction_strength
+                is_power_net = net.is_power or net.is_ground
+                if is_power_net:
+                    base_strength *= 10.0
 
-            # Base strength, significantly boosted for power/ground nets
-            # Decoupling capacitors need to stay close to ICs for good PDN
-            base_strength = self.config.attraction_strength
-            is_power_net = net.is_power or net.is_ground
-            if is_power_net:
-                # 10x boost for power nets to keep decoupling caps close
-                base_strength *= 10.0
+                # Respect per-net rules: larger clearance/width -> stronger attraction
+                if net.clearance is not None and self.config.min_clearance > 0:
+                    clearance_factor = max(1.0, net.clearance / self.config.min_clearance)
+                    base_strength *= clearance_factor
+                if net.trace_width is not None and self.board.default_trace_width > 0:
+                    width_factor = max(1.0, net.trace_width / self.board.default_trace_width)
+                    base_strength *= min(width_factor, 3.0)
 
-            # Cap effective distance to prevent unbounded attraction on long nets
-            max_dist = self.config.max_attraction_distance
+                # Cap effective distance to prevent unbounded attraction on long nets
+                max_dist = self.config.max_attraction_distance
 
-            # For power nets, identify capacitor-IC pairs for extra strong attraction
-            # Decoupling caps should be within 10mm of their target IC
-            cap_refs = []
-            ic_refs = []
-            if is_power_net:
-                for ref in refs:
-                    first_char = ref[0].upper() if ref else ''
-                    if first_char == 'C':
-                        cap_refs.append(ref)
-                    elif first_char == 'U':
-                        ic_refs.append(ref)
+                cap_refs = []
+                ic_refs = []
+                if is_power_net:
+                    for ref in refs:
+                        first_char = ref[0].upper() if ref else ''
+                        if first_char == 'C':
+                            cap_refs.append(ref)
+                        elif first_char == 'U':
+                            ic_refs.append(ref)
 
-            if num_refs <= 3:
-                # Small nets: use pairwise attraction with pin-count weighting
-                for i, ref1 in enumerate(refs):
-                    x1, y1 = state.positions[ref1]
-                    weight1 = pin_counts[ref1]
+                if num_refs <= 3:
+                    for i, ref1 in enumerate(refs):
+                        x1, y1 = state.positions[ref1]
+                        weight1 = pin_counts[ref1]
 
-                    for ref2 in refs[i+1:]:
-                        x2, y2 = state.positions[ref2]
-                        weight2 = pin_counts[ref2]
+                        for ref2 in refs[i+1:]:
+                            x2, y2 = state.positions[ref2]
+                            weight2 = pin_counts[ref2]
 
-                        dx = x2 - x1
-                        dy = y2 - y1
-                        distance = math.sqrt(dx*dx + dy*dy)
-
-                        if distance < 0.001:
-                            # Identical positions - apply random jitter to break symmetry
-                            dx = random.uniform(-0.5, 0.5)
-                            dy = random.uniform(-0.5, 0.5)
+                            dx = x2 - x1
+                            dy = y2 - y1
                             distance = math.sqrt(dx*dx + dy*dy)
+
+                            if distance < 0.001:
+                                jitter_key = f"{ref1}_{ref2}_{net_name}"
+                                dx, dy = _deterministic_jitter(jitter_key)
+                                distance = math.sqrt(dx*dx + dy*dy)
+
+                            if distance < 0.1:
+                                continue
+
+                            effective_dist = min(distance, max_dist)
+                            pair_weight = (weight1 + weight2) / 2.0
+                            force_mag = base_strength * effective_dist * pair_weight
+
+                            fx = force_mag * dx / distance
+                            fy = force_mag * dy / distance
+
+                            forces[ref1].append(Force(fx, fy, ForceType.ATTRACTION,
+                                                      f"net_{net_name}"))
+                            forces[ref2].append(Force(-fx, -fy, ForceType.ATTRACTION,
+                                                      f"net_{net_name}"))
+                else:
+                    total_pins = sum(pin_counts.values())
+                    if total_pins == 0:
+                        continue
+
+                    centroid_x = sum(state.positions[ref][0] * pin_counts[ref]
+                                     for ref in refs) / total_pins
+                    centroid_y = sum(state.positions[ref][1] * pin_counts[ref]
+                                     for ref in refs) / total_pins
+
+                    scaled_strength = base_strength / total_pins
+
+                    for ref in refs:
+                        x, y = state.positions[ref]
+                        weight = pin_counts[ref]
+
+                        dx = centroid_x - x
+                        dy = centroid_y - y
+                        distance = math.sqrt(dx*dx + dy*dy)
 
                         if distance < 0.1:
                             continue
 
-                        # Cap effective distance to limit attraction force
                         effective_dist = min(distance, max_dist)
-
-                        # Weight by pin counts: more pins = stronger connection
-                        pair_weight = (weight1 + weight2) / 2.0
-                        force_mag = base_strength * effective_dist * pair_weight
+                        force_mag = scaled_strength * effective_dist * weight
 
                         fx = force_mag * dx / distance
                         fy = force_mag * dy / distance
 
-                        forces[ref1].append(Force(fx, fy, ForceType.ATTRACTION,
-                                                  f"net_{net_name}"))
-                        forces[ref2].append(Force(-fx, -fy, ForceType.ATTRACTION,
-                                                  f"net_{net_name}"))
-            else:
-                # Large nets: use Star Model with virtual centroid
-                # Use pin-weighted centroid so multi-pin ICs pull centroid toward them
-                total_pins = sum(pin_counts.values())
-                centroid_x = sum(state.positions[ref][0] * pin_counts[ref]
-                                 for ref in refs) / total_pins
-                centroid_y = sum(state.positions[ref][1] * pin_counts[ref]
-                                 for ref in refs) / total_pins
+                        forces[ref].append(Force(fx, fy, ForceType.ATTRACTION,
+                                                 f"net_{net_name}_star"))
 
-                # Scale strength by 1/total_pins to prevent collapse on large nets
-                scaled_strength = base_strength / total_pins
+                if cap_refs and ic_refs:
+                    decoupling_strength = (self.config.attraction_strength *
+                                          self.config.decoupling_strength_multiplier)
+                    decoupling_target_dist = self.config.decoupling_target_distance
+                    decoupling_max_dist = self.config.decoupling_max_distance
+
+                    for cap_ref in cap_refs:
+                        cap_x, cap_y = state.positions[cap_ref]
+
+                        nearest_ic = None
+                        nearest_dist = float('inf')
+                        for ic_ref in ic_refs:
+                            ic_x, ic_y = state.positions[ic_ref]
+                            dx = ic_x - cap_x
+                            dy = ic_y - cap_y
+                            dist = math.sqrt(dx*dx + dy*dy)
+                            if dist < nearest_dist:
+                                nearest_dist = dist
+                                nearest_ic = ic_ref
+
+                        if nearest_ic and nearest_dist > 0.1 and nearest_ic in state.positions:
+                            ic_x, ic_y = state.positions[nearest_ic]
+                            dx = ic_x - cap_x
+                            dy = ic_y - cap_y
+
+                            if nearest_dist > decoupling_target_dist:
+                                excess_dist = nearest_dist - decoupling_target_dist
+                                if nearest_dist > decoupling_max_dist:
+                                    excess_dist *= 2.0
+                                force_mag = decoupling_strength * excess_dist * (
+                                    1 + excess_dist / decoupling_target_dist
+                                )
+
+                                fx = force_mag * dx / nearest_dist
+                                fy = force_mag * dy / nearest_dist
+
+                                forces[cap_ref].append(Force(
+                                    fx, fy, ForceType.ATTRACTION,
+                                    f"decoupling_{cap_ref}_to_{nearest_ic}"
+                                ))
+
+        # Differential pairs: pull paired nets toward a shared midpoint to keep lengths tight
+        self._add_diff_pair_forces(state, forces)
+
+    def _add_diff_pair_forces(self, state: PlacementState,
+                              forces: Dict[str, List[Force]]):
+        """Add extra attraction for differential pair nets to keep them co-located."""
+        processed: Set[Tuple[str, str]] = set()
+
+        for net_name, net in self.board.nets.items():
+            partner = net.diff_pair_net
+            if not partner or partner not in self.board.nets:
+                continue
+            key = tuple(sorted((net_name, partner)))
+            if key in processed:
+                continue
+            processed.add(key)
+
+            net_a = self.board.nets[net_name]
+            net_b = self.board.nets[partner]
+
+            def _centroid(net_obj: Net, refs: Set[str]) -> Tuple[float, float]:
+                pin_counts: Dict[str, int] = {}
+                for ref, _ in net_obj.connections:
+                    if ref in refs and ref in state.positions:
+                        pin_counts[ref] = pin_counts.get(ref, 0) + 1
+                if not pin_counts:
+                    return (0.0, 0.0)
+                total = sum(pin_counts.values())
+                if total == 0:
+                    return (0.0, 0.0)
+                cx = sum(state.positions[ref][0] * cnt for ref, cnt in pin_counts.items()) / total
+                cy = sum(state.positions[ref][1] * cnt for ref, cnt in pin_counts.items()) / total
+                return (cx, cy)
+
+            refs_a = {ref for ref, _ in net_a.connections if ref in state.positions}
+            refs_b = {ref for ref, _ in net_b.connections if ref in state.positions}
+            if not refs_a or not refs_b:
+                continue
+
+            module_groups: Dict[str, Tuple[Set[str], Set[str]]] = {}
+            if self.modules:
+                for ref in refs_a:
+                    key = self._module_key(ref) or "__unassigned__"
+                    module_groups.setdefault(key, (set(), set()))[0].add(ref)
+                for ref in refs_b:
+                    key = self._module_key(ref) or "__unassigned__"
+                    module_groups.setdefault(key, (set(), set()))[1].add(ref)
+            else:
+                module_groups["__all__"] = (set(refs_a), set(refs_b))
+
+            for module_key, (group_a, group_b) in module_groups.items():
+                if not group_a or not group_b:
+                    continue
+
+                cx_a, cy_a = _centroid(net_a, group_a)
+                cx_b, cy_b = _centroid(net_b, group_b)
+                midpoint = ((cx_a + cx_b) / 2, (cy_a + cy_b) / 2)
+                centroid_distance = math.sqrt((cx_a - cx_b) ** 2 + (cy_a - cy_b) ** 2)
+                target_distance = max(self.config.min_clearance * 2, centroid_distance * 0.5)
+
+                refs = group_a | group_b
+                if len(refs) < 2:
+                    continue
 
                 for ref in refs:
                     x, y = state.positions[ref]
-                    weight = pin_counts[ref]
-
-                    dx = centroid_x - x
-                    dy = centroid_y - y
-                    distance = math.sqrt(dx*dx + dy*dy)
-
+                    dx = midpoint[0] - x
+                    dy = midpoint[1] - y
+                    distance = math.sqrt(dx * dx + dy * dy)
                     if distance < 0.1:
                         continue
 
-                    # Cap effective distance to limit attraction force
-                    effective_dist = min(distance, max_dist)
-
-                    # Scale by pin count: multi-pin components get stronger pull
-                    force_mag = scaled_strength * effective_dist * weight
-
+                    force_mag = self.config.attraction_strength * 0.5 * min(
+                        self.config.max_attraction_distance, max(distance, target_distance)
+                    )
                     fx = force_mag * dx / distance
                     fy = force_mag * dy / distance
-
                     forces[ref].append(Force(fx, fy, ForceType.ATTRACTION,
-                                             f"net_{net_name}_star"))
-
-            # Extra strong attraction for decoupling capacitors to nearest IC
-            # This ensures caps stay close to their target IC for good PDN
-            # Best practice: decoupling caps should be within 5mm of IC power pins
-            if cap_refs and ic_refs:
-                decoupling_strength = self.config.attraction_strength * 100.0  # Very strong
-                decoupling_target_dist = 5.0  # Target distance in mm (tighter than before)
-                decoupling_max_dist = 10.0  # Maximum acceptable distance
-
-                for cap_ref in cap_refs:
-                    cap_x, cap_y = state.positions[cap_ref]
-
-                    # Find nearest IC on this net
-                    nearest_ic = None
-                    nearest_dist = float('inf')
-                    for ic_ref in ic_refs:
-                        ic_x, ic_y = state.positions[ic_ref]
-                        dx = ic_x - cap_x
-                        dy = ic_y - cap_y
-                        dist = math.sqrt(dx*dx + dy*dy)
-                        if dist < nearest_dist:
-                            nearest_dist = dist
-                            nearest_ic = ic_ref
-
-                    if nearest_ic and nearest_dist > 0.1 and nearest_ic in state.positions:
-                        ic_x, ic_y = state.positions[nearest_ic]
-                        dx = ic_x - cap_x
-                        dy = ic_y - cap_y
-
-                        # Apply attraction if cap is further than target distance
-                        # Force increases quadratically as distance exceeds target
-                        if nearest_dist > decoupling_target_dist:
-                            # Quadratic force for stronger pull when far away
-                            excess_dist = nearest_dist - decoupling_target_dist
-                            # Extra urgency if exceeding max acceptable distance
-                            if nearest_dist > decoupling_max_dist:
-                                excess_dist *= 2.0  # Double the urgency
-                            force_mag = decoupling_strength * excess_dist * (1 + excess_dist / decoupling_target_dist)
-
-                            fx = force_mag * dx / nearest_dist
-                            fy = force_mag * dy / nearest_dist
-
-                            forces[cap_ref].append(Force(fx, fy, ForceType.ATTRACTION,
-                                                         f"decoupling_{cap_ref}_to_{nearest_ic}"))
+                                             f"diff_pair_{net_name}_{partner}"))
 
     def _add_center_forces(self, state: PlacementState,
                            forces: Dict[str, List[Force]]):
@@ -1159,6 +1486,15 @@ class ForceDirectedRefiner:
         if not outline.has_outline:
             return
 
+        # Cache bounding box and center for polygon outlines (avoids repeated calculation)
+        polygon_bbox = None
+        polygon_center_x = 0.0
+        polygon_center_y = 0.0
+        if outline.polygon:
+            polygon_bbox = outline.get_bounding_box()
+            polygon_center_x = (polygon_bbox[0] + polygon_bbox[2]) / 2
+            polygon_center_y = (polygon_bbox[1] + polygon_bbox[3]) / 2
+
         for ref, (x, y) in state.positions.items():
             # Skip DNP (Do Not Populate) components - they don't need boundary checking
             comp = self.board.components.get(ref)
@@ -1185,12 +1521,9 @@ class ForceDirectedRefiner:
                 # Also check center point
                 if not outline.contains_point(x, y, margin=clearance):
                     # Component center is outside or too close to edge
-                    # Push toward board center
-                    bbox = outline.get_bounding_box()
-                    center_x = (bbox[0] + bbox[2]) / 2
-                    center_y = (bbox[1] + bbox[3]) / 2
-                    dx = center_x - x
-                    dy = center_y - y
+                    # Push toward board center (use cached center)
+                    dx = polygon_center_x - x
+                    dy = polygon_center_y - y
                     dist = math.sqrt(dx * dx + dy * dy) + 0.001
                     fx += self.config.boundary_strength * dx / dist * 2
                     fy += self.config.boundary_strength * dy / dist * 2
@@ -1199,12 +1532,9 @@ class ForceDirectedRefiner:
                 for cx, cy in corners:
                     if not outline.contains_point(cx, cy, margin=clearance):
                         # This corner is outside - push component inward
-                        # Calculate centroid direction
-                        bbox = outline.get_bounding_box()
-                        center_x = (bbox[0] + bbox[2]) / 2
-                        center_y = (bbox[1] + bbox[3]) / 2
-                        dx = center_x - cx
-                        dy = center_y - cy
+                        # Use cached center for direction calculation
+                        dx = polygon_center_x - cx
+                        dy = polygon_center_y - cy
                         dist = math.sqrt(dx * dx + dy * dy) + 0.001
                         fx += self.config.boundary_strength * dx / dist
                         fy += self.config.boundary_strength * dy / dist
@@ -1257,15 +1587,22 @@ class ForceDirectedRefiner:
         # Use edge_clearance to match validator's min_trace_to_edge
         clearance = self.config.edge_clearance
 
+        # Cache bounding box and center for polygon outlines (avoids repeated calculation)
+        polygon_center_x = 0.0
+        polygon_center_y = 0.0
+        if outline.polygon:
+            polygon_bbox = outline.get_bounding_box()
+            polygon_center_x = (polygon_bbox[0] + polygon_bbox[2]) / 2
+            polygon_center_y = (polygon_bbox[1] + polygon_bbox[3]) / 2
+
         for ref, (x, y) in state.positions.items():
             # Get component dimensions (accounting for rotation)
             half_w, half_h = self._component_sizes.get(ref, (1.0, 1.0))
 
             if outline.polygon:
-                # For polygon outlines, iteratively move toward centroid
-                bbox = outline.get_bounding_box()
-                center_x = (bbox[0] + bbox[2]) / 2
-                center_y = (bbox[1] + bbox[3]) / 2
+                # For polygon outlines, iteratively move toward centroid (use cached center)
+                center_x = polygon_center_x
+                center_y = polygon_center_y
 
                 # Check all corners with margin
                 corners = [
@@ -1459,6 +1796,165 @@ class ForceDirectedRefiner:
 
         return total_energy
 
+    def _get_rotation_extents(self, ref: str, rotation: int
+                              ) -> Tuple[float, float, float, float]:
+        """Get component AABB extents relative to its centroid for a rotation."""
+        rot_key = int(rotation) % 360
+        cache_key = (ref, rot_key)
+        if cache_key in self._rotation_extents_cache:
+            return self._rotation_extents_cache[cache_key]
+
+        comp = self.board.components.get(ref)
+        if not comp:
+            extents = (-0.5, -0.5, 0.5, 0.5)
+            self._rotation_extents_cache[cache_key] = extents
+            return extents
+
+        hw = comp.width / 2
+        hh = comp.height / 2
+        rad = math.radians(rot_key)
+        cos_r = math.cos(rad)
+        sin_r = math.sin(rad)
+
+        corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+        min_x = float("inf")
+        min_y = float("inf")
+        max_x = float("-inf")
+        max_y = float("-inf")
+        for cx, cy in corners:
+            rx = cx * cos_r - cy * sin_r
+            ry = cx * sin_r + cy * cos_r
+            min_x = min(min_x, rx)
+            min_y = min(min_y, ry)
+            max_x = max(max_x, rx)
+            max_y = max(max_y, ry)
+
+        for pad in comp.pads:
+            pad_min_x, pad_min_y, pad_max_x, pad_max_y = pad.get_bounding_box(0.0, 0.0, rot_key)
+            min_x = min(min_x, pad_min_x)
+            min_y = min(min_y, pad_min_y)
+            max_x = max(max_x, pad_max_x)
+            max_y = max(max_y, pad_max_y)
+
+        extents = (min_x, min_y, max_x, max_y)
+        self._rotation_extents_cache[cache_key] = extents
+        return extents
+
+    def _rotation_penalty(self, ref: str, rotation: int,
+                          state: PlacementState) -> float:
+        """Estimate overlap/boundary penalty for a discrete rotation."""
+        comp = self.board.components.get(ref)
+        if not comp or comp.dnp:
+            return float("inf")
+
+        x, y = state.positions[ref]
+        min_dx, min_dy, max_dx, max_dy = self._get_rotation_extents(ref, rotation)
+        half_w = max(abs(min_dx), abs(max_dx))
+        half_h = max(abs(min_dy), abs(max_dy))
+
+        penalty = 0.0
+        outline = self.board.outline
+        clearance = self.config.edge_clearance
+
+        if outline.has_outline:
+            if outline.polygon:
+                corners = [
+                    (x + min_dx, y + min_dy),
+                    (x + max_dx, y + min_dy),
+                    (x + min_dx, y + max_dy),
+                    (x + max_dx, y + max_dy),
+                ]
+                for cx, cy in corners:
+                    if not outline.contains_point(cx, cy, margin=clearance):
+                        penalty += self.config.rotation_boundary_weight
+            else:
+                left = x + min_dx - clearance
+                right = x + max_dx + clearance
+                bottom = y + min_dy - clearance
+                top = y + max_dy + clearance
+                if left < outline.origin_x:
+                    penalty += (outline.origin_x - left) * self.config.rotation_boundary_weight
+                if right > outline.origin_x + outline.width:
+                    penalty += (right - (outline.origin_x + outline.width)) * self.config.rotation_boundary_weight
+                if bottom < outline.origin_y:
+                    penalty += (outline.origin_y - bottom) * self.config.rotation_boundary_weight
+                if top > outline.origin_y + outline.height:
+                    penalty += (top - (outline.origin_y + outline.height)) * self.config.rotation_boundary_weight
+
+        refs = list(state.positions.keys())
+        for ref2 in refs:
+            if ref2 == ref:
+                continue
+            comp2 = self.board.components.get(ref2)
+            if comp2 and comp2.dnp:
+                continue
+
+            if not (comp.is_through_hole or (comp2 and comp2.is_through_hole)):
+                from ..board.abstraction import Layer
+
+                is_top1 = comp.layer == Layer.TOP_COPPER
+                is_bottom1 = comp.layer == Layer.BOTTOM_COPPER
+                is_top2 = comp2.layer == Layer.TOP_COPPER if comp2 else False
+                is_bottom2 = comp2.layer == Layer.BOTTOM_COPPER if comp2 else False
+                if (is_top1 and is_bottom2) or (is_bottom1 and is_top2):
+                    continue
+
+            x2, y2 = state.positions[ref2]
+            dx = x - x2
+            dy = y - y2
+            distance = math.sqrt(dx * dx + dy * dy)
+            if distance > self.config.repulsion_cutoff:
+                continue
+
+            pair_min_clearance, _ = self._get_pair_clearance(ref, ref2)
+            half_w2, half_h2 = self._component_sizes.get(ref2, (1.0, 1.0))
+            overlap_x = (half_w + half_w2 + pair_min_clearance) - abs(dx)
+            overlap_y = (half_h + half_h2 + pair_min_clearance) - abs(dy)
+            if overlap_x > 0 and overlap_y > 0:
+                penalty += overlap_x * overlap_y * self.config.rotation_overlap_weight
+
+        return penalty
+
+    def _apply_discrete_rotation_search(self, state: PlacementState, iteration: int):
+        """Try discrete rotations to reduce overlap/boundary penalties."""
+        if not self.config.enable_discrete_rotation:
+            return
+        if self.config.rotation_search_interval <= 0:
+            return
+        if iteration % self.config.rotation_search_interval != 0:
+            return
+        if not self.config.rotation_angles:
+            return
+
+        for ref in state.positions:
+            if self._is_component_locked(ref):
+                continue
+            comp = self.board.components.get(ref)
+            if not comp or comp.dnp:
+                continue
+            if ref in self._rotation_constraint_refs:
+                continue
+
+            current_rot = int(state.rotations.get(ref, comp.rotation)) % 360
+            best_rot = current_rot
+            best_penalty = self._rotation_penalty(ref, current_rot, state)
+
+            for candidate in self.config.rotation_angles:
+                candidate_rot = int(candidate) % 360
+                if candidate_rot == current_rot:
+                    continue
+                penalty = self._rotation_penalty(ref, candidate_rot, state)
+                if penalty + 1e-6 < best_penalty:
+                    best_penalty = penalty
+                    best_rot = candidate_rot
+
+            if best_rot != current_rot:
+                state.rotations[ref] = best_rot
+                min_dx, min_dy, max_dx, max_dy = self._get_rotation_extents(ref, best_rot)
+                half_w = max(abs(min_dx), abs(max_dx), 0.1)
+                half_h = max(abs(min_dy), abs(max_dy), 0.1)
+                self._component_sizes[ref] = (half_w, half_h)
+
     def _apply_rotation_constraints(self, state: PlacementState):
         """Apply rotation constraints to component rotations.
 
@@ -1611,114 +2107,8 @@ class ForceDirectedRefiner:
             self._component_sizes[ref] = (half_w, half_h)
 
 
-@dataclass
-class PlacementConstraint:
-    """Base class for placement constraints."""
-    description: str = ""
-    priority: str = "preferred"  # "required", "preferred", "optional"
-    affected_components: List[str] = field(default_factory=list)
-
-    def calculate_forces(self, state: PlacementState, board: Board,
-                         strength: float) -> Dict[str, Tuple[float, float]]:
-        """Calculate forces to satisfy this constraint."""
-        raise NotImplementedError
-
-
-@dataclass
-class ProximityConstraint(PlacementConstraint):
-    """Keep components close together."""
-    target_ref: str = ""
-    anchor_ref: str = ""
-    max_distance: float = 5.0  # mm
-
-    def calculate_forces(self, state: PlacementState, board: Board,
-                         strength: float) -> Dict[str, Tuple[float, float]]:
-        forces = {}
-
-        if self.target_ref not in state.positions or self.anchor_ref not in state.positions:
-            return forces
-
-        x1, y1 = state.positions[self.target_ref]
-        x2, y2 = state.positions[self.anchor_ref]
-
-        dx = x2 - x1
-        dy = y2 - y1
-        distance = math.sqrt(dx*dx + dy*dy)
-
-        if distance > self.max_distance:
-            force_mag = strength * (distance - self.max_distance) / distance
-            forces[self.target_ref] = (force_mag * dx, force_mag * dy)
-
-        return forces
-
-
-@dataclass
-class EdgeConstraint(PlacementConstraint):
-    """Place component on board edge."""
-    component_ref: str = ""
-    edge: str = "left"  # "left", "right", "top", "bottom"
-    offset: float = 2.0  # mm from edge
-
-    def calculate_forces(self, state: PlacementState, board: Board,
-                         strength: float) -> Dict[str, Tuple[float, float]]:
-        forces = {}
-
-        if self.component_ref not in state.positions:
-            return forces
-
-        x, y = state.positions[self.component_ref]
-        outline = board.outline
-
-        fx, fy = 0.0, 0.0
-
-        if self.edge == "left":
-            target_x = outline.origin_x + self.offset
-            fx = strength * (target_x - x)
-        elif self.edge == "right":
-            target_x = outline.origin_x + outline.width - self.offset
-            fx = strength * (target_x - x)
-        elif self.edge == "top":
-            target_y = outline.origin_y + self.offset
-            fy = strength * (target_y - y)
-        elif self.edge == "bottom":
-            target_y = outline.origin_y + outline.height - self.offset
-            fy = strength * (target_y - y)
-
-        forces[self.component_ref] = (fx, fy)
-        return forces
-
-
-@dataclass
-class ZoneConstraint(PlacementConstraint):
-    """Keep components within a specific zone."""
-    zone_x: float = 0.0
-    zone_y: float = 0.0
-    zone_width: float = 50.0
-    zone_height: float = 50.0
-
-    def calculate_forces(self, state: PlacementState, board: Board,
-                         strength: float) -> Dict[str, Tuple[float, float]]:
-        forces = {}
-
-        for ref in self.affected_components:
-            if ref not in state.positions:
-                continue
-
-            x, y = state.positions[ref]
-            fx, fy = 0.0, 0.0
-
-            # Push toward zone if outside
-            if x < self.zone_x:
-                fx = strength * (self.zone_x - x)
-            elif x > self.zone_x + self.zone_width:
-                fx = strength * (self.zone_x + self.zone_width - x)
-
-            if y < self.zone_y:
-                fy = strength * (self.zone_y - y)
-            elif y > self.zone_y + self.zone_height:
-                fy = strength * (self.zone_y + self.zone_height - y)
-
-            if fx != 0 or fy != 0:
-                forces[ref] = (fx, fy)
-
-        return forces
+# Note: PlacementConstraint, ProximityConstraint, EdgeConstraint, and ZoneConstraint
+# are defined in atoplace/placement/constraints.py - import from there.
+# The ForceDirectedRefiner._add_constraint_forces() method supports both interfaces:
+# - calculate_forces(state, board, strength) - batch interface
+# - calculate_force(board, ref, strength) - per-component interface (used by constraints.py)

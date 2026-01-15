@@ -110,19 +110,22 @@ Used specifically for the "Escape Zone" around BGAs.
 
 ## 6. Implementation Roadmap
 
-### Milestone 1: Solidify Base (Current)
-- [x] A* Router Core (Greedy Multiplier).
-- [x] Spatial Hash Indexing.
-- [ ] **Action:** Add `RoutingManager` to orchestrate net ordering and result merging.
+### Milestone 1: Solidify Base ✅ COMPLETE
+- [x] A* Router Core (Greedy Multiplier) - `astar_router.py`
+- [x] Spatial Hash Indexing - `spatial_index.py`
+- [x] RoutingManager to orchestrate net ordering and result merging - `manager.py`
+- [x] CLI command: `atoplace route` with diff pair detection
+- [x] MCP tools: `route_board`, `route_net`, `detect_diff_pairs`, `get_routing_preview`
 
-### Milestone 2: The Routing Assistant (Q2 2026)
-- [ ] **Diff Pair Router:** Implement `DiffPairAStar` subclass.
-- [ ] **Fanout Generator:** Implement procedural Dogbone/VIP placement.
-- [ ] **Pin Swapper:** Basic MCU/Connector pin swapping (netlist permutation).
+### Milestone 2: The Routing Assistant ✅ COMPLETE
+- [x] **Diff Pair Detector:** Auto-detect diff pairs from net names - `diff_pairs.py`
+- [x] **Diff Pair Router:** Basic implementation (full coupled routing in progress)
+- [x] **Fanout Generator:** Procedural Dogbone/VIP placement - `fanout/`
+- [x] **Pin Swapper:** MCU/FPGA/Connector pin swapping with Hungarian algorithm - `pinswapper/`
 
-### Milestone 3: High Density (Q3 2026)
+### Milestone 3: High Density (Q2 2026)
 - [ ] **Pathfinder Engine:** Implement negotiation-based routing for BGA escape zones.
-- [ ] **Length Tuning:** Implement accordion generation.
+- [ ] **Length Tuning:** Implement accordion generation (skeleton in `LengthMatcher`).
 - [ ] **Teardrops:** Post-processing geometry upgrade.
 
 ## 7. Data Structures & Tech Stack

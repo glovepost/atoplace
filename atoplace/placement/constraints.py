@@ -444,7 +444,7 @@ class GroupingConstraint(PlacementConstraint):
         for ref in positions:
             comp = board.get_component(ref)
             if comp:
-                bbox = comp.get_bounding_box()
+                bbox = comp.get_bounding_box_with_pads()
                 half_w = (bbox[2] - bbox[0]) / 2
                 half_h = (bbox[3] - bbox[1]) / 2
                 comp_sizes[ref] = (half_w, half_h)

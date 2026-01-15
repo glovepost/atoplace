@@ -8,9 +8,12 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import math
+import logging
 
 from ..board.abstraction import Board
 from ..dfm.profiles import DFMProfile
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

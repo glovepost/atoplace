@@ -1,0 +1,91 @@
+# Visualization Color Configuration
+#
+# This file defines colors for the placement and routing visualizers.
+# Colors can be customized for better contrast or accessibility needs.
+# All colors should be in hex format (#RRGGBB).
+
+# Module type colors for placement visualization
+# These are used to color-code functional groups of components
+module_colors:
+  power_supply: "#e74c3c"      # Red
+  power: "#e74c3c"             # Red (alias)
+  microcontroller: "#3498db"   # Blue
+  mcu: "#3498db"               # Blue (alias)
+  rf_frontend: "#9b59b6"       # Purple
+  rf: "#9b59b6"                # Purple (alias)
+  sensor: "#2ecc71"            # Green
+  connector: "#f39c12"         # Orange
+  crystal: "#1abc9c"           # Teal
+  led: "#e91e63"               # Pink
+  memory: "#00bcd4"            # Cyan
+  analog: "#ff5722"            # Deep Orange
+  digital: "#607d8b"           # Blue Grey
+  esd_protection: "#795548"    # Brown
+  level_shifter: "#9c27b0"     # Deep Purple
+  accel: "#00e676"             # Bright Green (accelerometer)
+  imu: "#00e676"               # Bright Green (IMU)
+  gps: "#ffeb3b"               # Yellow (GPS)
+  lte: "#ff9800"               # Orange (LTE)
+  default: "#95a5a6"           # Grey (fallback)
+
+# Force vector colors for placement visualization
+# These show different types of forces acting on components
+force_colors:
+  repulsion: "#e74c3c"    # Red - components pushing apart
+  attraction: "#2ecc71"   # Green - components pulling together
+  boundary: "#3498db"     # Blue - board edge forces
+  constraint: "#f39c12"   # Orange - user constraints
+  alignment: "#9b59b6"    # Purple - grid alignment forces
+
+# Routing visualization colors
+# Used for traces, pads, and routing debug visualization
+routing_colors:
+  # Board elements
+  board_outline: "#333333"
+  obstacle: "#cccccc"
+  obstacle_stroke: "#999999"
+
+  # Layer colors (expandable for N-layer boards)
+  # Format: layer_<number>_<type> where type is 'pad' or 'trace'
+  # Front layer (layer 0)
+  layer_0_pad: "#cc0000"     # Front copper pads (red)
+  layer_0_trace: "#ff6666"   # Front copper traces (light red)
+
+  # Back layer (layer 1)
+  layer_1_pad: "#0000cc"     # Back copper pads (blue)
+  layer_1_trace: "#6666ff"   # Back copper traces (light blue)
+
+  # Inner layers (2-9) - using spectral colormap
+  # These are generated programmatically if not defined
+  layer_2_pad: "#00cc00"     # Green
+  layer_2_trace: "#66ff66"   # Light green
+  layer_3_pad: "#cccc00"     # Yellow
+  layer_3_trace: "#ffff66"   # Light yellow
+  layer_4_pad: "#cc6600"     # Orange
+  layer_4_trace: "#ff9966"   # Light orange
+  layer_5_pad: "#cc00cc"     # Magenta
+  layer_5_trace: "#ff66ff"   # Light magenta
+  layer_6_pad: "#00cccc"     # Cyan
+  layer_6_trace: "#66ffff"   # Light cyan
+  layer_7_pad: "#6600cc"     # Purple
+  layer_7_trace: "#9966ff"   # Light purple
+  layer_8_pad: "#cc0066"     # Rose
+  layer_8_trace: "#ff6699"   # Light rose
+  layer_9_pad: "#66cc00"     # Lime
+  layer_9_trace: "#99ff66"   # Light lime
+
+  # Vias
+  via: "#00cc00"
+
+  # A* debugging colors
+  explored: "#ffeeee"        # Nodes already explored
+  frontier: "#ffffcc"        # Nodes in frontier
+  current_path: "#00ff00"    # Current path being traced
+  target_pad: "#ff00ff"      # Target pad highlight
+
+# Color generation settings for unknown module types
+# Uses HSL color space with fixed saturation and lightness
+color_generation:
+  saturation: 70    # 0-100
+  lightness: 50     # 0-100
+  hash_seed: 137.508  # Golden angle for even distribution

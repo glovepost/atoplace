@@ -14,6 +14,7 @@ import math
 import logging
 
 from .spatial_index import Obstacle, SpatialHashIndex
+from ..visualization_color_manager import get_color_manager
 
 logger = logging.getLogger(__name__)
 
@@ -64,21 +65,62 @@ class VisualizationFrame:
     label: str = ""
 
 
-# Color palette for visualization
-COLORS = {
-    "board_outline": "#333333",
-    "obstacle": "#cccccc",
-    "obstacle_stroke": "#999999",
-    "pad_f": "#cc0000",  # Front copper pads
-    "pad_b": "#0000cc",  # Back copper pads
-    "trace_f": "#ff6666",  # Front copper traces
-    "trace_b": "#6666ff",  # Back copper traces
-    "via": "#00cc00",
-    "explored": "#ffeeee",
-    "frontier": "#ffffcc",
-    "current_path": "#00ff00",
-    "target_pad": "#ff00ff",
-}
+# Color palette is now loaded from visualization_colors.yaml
+# via the ColorManager. This allows users to customize colors and
+# supports N-layer boards with dynamic color generation.
+#
+# Helper functions provide backward-compatible access.
+
+
+def get_routing_color(element: str) -> str:
+    """Get color for a routing element.
+
+    Args:
+        element: Element name (e.g., "board_outline", "obstacle", "via")
+
+    Returns:
+        Hex color string
+    """
+    return get_color_manager().get_routing_color(element)
+
+
+def get_layer_color(layer: int, element_type: str = "pad") -> str:
+    """Get color for a specific PCB layer.
+
+    Supports multi-layer boards (4, 6, 8+ layers) with dynamic color generation.
+
+    Args:
+        layer: Layer number (0 = front, 1 = back, 2+ = inner)
+        element_type: "pad" or "trace"
+
+    Returns:
+        Hex color string
+    """
+    return get_color_manager().get_layer_color(layer, element_type)
+
+
+# Deprecated: Backward compatibility
+# Legacy code may reference COLORS dict directly
+COLORS = None  # Lazy-loaded on first access
+
+
+def _get_colors_dict() -> Dict[str, str]:
+    """Get legacy COLORS dict for backward compatibility."""
+    cm = get_color_manager()
+    return {
+        "board_outline": cm.get_routing_color("board_outline"),
+        "obstacle": cm.get_routing_color("obstacle"),
+        "obstacle_stroke": cm.get_routing_color("obstacle_stroke"),
+        "pad_f": cm.get_layer_color(0, "pad"),  # Front copper pads
+        "pad_b": cm.get_layer_color(1, "pad"),  # Back copper pads
+        "trace_f": cm.get_layer_color(0, "trace"),  # Front copper traces
+        "trace_b": cm.get_layer_color(1, "trace"),  # Back copper traces
+        "via": cm.get_routing_color("via"),
+        "explored": cm.get_routing_color("explored"),
+        "frontier": cm.get_routing_color("frontier"),
+        "current_path": cm.get_routing_color("current_path"),
+        "target_pad": cm.get_routing_color("target_pad"),
+    }
 
 
 class RouteVisualizer:
@@ -118,8 +160,8 @@ class RouteVisualizer:
     def _to_svg_coords(self, x: float, y: float) -> Tuple[float, float]:
         """Convert board coordinates to SVG coordinates."""
         svg_x = (x - self.bounds[0] + self.margin) * self.scale
-        # SVG Y is inverted
-        svg_y = self.svg_height - (y - self.bounds[1] + self.margin) * self.scale
+        # Direct Y mapping (no inversion)
+        svg_y = (y - self.bounds[1] + self.margin) * self.scale
         return (svg_x, svg_y)
 
     def _to_svg_size(self, size: float) -> float:
@@ -214,42 +256,48 @@ class RouteVisualizer:
 
     def _render_board_outline(self) -> str:
         """Render board outline rectangle."""
-        x, y = self._to_svg_coords(self.bounds[0], self.bounds[3])
+        x, y = self._to_svg_coords(self.bounds[0], self.bounds[1])
         w = self._to_svg_size(self.board_width)
         h = self._to_svg_size(self.board_height)
         return (
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" '
-            f'fill="none" stroke="{COLORS["board_outline"]}" stroke-width="2"/>'
+            f'fill="none" stroke="{get_routing_color("board_outline")}" stroke-width="2"/>'
         )
 
     def _render_obstacle(self, obs: Obstacle) -> str:
         """Render an obstacle as a rectangle."""
-        x, y = self._to_svg_coords(obs.min_x, obs.max_y)
+        x, y = self._to_svg_coords(obs.min_x, obs.min_y)
         w = self._to_svg_size(obs.max_x - obs.min_x)
         h = self._to_svg_size(obs.max_y - obs.min_y)
         return (
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" '
-            f'fill="{COLORS["obstacle"]}" stroke="{COLORS["obstacle_stroke"]}" '
+            f'fill="{get_routing_color("obstacle")}" stroke="{get_routing_color("obstacle_stroke")}" '
             f'stroke-width="0.5" opacity="0.7"/>'
         )
 
     def _render_pad(self, pad: Obstacle) -> str:
-        """Render a pad (connection point)."""
-        x, y = self._to_svg_coords(pad.min_x, pad.max_y)
+        """Render a pad (connection point).
+
+        Now supports N-layer boards with dynamic color generation.
+        """
+        x, y = self._to_svg_coords(pad.min_x, pad.min_y)
         w = self._to_svg_size(pad.max_x - pad.min_x)
         h = self._to_svg_size(pad.max_y - pad.min_y)
-        color = COLORS["pad_f"] if pad.layer == 0 else COLORS["pad_b"]
+        color = get_layer_color(pad.layer, "pad")
         return (
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" '
             f'fill="{color}" stroke="black" stroke-width="1" opacity="0.9"/>'
         )
 
     def _render_trace(self, trace: RouteSegment) -> str:
-        """Render a routed trace segment."""
+        """Render a routed trace segment.
+
+        Now supports N-layer boards with dynamic color generation.
+        """
         x1, y1 = self._to_svg_coords(trace.start[0], trace.start[1])
         x2, y2 = self._to_svg_coords(trace.end[0], trace.end[1])
         w = self._to_svg_size(trace.width)
-        color = COLORS["trace_f"] if trace.layer == 0 else COLORS["trace_b"]
+        color = get_layer_color(trace.layer, "trace")
         return (
             f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
             f'stroke="{color}" stroke-width="{max(w, 1)}" '
@@ -263,7 +311,7 @@ class RouteVisualizer:
         drill_r = self._to_svg_size(via.drill_diameter / 2)
         return (
             f'<circle cx="{x}" cy="{y}" r="{r}" '
-            f'fill="{COLORS["via"]}" stroke="black" stroke-width="1"/>'
+            f'fill="{get_routing_color("via")}" stroke="black" stroke-width="1"/>'
             f'<circle cx="{x}" cy="{y}" r="{drill_r}" fill="white"/>'
         )
 
@@ -276,7 +324,7 @@ class RouteVisualizer:
         for nx, ny, layer in nodes:
             x, y = self._to_svg_coords(nx, ny)
             circles.append(
-                f'<circle cx="{x}" cy="{y}" r="{r}" fill="{COLORS["explored"]}" opacity="0.3"/>'
+                f'<circle cx="{x}" cy="{y}" r="{r}" fill="{get_routing_color("explored")}" opacity="0.3"/>'
             )
         return f'<g class="explored">{"".join(circles)}</g>'
 
@@ -289,7 +337,7 @@ class RouteVisualizer:
         for nx, ny, layer in nodes:
             x, y = self._to_svg_coords(nx, ny)
             circles.append(
-                f'<circle cx="{x}" cy="{y}" r="{r}" fill="{COLORS["frontier"]}" '
+                f'<circle cx="{x}" cy="{y}" r="{r}" fill="{get_routing_color("frontier")}" '
                 f'stroke="orange" stroke-width="0.5"/>'
             )
         return f'<g class="frontier">{"".join(circles)}</g>'
@@ -304,7 +352,7 @@ class RouteVisualizer:
             points.append(f"{x},{y}")
         return (
             f'<polyline points="{" ".join(points)}" '
-            f'fill="none" stroke="{COLORS["current_path"]}" '
+            f'fill="none" stroke="{get_routing_color("current_path")}" '
             f'stroke-width="2" stroke-dasharray="5,3"/>'
         )
 
