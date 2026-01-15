@@ -519,6 +519,16 @@ def place(
         "--visualize",
         help="Generate interactive HTML visualization for debugging.",
     ),
+    stream: bool = typer.Option(
+        False,
+        "--stream",
+        help="Enable real-time streaming visualization via WebSocket.",
+    ),
+    stream_port: int = typer.Option(
+        8765,
+        "--stream-port",
+        help="WebSocket port for streaming visualization (default: 8765).",
+    ),
     # Lock file options for atopile sidecar persistence
     use_lock: bool = typer.Option(
         False,
@@ -542,6 +552,7 @@ def place(
     ),
 ):
     """Run placement optimization."""
+    import asyncio
     from .board.kicad_adapter import save_kicad_board
     from .placement.force_directed import ForceDirectedRefiner, RefinementConfig
     from .placement.legalizer import PlacementLegalizer, LegalizerConfig
@@ -550,6 +561,21 @@ def place(
     from .nlp.constraint_parser import ConstraintParser
     from .validation.confidence import ConfidenceScorer
     from .dfm.profiles import get_profile, get_profile_for_layers
+
+    # Import streaming visualizer if needed
+    if stream:
+        try:
+            from .placement.streaming_visualizer import StreamingVisualizer
+        except ImportError:
+            console = _get_context(ctx).console
+            console.print(
+                Panel(
+                    "[red]Streaming requires websockets package[/red]\n\n"
+                    "Install with: pip install 'atoplace[streaming]'",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(code=1)
 
     context = _get_context(ctx)
     console = context.console
@@ -606,9 +632,9 @@ def place(
 
     # Create visualizer if requested
     visualizer = None
+    streaming_viz = None
     module_map = {}  # ref -> module_type
-    if visualize:
-        visualizer = PlacementVisualizer(board_obj)
+    if visualize or stream:
         # Build module map from detected modules (heuristic-based)
         for module in modules:
             for ref in module.components:
@@ -621,6 +647,26 @@ def place(
                 ato_module = comp.properties.get("ato_module")
                 if ato_module:
                     module_map[ref] = ato_module
+
+        if stream:
+            # Use streaming visualizer for real-time WebSocket updates
+            streaming_viz = StreamingVisualizer(
+                board_obj,
+                host="localhost",
+                port=stream_port,
+                max_fps=10.0,
+            )
+            visualizer = streaming_viz.visualizer  # Use underlying visualizer for captures
+            console.print(
+                Panel(
+                    f"[cyan]Streaming enabled[/cyan]\n\n"
+                    f"WebSocket: ws://localhost:{stream_port}\n"
+                    f"Open placement_debug/stream_viewer.html in your browser",
+                    border_style="cyan",
+                )
+            )
+        else:
+            visualizer = PlacementVisualizer(board_obj)
 
     constraints_list = []
     if constraints:
@@ -868,7 +914,91 @@ def place(
         refiner.add_constraint(constraint)
 
     result = None
-    if context.verbose:
+
+    # Streaming refinement - run server in background thread
+    if stream and streaming_viz:
+        import threading
+        import queue
+
+        # Queue for frames to stream
+        frame_queue = queue.Queue(maxsize=100)
+        stop_event = threading.Event()
+        server_ready = threading.Event()
+
+        async def streaming_server_loop():
+            """Run WebSocket server and stream frames from queue."""
+            try:
+                await streaming_viz.start_streaming(generate_viewer=True)
+                await streaming_viz.send_status("info", "Starting placement optimization")
+                server_ready.set()
+
+                while not stop_event.is_set():
+                    try:
+                        # Get frame from queue with timeout
+                        frame_data = frame_queue.get(timeout=0.1)
+                        if frame_data is None:  # Poison pill
+                            break
+                        await streaming_viz.server.broadcast_frame(frame_data)
+                    except queue.Empty:
+                        await asyncio.sleep(0.05)
+
+                await streaming_viz.send_status("complete", "Optimization complete")
+                await asyncio.sleep(0.3)  # Brief pause for final message
+
+            finally:
+                await streaming_viz.stop_streaming()
+
+        def run_server_thread():
+            """Run async server in thread."""
+            asyncio.run(streaming_server_loop())
+
+        # Start server thread
+        server_thread = threading.Thread(target=run_server_thread, daemon=True)
+        server_thread.start()
+
+        # Wait for server to be ready
+        console.print("Starting streaming server...")
+        server_ready.wait(timeout=5.0)
+
+        def streaming_callback(state):
+            # Build frame data
+            if state.iteration % 5 == 0:  # Stream every 5th iteration
+                max_vel = 0.0
+                for vx, vy in state.velocities.values():
+                    vel = math.sqrt(vx * vx + vy * vy)
+                    max_vel = max(max_vel, vel)
+
+                frame_data = {
+                    "index": state.iteration,
+                    "label": f"Iteration {state.iteration}",
+                    "iteration": state.iteration,
+                    "phase": "refinement",
+                    "components": {
+                        ref: [comp.x, comp.y, comp.rotation]
+                        for ref, comp in board_obj.components.items()
+                    },
+                    "modules": module_map,
+                    "forces": {},
+                    "energy": state.total_energy,
+                    "max_move": max_vel,
+                    "overlap_count": 0,
+                    "total_wire_length": 0.0,
+                }
+                try:
+                    frame_queue.put_nowait(frame_data)
+                except queue.Full:
+                    pass  # Skip frame if queue full
+
+        # Run refinement with streaming callback
+        console.print("Running refinement with streaming... (open browser to view)")
+        result = refiner.refine(callback=streaming_callback)
+
+        # Signal server to stop and wait
+        stop_event.set()
+        frame_queue.put(None)  # Poison pill
+        server_thread.join(timeout=3.0)
+
+    elif context.verbose:
         with console.status("Running force-directed refinement..."):
             result = refiner.refine()
     else:
@@ -1021,6 +1151,15 @@ def place(
             output_dir="placement_debug",
         )
         console.print(Panel(f"Visualization: {viz_path}", border_style="magenta"))
+
+        if stream:
+            console.print(
+                Panel(
+                    "Streaming visualization was available during optimization.\n"
+                    "Static visualization also exported for later review.",
+                    border_style="cyan",
+                )
+            )
 
     console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
     raise typer.Exit(code=0 if report.overall_score >= 0.7 else 1)

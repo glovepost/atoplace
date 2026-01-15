@@ -40,7 +40,7 @@ PCB layout automation has historically been "black box" and "messy"—producing 
 - **🔍 Confidence Scoring**: Automated assessment of your board's routability, signal integrity risks, and DFM compliance.
 - **💬 Natural Language Control**: "Move the USB connector to the left edge", "Align these capacitors", "Keep the crystal near the MCU".
 - **🔌 Atopile Native**: First-class support for `atopile` projects with `ato-lock.yaml` parsing, module-aware grouping, and **`atoplace.lock` sidecar persistence** to preserve placements across rebuilds.
-- **📊 Interactive Visualization**: SVG/Canvas-based visualization with delta compression, proper pad rotation, and step-by-step algorithm playback for debugging and analysis.
+- **📊 Interactive Visualization**: Unified SVG delta viewer with real-time playback, layer toggles, grid customization, force vector display, routing trace visualization, and A* debug mode for step-by-step algorithm analysis.
 
 ## 🛠️ Installation
 
@@ -107,14 +107,17 @@ See [MCP Server](#-mcp-server) section below for details.
   - [x] Manhattan Legalizer (Grid snapping & PCA Alignment).
   - [x] Physics Engine scaling (Star Model & Adaptive Damping).
   - [x] Atopile `ato-lock.yaml` and module hierarchy integration.
-- **Milestone B (Q1-Q2 2026): Routing & Persistence** 🚧
+- **Milestone B (Q1-Q2 2026): Routing & Persistence** ✅
   - [x] **A* Geometric Planner** (Greedy Multiplier & Spatial Indexing).
-  - [x] **MCP Server** with IPC bridge for LLM agent integration.
+  - [x] **MCP Server** with 40+ tools for LLM agent integration.
   - [x] **Live KiCad IPC** via kipy for real-time component manipulation (KiCad 9+).
   - [x] **`atoplace.lock` Sidecar Persistence** for atopile projects.
-  - [ ] BGA/QFN Fanout Generator.
-  - [ ] Differential Pair Path Planning.
-- **Milestone C (Q2 2026): Professional Agent** 🔮
+  - [x] **Unified Visualization** (SVG delta viewer with routing support).
+  - [x] **BGA/QFN Fanout Generator** (dogbone & via-in-pad strategies).
+  - [x] **Pin Swap Optimization** (bipartite matching for crossing reduction).
+- **Milestone C (Q2 2026): Professional Agent** 🚧
+  - [x] Differential Pair Detection (auto-detect from net names).
+  - [ ] Differential Pair Coupled Routing.
   - [ ] Deep Signal Integrity Analysis (Crosstalk/Impedance).
   - [ ] Automated Manufacturing Outputs (Gerbers/BOM/PNP).
   - [ ] Multi-board design support.
@@ -124,35 +127,44 @@ See [MCP Server](#-mcp-server) section below for details.
 ```
 atoplace/
 ├── board/          # Board abstraction & KiCad/Atopile adapters
+│   ├── abstraction.py      # Board, Component, Net, Pad data models
+│   ├── kicad_adapter.py    # KiCad pcbnew integration
 │   ├── lock_file.py        # atoplace.lock sidecar persistence
 │   └── atopile_adapter.py  # Atopile project loader
 ├── placement/      # Force-directed physics & Manhattan Legalizer
-│   ├── force_directed.py   # Physics Engine (Star Model)
-│   ├── legalizer.py        # Manhattan Pipeline (REQ-P-03)
-│   ├── module_detector.py  # Hierarchy Analysis
-│   ├── visualizer.py       # SVG/Canvas visualization with delta compression
-│   └── canvas_renderer.py  # High-performance Canvas rendering
+│   ├── force_directed.py   # Physics Engine (Star Model, adaptive damping)
+│   ├── legalizer.py        # Manhattan Pipeline with PCA alignment
+│   ├── module_detector.py  # Functional module hierarchy analysis
+│   ├── constraints.py      # Placement constraints (Proximity, Edge, Zone, etc.)
+│   └── visualizer.py       # SVG delta visualization with frame capture
 ├── routing/        # A* Geometric Router
-│   ├── astar_router.py     # Core A* with Greedy Multiplier
-│   ├── spatial_index.py    # O(~1) collision detection
-│   └── obstacle_map.py     # Obstacle generation
+│   ├── astar_router.py     # Core A* with Greedy Multiplier (w=2-3)
+│   ├── manager.py          # Multi-phase routing pipeline
+│   ├── spatial_index.py    # O(~1) collision detection via spatial hashing
+│   ├── obstacle_map.py     # Obstacle generation from board
+│   ├── diff_pairs.py       # Differential pair detection
+│   ├── visualizer.py       # Routing visualization with A* debug
+│   └── fanout/             # BGA/QFN escape routing
+├── visualization/  # Unified visualization system
+│   └── assets/             # External JS/CSS for HTML viewer
+│       ├── svg-delta-viewer.js  # Interactive SVG playback engine
+│       └── styles.css      # KiCad-inspired dark theme
 ├── nlp/            # Natural Language & Intent Engine
+│   └── constraint_parser.py  # Parse "USB on left edge" to constraints
 ├── validation/     # Confidence Scorer & DFM/DRC Checker
+│   ├── confidence.py       # Design quality assessment
+│   └── drc.py              # Design rule checking
 ├── mcp/            # MCP Server for LLM Integration
-│   ├── server.py           # FastMCP server with 26 tools
+│   ├── server.py           # FastMCP server with 40+ tools
 │   ├── backends.py         # Backend mode detection & factory
 │   ├── kipy_session.py     # Live KiCad IPC session (KiCad 9+)
-│   ├── kipy_adapter.py     # kipy ↔ atoplace data conversion
-│   ├── bridge.py           # KiCad bridge (Python 3.9)
-│   ├── ipc.py              # IPC protocol & serialization
-│   ├── launcher.py         # Process manager
-│   └── context/            # Context generators (macro/micro/vision)
+│   └── context/            # Context generators (semantic grid, module map)
 └── cli.py          # CLI entry point
 ```
 
 ## 🤖 MCP Server
 
-atoplace includes a **Model Context Protocol (MCP)** server that exposes 26 PCB design tools to LLM agents like Claude. This enables conversational PCB layout design.
+atoplace includes a **Model Context Protocol (MCP)** server that exposes 40+ PCB design tools to LLM agents like Claude. This enables conversational PCB layout design with support for placement, routing, fanout generation, and design validation.
 
 ### Quick Start
 
@@ -249,16 +261,18 @@ flowchart LR
 
 **Note:** KIPY mode is the primary backend for bleeding-edge development. It provides instant visual feedback in KiCad's viewport and native undo/redo integration. The server automatically falls back to IPC or direct mode if KIPY is unavailable.
 
-### Available Tools (26 total)
+### Available Tools (40+ total)
 
 | Category | Tools |
 |----------|-------|
 | **Board Management** | `load_board`, `save_board`, `undo`, `redo` |
-| **Placement Actions** | `move_component`, `place_next_to`, `align_components`, `distribute_evenly`, `stack_components`, `swap_positions`, `arrange_pattern`, `cluster_around`, `group_components`, `lock_components` |
-| **Discovery** | `find_components`, `get_board_bounds`, `get_unplaced_components` |
-| **Topology** | `get_connected_components`, `get_critical_nets` |
-| **Context** | `inspect_region`, `get_board_summary`, `get_semantic_grid`, `get_module_map`, `render_region` |
-| **Validation** | `check_overlaps`, `validate_placement` |
+| **Placement Actions** | `move_absolute`, `move_relative`, `rotate`, `place_next_to`, `align_components`, `distribute_evenly`, `stack_components`, `arrange_pattern`, `cluster_around`, `lock_components` |
+| **Discovery** | `find_components`, `get_board_summary`, `get_unplaced_components` |
+| **Routing** | `route_board`, `route_net`, `detect_diff_pairs`, `get_routing_preview`, `analyze_pin_swaps`, `optimize_pin_swaps`, `export_pin_constraints` |
+| **BGA/Fanout** | `detect_bga_components`, `fanout_component`, `fanout_all_bgas`, `get_fanout_preview` |
+| **Context** | `inspect_region`, `get_semantic_grid`, `get_module_map` |
+| **Validation** | `check_overlaps`, `validate_placement`, `run_drc`, `get_crossing_analysis` |
+| **Optimization** | `optimize_placement`, `detect_modules`, `parse_constraint`, `get_atopile_context` |
 
 ### Environment Variables (Optional)
 

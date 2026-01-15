@@ -490,7 +490,7 @@ class ConfidenceScorer:
         flags = []
 
         # Calculate board utilization using proper area (handles polygon outlines)
-        board_area = board._calculate_board_area()
+        board_area = board.calculate_board_area()
         component_area = 0.0
 
         for comp in board.components.values():

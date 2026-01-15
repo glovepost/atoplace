@@ -47,6 +47,23 @@ def generate_stream_viewer_html(
     static_props = static_props or {}
     module_colors = module_colors or {}
 
+    # Convert static_props to JSON-serializable format
+    # ComponentStaticProps dataclass needs to be converted to dict
+    serializable_props = {}
+    for ref, props in static_props.items():
+        if hasattr(props, '__dict__'):
+            # Dataclass - convert to dict
+            serializable_props[ref] = {
+                'width': props.width,
+                'height': props.height,
+                'pads': props.pads if isinstance(props.pads, list) else list(props.pads),
+            }
+        elif isinstance(props, dict):
+            serializable_props[ref] = props
+        else:
+            serializable_props[ref] = {'width': 1, 'height': 1, 'pads': []}
+    static_props = serializable_props
+
     # Calculate canvas dimensions
     board_width = max_x - min_x
     board_height = max_y - min_y

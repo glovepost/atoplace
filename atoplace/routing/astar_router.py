@@ -37,21 +37,35 @@ class RouteNode:
     """A node in the A* search space.
 
     Immutable and hashable for use in sets and priority queues.
+
+    Coordinates are snapped to 0.1 micron (0.0001mm) precision for hashing
+    to ensure consistent behavior despite floating-point arithmetic drift.
+    This is much finer than any PCB grid (typically 0.1mm to 2.54mm) while
+    being robust against FP representation errors. (Issue #26)
     """
     x: float
     y: float
     layer: int
 
+    # Hash precision: 0.0001mm = 0.1 micron (snaps to 10000 units per mm)
+    _HASH_PRECISION = 10000  # units per mm
+
     def __hash__(self):
-        # Round to grid precision for consistent hashing
-        return hash((round(self.x, 3), round(self.y, 3), self.layer))
+        # Convert to integer grid for robust hashing (Issue #26)
+        # This avoids floating-point comparison issues entirely
+        ix = int(round(self.x * RouteNode._HASH_PRECISION))
+        iy = int(round(self.y * RouteNode._HASH_PRECISION))
+        return hash((ix, iy, self.layer))
 
     def __eq__(self, other):
         if not isinstance(other, RouteNode):
             return False
-        return (round(self.x, 3) == round(other.x, 3) and
-                round(self.y, 3) == round(other.y, 3) and
-                self.layer == other.layer)
+        # Use same integer conversion for equality (Issue #26)
+        ix1 = int(round(self.x * RouteNode._HASH_PRECISION))
+        iy1 = int(round(self.y * RouteNode._HASH_PRECISION))
+        ix2 = int(round(other.x * RouteNode._HASH_PRECISION))
+        iy2 = int(round(other.y * RouteNode._HASH_PRECISION))
+        return ix1 == ix2 and iy1 == iy2 and self.layer == other.layer
 
     def __lt__(self, other):
         # For heapq tie-breaking
@@ -99,8 +113,13 @@ class RouterConfig:
     inner_layer_cost: float = 1.2  # Cost multiplier for using inner layers
 
     # Via parameters
-    via_cost: float = 5.0      # Cost multiplier for layer changes
-    min_via_spacing: float = 0.5  # Minimum spacing between vias
+    # via_cost is a grid-step multiplier: actual_cost = via_cost * grid_size
+    # This makes via cost relative to routing cost (one grid step = grid_size).
+    # Example: via_cost=5.0 with grid_size=0.1mm means a via costs 0.5mm equivalent
+    # routing distance. This intentional coupling ensures consistent behavior
+    # regardless of absolute grid size. (Issue #27 - documented as intentional)
+    via_cost: float = 5.0      # Via cost in grid steps (multiplied by grid_size)
+    min_via_spacing: float = 0.5  # Minimum spacing between vias in mm
 
     # Trace parameters
     trace_width: float = 0.2   # Default trace width in mm
@@ -498,6 +517,7 @@ class AStarRouter:
                 if not self.obstacles.check_collision(
                     node.x, node.y, other_layer, clearance, net_id
                 ):
+                    # via_cost is relative to grid step cost (see RouterConfig)
                     via_cost = self.config.via_cost * self.config.grid_size
                     # Inner layers have additional cost preference
                     if 0 < other_layer < self.config.layer_count - 1:
@@ -566,6 +586,7 @@ class AStarRouter:
         dist = node.manhattan_distance_to(goal)
 
         # Add layer change penalty if on different layer
+        # via_cost is relative to grid step cost (see RouterConfig)
         if node.layer != goal.layer:
             dist += self.config.via_cost * self.config.grid_size
 

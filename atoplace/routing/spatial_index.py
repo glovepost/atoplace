@@ -357,17 +357,20 @@ class SpatialHashIndex:
             return True
 
         # Collinear cases (point on segment)
+        # Use epsilon for floating-point comparison (Issue #25)
+        EPSILON = 1e-10
+
         def on_segment(px, py, qx, qy, rx, ry):
             return (min(px, rx) <= qx <= max(px, rx) and
                     min(py, ry) <= qy <= max(py, ry))
 
-        if d1 == 0 and on_segment(bx1, by1, ax1, ay1, bx2, by2):
+        if abs(d1) < EPSILON and on_segment(bx1, by1, ax1, ay1, bx2, by2):
             return True
-        if d2 == 0 and on_segment(bx1, by1, ax2, ay2, bx2, by2):
+        if abs(d2) < EPSILON and on_segment(bx1, by1, ax2, ay2, bx2, by2):
             return True
-        if d3 == 0 and on_segment(ax1, ay1, bx1, by1, ax2, ay2):
+        if abs(d3) < EPSILON and on_segment(ax1, ay1, bx1, by1, ax2, ay2):
             return True
-        if d4 == 0 and on_segment(ax1, ay1, bx2, by2, ax2, ay2):
+        if abs(d4) < EPSILON and on_segment(ax1, ay1, bx2, by2, ax2, ay2):
             return True
 
         return False

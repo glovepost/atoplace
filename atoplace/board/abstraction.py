@@ -705,7 +705,7 @@ class Board:
     def get_stats(self) -> Dict:
         """Get board statistics."""
         # Calculate area properly for polygon outlines
-        board_area = self._calculate_board_area()
+        board_area = self.calculate_board_area()
 
         return {
             "component_count": len(self.components),
@@ -717,11 +717,13 @@ class Board:
             "board_area": board_area,
         }
 
-    def _calculate_board_area(self) -> float:
+    def calculate_board_area(self) -> float:
         """Calculate actual board area, accounting for polygon outlines and holes.
 
         Uses the shoelace formula for polygon area calculation.
         Returns area in mm².
+
+        This is a public method for use by validation and analysis tools.
         """
         if self.outline.polygon:
             # Calculate polygon area using shoelace formula

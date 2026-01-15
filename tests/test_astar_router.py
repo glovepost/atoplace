@@ -152,12 +152,18 @@ class TestRouteNode:
         assert abs(distance - 7.0) < 0.001
 
     def test_equality(self):
-        """Test node equality with floating point tolerance."""
-        node1 = RouteNode(10.0, 20.0, 0)
-        node2 = RouteNode(10.0001, 20.0001, 0)  # Within tolerance
-        node3 = RouteNode(10.01, 20.0, 0)  # Outside tolerance
+        """Test node equality with floating point tolerance.
 
-        assert node1 == node2  # Should be equal (within 3 decimal rounding)
+        RouteNode uses 0.0001mm (0.1 micron) precision for hashing/equality.
+        Values within this tolerance are considered equal.
+        """
+        node1 = RouteNode(10.0, 20.0, 0)
+        # Within 0.1 micron tolerance (floating-point noise level)
+        node2 = RouteNode(10.00001, 20.00001, 0)
+        # Outside tolerance (0.01mm = 10 micron difference)
+        node3 = RouteNode(10.01, 20.0, 0)
+
+        assert node1 == node2  # Should be equal (within 0.0001mm precision)
         assert node1 != node3
 
     def test_hash_consistency(self):
