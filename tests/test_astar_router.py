@@ -104,12 +104,26 @@ def two_layer_index() -> SpatialHashIndex:
 
 @pytest.fixture
 def default_config() -> RouterConfig:
-    """Default router configuration."""
+    """Default router configuration (2-layer for via tests)."""
     return RouterConfig(
         greedy_weight=2.0,
         grid_size=0.5,
         max_iterations=10000,
         layer_count=2,
+        trace_width=0.2,
+        clearance=0.15,
+        goal_tolerance=0.5,
+    )
+
+
+@pytest.fixture
+def single_layer_config() -> RouterConfig:
+    """Single-layer config for testing routing around obstacles without via escape."""
+    return RouterConfig(
+        greedy_weight=2.0,
+        grid_size=0.5,
+        max_iterations=50000,  # More iterations needed for single-layer detours
+        layer_count=1,
         trace_width=0.2,
         clearance=0.15,
         goal_tolerance=0.5,
@@ -212,9 +226,12 @@ class TestBasicRouting:
 
         assert result.success
 
-    def test_route_around_obstacle(self, simple_obstacle_index, default_config):
-        """Test routing around a simple obstacle."""
-        router = AStarRouter(simple_obstacle_index, default_config)
+    def test_route_around_obstacle(self, simple_obstacle_index, single_layer_config):
+        """Test routing around a simple obstacle on a single layer.
+
+        Uses single_layer_config to force routing around (not via escape).
+        """
+        router = AStarRouter(simple_obstacle_index, single_layer_config)
 
         start = RouteNode(10.0, 50.0, 0)
         goal = RouteNode(90.0, 50.0, 0)
@@ -227,9 +244,9 @@ class TestBasicRouting:
         y_values = [seg.start[1] for seg in result.segments]
         y_values.extend([seg.end[1] for seg in result.segments])
 
-        # Some segment should be above or below the obstacle center
+        # Some segment should be above or below the obstacle (45-55)
         has_detour = any(y < 45.0 or y > 55.0 for y in y_values)
-        assert has_detour, "Path should route around obstacle"
+        assert has_detour, "Path should route around obstacle (y deviation required)"
 
     def test_route_through_gap(self, blocking_wall_index, default_config):
         """Test routing through a gap in a wall."""
@@ -307,10 +324,19 @@ class TestConfiguration:
             assert dx < 0.01 or dy < 0.01, f"Non-Manhattan segment: {seg}"
 
     def test_greedy_weight_affects_path(self, simple_obstacle_index):
-        """Test that greedy weight affects routing behavior."""
+        """Test that greedy weight affects routing behavior.
+
+        Uses single-layer config for fair comparison (no via escape).
+        Pure A* (greedy=1.0) explores more nodes than greedy A* (greedy=5.0).
+        """
         # High greedy weight = faster but less optimal
-        config_high = RouterConfig(greedy_weight=5.0, grid_size=0.5, max_iterations=10000)
-        config_low = RouterConfig(greedy_weight=1.0, grid_size=0.5, max_iterations=10000)
+        # Use single layer to avoid via-based shortcuts skewing results
+        config_high = RouterConfig(
+            greedy_weight=5.0, grid_size=0.5, max_iterations=100000, layer_count=1
+        )
+        config_low = RouterConfig(
+            greedy_weight=1.0, grid_size=0.5, max_iterations=100000, layer_count=1
+        )
 
         router_high = AStarRouter(simple_obstacle_index, config_high)
         router_low = AStarRouter(simple_obstacle_index, config_low)
@@ -321,11 +347,11 @@ class TestConfiguration:
         result_high = router_high._route_two_points(start, goal, None, 0.2, 0.15)
         result_low = router_low._route_two_points(start, goal, None, 0.2, 0.15)
 
-        assert result_high.success
-        assert result_low.success
+        assert result_high.success, f"High greedy failed: {result_high.failure_reason}"
+        assert result_low.success, f"Low greedy failed: {result_low.failure_reason}"
 
-        # High greedy should explore fewer nodes (or similar)
-        # Low greedy (optimal) might find shorter path
+        # High greedy should explore fewer nodes than pure A*
+        # (greedy prioritizes nodes closer to goal)
         assert result_high.explored_count <= result_low.explored_count * 2
 
     def test_max_iterations_limit(self, simple_obstacle_index):

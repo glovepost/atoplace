@@ -8,9 +8,12 @@ Constraints can be extracted from natural language or defined programmatically.
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Set
 from enum import Enum
+import logging
 import math
 
 from ..board.abstraction import Board, Component
+
+logger = logging.getLogger(__name__)
 
 
 class ConstraintType(Enum):
@@ -106,21 +109,40 @@ class ProximityConstraint(PlacementConstraint):
 
 @dataclass
 class EdgeConstraint(PlacementConstraint):
-    """Place component on a board edge."""
+    """Place component on a board edge.
+
+    WARNING: For non-rectangular board outlines (polygons, boards with cutouts),
+    this constraint uses bounding box edges rather than actual boundary edges.
+    This may push components toward positions outside the actual board geometry.
+    """
     component_ref: str = ""
     edge: str = "left"  # "left", "right", "top", "bottom"
     offset: float = 2.0  # mm from edge
+    _warned_polygon: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
         self.constraint_type = ConstraintType.EDGE_PLACEMENT
         if not self.description:
             self.description = f"Place {self.component_ref} on {self.edge} edge"
 
+    def _check_polygon_warning(self, board: Board) -> None:
+        """Log a warning if the board has a non-rectangular outline."""
+        if not self._warned_polygon and not board.outline.is_rectangular:
+            logger.warning(
+                "EdgeConstraint for %s uses bounding box edge for non-rectangular "
+                "board outline. Component may be pushed outside valid board area. "
+                "(Issue #21)",
+                self.component_ref
+            )
+            # Use object.__setattr__ since dataclass is frozen by default
+            object.__setattr__(self, '_warned_polygon', True)
+
     def is_satisfied(self, board: Board) -> Tuple[bool, float]:
         comp = board.get_component(self.component_ref)
         if not comp:
             return (False, float('inf'))
 
+        self._check_polygon_warning(board)
         tolerance = 1.0  # mm
 
         # Get component bounding box to account for component size
@@ -130,7 +152,8 @@ class EdgeConstraint(PlacementConstraint):
         comp_right = bbox[2]
         comp_top = bbox[3]
 
-        # Use get_edge() which properly handles polygon outlines
+        # Use get_edge() which returns bounding box edge for polygon outlines
+        # WARNING: This may be outside actual board geometry (see docstring)
         try:
             edge_coord = board.outline.get_edge(self.edge)
         except ValueError:
@@ -166,6 +189,8 @@ class EdgeConstraint(PlacementConstraint):
         if not comp:
             return (0.0, 0.0)
 
+        self._check_polygon_warning(board)
+
         # Get component bounding box to account for component size
         bbox = comp.get_bounding_box()
         comp_left = bbox[0]
@@ -173,7 +198,8 @@ class EdgeConstraint(PlacementConstraint):
         comp_right = bbox[2]
         comp_top = bbox[3]
 
-        # Use get_edge() which properly handles polygon outlines
+        # Use get_edge() which returns bounding box edge for polygon outlines
+        # WARNING: This may be outside actual board geometry (see docstring)
         try:
             edge_coord = board.outline.get_edge(self.edge)
         except ValueError:

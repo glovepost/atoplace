@@ -142,6 +142,97 @@ class RefinementConfig:
     rotation_boundary_weight: float = 5.0  # Boundary penalty weight
 
 
+class PlacementSpatialGrid:
+    """Spatial grid for O(N) neighbor lookups in repulsion calculations.
+
+    Instead of checking all N*(N-1)/2 component pairs (O(N²)), we bin components
+    into grid cells and only check pairs in adjacent cells. For uniformly
+    distributed components with cell_size = repulsion_cutoff, this reduces
+    the average case to O(N).
+
+    Cell size is set to repulsion_cutoff so that any two components that could
+    potentially repel each other must be in the same cell or adjacent cells.
+    """
+
+    def __init__(self, cell_size: float):
+        """Initialize spatial grid.
+
+        Args:
+            cell_size: Size of each grid cell (should be >= repulsion_cutoff)
+        """
+        self.cell_size = cell_size
+        self._cells: Dict[Tuple[int, int], List[str]] = {}
+        self._positions: Dict[str, Tuple[float, float]] = {}
+
+    def _cell_key(self, x: float, y: float) -> Tuple[int, int]:
+        """Convert world coordinates to cell key."""
+        return (int(math.floor(x / self.cell_size)),
+                int(math.floor(y / self.cell_size)))
+
+    def clear(self):
+        """Clear the grid for rebuilding."""
+        self._cells.clear()
+        self._positions.clear()
+
+    def insert(self, ref: str, x: float, y: float):
+        """Insert a component into the grid."""
+        cell = self._cell_key(x, y)
+        if cell not in self._cells:
+            self._cells[cell] = []
+        self._cells[cell].append(ref)
+        self._positions[ref] = (x, y)
+
+    def get_neighbors(self, ref: str) -> List[str]:
+        """Get all components in adjacent cells (potential collision candidates).
+
+        Returns components in 3x3 neighborhood around the component's cell.
+        Only returns components with ref > input ref to avoid duplicate pairs.
+        Used by repulsion force calculation which processes each pair once.
+        """
+        if ref not in self._positions:
+            return []
+
+        x, y = self._positions[ref]
+        cx, cy = self._cell_key(x, y)
+
+        neighbors = []
+        # Check 3x3 neighborhood
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                cell = (cx + dx, cy + dy)
+                if cell in self._cells:
+                    for other_ref in self._cells[cell]:
+                        # Only return refs > current ref to avoid duplicates
+                        if other_ref > ref:
+                            neighbors.append(other_ref)
+
+        return neighbors
+
+    def get_all_neighbors(self, ref: str) -> List[str]:
+        """Get ALL components in adjacent cells, regardless of ref ordering.
+
+        Returns all components in 3x3 neighborhood except self.
+        Used by rotation penalty calculation which needs to check all neighbors.
+        """
+        if ref not in self._positions:
+            return []
+
+        x, y = self._positions[ref]
+        cx, cy = self._cell_key(x, y)
+
+        neighbors = []
+        # Check 3x3 neighborhood
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                cell = (cx + dx, cy + dy)
+                if cell in self._cells:
+                    for other_ref in self._cells[cell]:
+                        if other_ref != ref:
+                            neighbors.append(other_ref)
+
+        return neighbors
+
+
 class ForceDirectedRefiner:
     """
     Refine component placement using force-directed algorithm.
@@ -201,6 +292,17 @@ class ForceDirectedRefiner:
         # Rotation helpers
         self._rotation_constraint_refs: Set[str] = set()
         self._rotation_extents_cache: Dict[Tuple[str, int], Tuple[float, float, float, float]] = {}
+
+        # Spatial grid for O(N) repulsion neighbor lookups (Issue #23)
+        # Cell size must be large enough that overlapping components are always
+        # in adjacent cells. This means: cell_size >= cutoff + 2*max_half_diagonal
+        max_half_diag = 0.0
+        for half_w, half_h in self._component_sizes.values():
+            diag = math.sqrt(half_w * half_w + half_h * half_h)
+            max_half_diag = max(max_half_diag, diag)
+        # Add small margin for floating-point safety
+        self._repulsion_cell_size = self.config.repulsion_cutoff + 2 * max_half_diag + 0.1
+        self._repulsion_grid = PlacementSpatialGrid(self._repulsion_cell_size)
 
     def add_constraint(self, constraint: 'PlacementConstraint'):
         """Add a placement constraint."""
@@ -1046,22 +1148,34 @@ class ForceDirectedRefiner:
 
         When one component is locked, the non-locked component receives double
         the repulsion force to fully resolve the overlap.
+
+        Performance: Uses spatial grid binning for O(N) neighbor lookups (Issue #23).
+        Components are binned by center position. The cell size is set large enough
+        that any two components that could overlap or be within cutoff are guaranteed
+        to be in adjacent cells.
         """
-        refs = list(state.positions.keys())
+        # Rebuild spatial grid with current positions
+        self._repulsion_grid.clear()
+        for ref, (x, y) in state.positions.items():
+            comp = self.board.components.get(ref)
+            if comp and not comp.dnp:
+                self._repulsion_grid.insert(ref, x, y)
+
         # Cutoff distance beyond which repulsion is negligible (reduces noise)
         cutoff_distance = self.config.repulsion_cutoff
 
-        for i, ref1 in enumerate(refs):
-            comp1 = self.board.components[ref1]
+        for ref1 in state.positions:
+            comp1 = self.board.components.get(ref1)
             # Skip DNP (Do Not Populate) components
-            if comp1.dnp:
+            if not comp1 or comp1.dnp:
                 continue
 
             x1, y1 = state.positions[ref1]
             half_w1, half_h1 = self._component_sizes[ref1]
             locked1 = self._is_component_locked(ref1)
 
-            for ref2 in refs[i+1:]:
+            # Use spatial grid for O(N) neighbor lookup instead of O(N²) all-pairs
+            for ref2 in self._repulsion_grid.get_neighbors(ref1):
                 comp2 = self.board.components[ref2]
                 # Skip DNP (Do Not Populate) components
                 if comp2.dnp:
@@ -1892,7 +2006,11 @@ class ForceDirectedRefiner:
 
     def _rotation_penalty(self, ref: str, rotation: int,
                           state: PlacementState) -> float:
-        """Estimate overlap/boundary penalty for a discrete rotation."""
+        """Estimate overlap/boundary penalty for a discrete rotation.
+
+        Performance: Uses spatial grid for O(N) neighbor lookups (Issue #24).
+        Only checks components in adjacent grid cells instead of all components.
+        """
         comp = self.board.components.get(ref)
         if not comp or comp.dnp:
             return float("inf")
@@ -1931,10 +2049,9 @@ class ForceDirectedRefiner:
                 if top > outline.origin_y + outline.height:
                     penalty += (top - (outline.origin_y + outline.height)) * self.config.rotation_boundary_weight
 
-        refs = list(state.positions.keys())
-        for ref2 in refs:
-            if ref2 == ref:
-                continue
+        # Use spatial grid for O(N) neighbor lookup (Issue #24)
+        # Only check components in adjacent cells instead of all N components
+        for ref2 in self._repulsion_grid.get_all_neighbors(ref):
             comp2 = self.board.components.get(ref2)
             if comp2 and comp2.dnp:
                 continue
@@ -1952,9 +2069,6 @@ class ForceDirectedRefiner:
             x2, y2 = state.positions[ref2]
             dx = x - x2
             dy = y - y2
-            distance = math.sqrt(dx * dx + dy * dy)
-            if distance > self.config.repulsion_cutoff:
-                continue
 
             pair_min_clearance, _ = self._get_pair_clearance(ref, ref2)
             half_w2, half_h2 = self._component_sizes.get(ref2, (1.0, 1.0))
@@ -1966,7 +2080,11 @@ class ForceDirectedRefiner:
         return penalty
 
     def _apply_discrete_rotation_search(self, state: PlacementState, iteration: int):
-        """Try discrete rotations to reduce overlap/boundary penalties."""
+        """Try discrete rotations to reduce overlap/boundary penalties.
+
+        Performance: Uses spatial grid for O(N) neighbor lookups (Issue #24).
+        Rebuilds grid with current positions before searching.
+        """
         if not self.config.enable_discrete_rotation:
             return
         if self.config.rotation_search_interval <= 0:
@@ -1975,6 +2093,14 @@ class ForceDirectedRefiner:
             return
         if not self.config.rotation_angles:
             return
+
+        # Rebuild spatial grid with current positions (Issue #24)
+        # Positions may have changed since last force calculation
+        self._repulsion_grid.clear()
+        for ref, (x, y) in state.positions.items():
+            comp = self.board.components.get(ref)
+            if comp and not comp.dnp:
+                self._repulsion_grid.insert(ref, x, y)
 
         for ref in state.positions:
             if self._is_component_locked(ref):

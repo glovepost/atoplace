@@ -481,10 +481,25 @@ class BoardOutline:
 
         return math.sqrt(diff_x * diff_x + diff_y * diff_y)
 
+    @property
+    def is_rectangular(self) -> bool:
+        """Check if the outline is a simple rectangle (not a polygon or has holes).
+
+        Returns True only if the outline is defined by simple rectangle bounds,
+        not a polygon or a board with cutouts. This is useful for detecting when
+        edge constraints may produce unexpected results.
+        """
+        if self.polygon or self.holes:
+            return False
+        return True
+
     def get_edge(self, edge: str) -> float:
         """Get coordinate of specified edge.
 
-        For polygons, returns the bounding box edge.
+        WARNING: For polygon outlines, this returns the bounding box edge, not the
+        actual polygon boundary. This means edge constraints may push components
+        toward positions outside the actual board geometry for non-rectangular boards.
+        Use `is_rectangular` property to detect this case and warn users.
         """
         if self.polygon:
             xs = [p[0] for p in self.polygon]
