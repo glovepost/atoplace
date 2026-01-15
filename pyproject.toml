@@ -104,6 +104,6 @@ warn_unused_configs = true
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "scripts"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
