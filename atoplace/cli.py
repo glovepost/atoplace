@@ -7,6 +7,7 @@ Command-line interface for the AI-powered PCB placement and routing tool.
 
 from __future__ import annotations
 
+import atexit
 import io
 import logging
 import re
@@ -118,6 +119,18 @@ def _configure_logging(
     _LOG_FILE_HANDLE = log_path.open("a", encoding="utf-8")
     sys.stdout = _AnsiStrippingTee(sys.stdout, _LOG_FILE_HANDLE)
     sys.stderr = _AnsiStrippingTee(sys.stderr, _LOG_FILE_HANDLE)
+
+    # Register cleanup handler to close file on exit
+    def _cleanup_log_file():
+        global _LOG_FILE_HANDLE
+        if _LOG_FILE_HANDLE is not None:
+            try:
+                _LOG_FILE_HANDLE.close()
+            except Exception:
+                pass  # Best effort cleanup, don't raise during shutdown
+            _LOG_FILE_HANDLE = None
+
+    atexit.register(_cleanup_log_file)
 
     return log_path
 

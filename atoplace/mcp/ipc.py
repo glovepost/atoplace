@@ -254,8 +254,8 @@ class IPCServer:
         self._socket.bind(self.socket_path)
         self._socket.listen(1)
 
-        # Make socket accessible
-        os.chmod(self.socket_path, 0o666)
+        # Restrict socket access to owner only (security fix)
+        os.chmod(self.socket_path, 0o600)
 
         logger.info("Bridge server listening on %s", self.socket_path)
         self._running = True

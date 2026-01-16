@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 
 from atoplace.board.abstraction import Board
 from atoplace.api.actions import LayoutActions
+from atoplace.api.inspection import BoardInspector
 from atoplace.mcp.context.micro import Microscope
 from atoplace.mcp.context.macro import MacroContext
 from atoplace.mcp.context.vision import VisionContext
@@ -35,6 +36,7 @@ class Worker:
     def __init__(self):
         self.board: Optional[Board] = None
         self.actions: Optional[LayoutActions] = None
+        self.inspector: Optional[BoardInspector] = None
         self.source_path: Optional[Path] = None  # Track the loaded board path
 
     def handle_request(self, req: RpcRequest) -> Any:
@@ -96,6 +98,7 @@ class Worker:
         self.source_path = Path(path)  # Store the source path
         self.board = Board.from_kicad(self.source_path)
         self.actions = LayoutActions(self.board)
+        self.inspector = BoardInspector(self.board)
         return {
             "component_count": len(self.board.components),
             "net_count": len(self.board.nets)
@@ -139,30 +142,8 @@ class Worker:
         return json.loads(macro.get_summary().to_json())
 
     def check_overlaps(self, refs=None):
-        if not self.board: raise ValueError("No board loaded")
-        # Reuse the logic from server.py (ideally refactored to shared lib)
-        # For now, quick implementation
-        components = []
-        if refs:
-            components = [self.board.components[r] for r in refs if r in self.board.components]
-        else:
-            components = list(self.board.components.values())
-
-        overlaps = []
-        for i, c1 in enumerate(components):
-            for c2 in components[i+1:]:
-                w1, h1 = c1.width, c1.height
-                w2, h2 = c2.width, c2.height
-                dx = abs(c1.x - c2.x)
-                dy = abs(c1.y - c2.y)
-                overlap_x = (w1/2 + w2/2) - dx
-                overlap_y = (h1/2 + h2/2) - dy
-                if overlap_x > 0 and overlap_y > 0:
-                    overlaps.append({
-                        "refs": [c1.reference, c2.reference],
-                        "overlap_x": round(overlap_x, 3),
-                        "overlap_y": round(overlap_y, 3),
-                    })
+        if not self.inspector: raise ValueError("No board loaded")
+        overlaps = self.inspector.check_overlaps(refs)
         return {"overlap_count": len(overlaps), "overlaps": overlaps[:20]}
 
     # Additional placement actions
@@ -203,7 +184,9 @@ class Worker:
 
     def arrange_pattern(self, refs, pattern="grid", spacing=2, cols=None, radius=None, center_x=None, center_y=None):
         if not self.actions: raise ValueError("No board loaded")
-        res = self.actions.arrange_pattern(refs, pattern, spacing, cols, radius, center_x, center_y)
+        # Convert center_x, center_y to tuple if provided
+        center = (center_x, center_y) if center_x is not None and center_y is not None else None
+        res = self.actions.arrange_pattern(refs, pattern, spacing, cols, radius, center)
         return {"success": res.success, "message": res.message}
 
     def cluster_around(self, anchor_ref, target_refs, side="nearest", clearance=0.5):
@@ -220,26 +203,12 @@ class Worker:
         return {"count": len(unplaced), "refs": unplaced[:50]}
 
     def find_components(self, query, filter_by="ref"):
-        if not self.board: raise ValueError("No board loaded")
-        matches = []
-        for ref, comp in self.board.components.items():
-            search_value = ""
-            if filter_by == "ref":
-                search_value = ref
-            elif filter_by == "value":
-                search_value = comp.value
-            elif filter_by == "footprint":
-                search_value = comp.footprint
-
-            if query.lower() in search_value.lower():
-                matches.append({
-                    "ref": ref,
-                    "value": comp.value,
-                    "footprint": comp.footprint,
-                    "x": comp.x,
-                    "y": comp.y
-                })
-        return {"count": len(matches), "matches": matches[:50]}
+        if not self.inspector: raise ValueError("No board loaded")
+        try:
+            matches = self.inspector.find_components(query, filter_by)
+            return {"count": len(matches), "matches": matches[:50]}
+        except ValueError as e:
+            raise ValueError(str(e))
 
     # Validation methods
     def run_drc(self, use_kicad=True, dfm_profile="jlcpcb_standard", severity_filter="all"):
@@ -249,35 +218,49 @@ class Worker:
 
         dfm = get_profile(dfm_profile)
         checker = DRCChecker(self.board, dfm)
-        violations = checker.check_all()
+        passed, violations = checker.run_checks()
 
         # Filter by severity
         if severity_filter != "all":
             violations = [v for v in violations if v.severity == severity_filter]
 
         return {
+            "passed": passed,
             "violation_count": len(violations),
             "violations": [{
-                "type": v.violation_type,
+                "rule": v.rule,
                 "severity": v.severity,
                 "message": v.message,
-                "refs": v.refs,
-                "location": v.location
+                "items": v.items,
+                "location": {"x": v.location[0], "y": v.location[1]}
             } for v in violations[:50]]
         }
 
     def validate_placement(self):
         if not self.board: raise ValueError("No board loaded")
         from ..validation.confidence import ConfidenceScorer
+        from ..dfm.profiles import get_profile
 
-        scorer = ConfidenceScorer(self.board)
-        report = scorer.assess()
+        # Create scorer with optional DFM profile
+        dfm = get_profile("jlcpcb_standard")
+        scorer = ConfidenceScorer(dfm_profile=dfm)
+        report = scorer.assess(self.board, routing_done=False)
 
         return {
             "overall_score": report.overall_score,
-            "flags": report.flags,
-            "category_scores": report.category_scores,
-            "recommendations": report.recommendations[:10]
+            "placement_score": report.placement_score,
+            "routing_score": report.routing_score,
+            "dfm_score": report.dfm_score,
+            "electrical_score": report.electrical_score,
+            "flags": [{
+                "severity": f.severity,
+                "category": f.category,
+                "message": f.message,
+                "location": {"x": f.location[0], "y": f.location[1]} if f.location else None,
+                "affected_items": f.affected_items
+            } for f in report.flags[:50]],
+            "component_count": report.component_count,
+            "net_count": report.net_count
         }
 
     def run(self):

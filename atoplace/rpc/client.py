@@ -51,4 +51,22 @@ class RpcClient:
             return resp.result
 
     def close(self):
+        """Close the RPC client and cleanup resources."""
+        # Explicitly close pipes to prevent file descriptor leaks
+        if self.process.stdin:
+            self.process.stdin.close()
+        if self.process.stdout:
+            self.process.stdout.close()
+        if self.process.stderr:
+            self.process.stderr.close()
+
+        # Terminate the process
         self.process.terminate()
+
+        # Wait for process to exit (with timeout to prevent hanging)
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # Force kill if it doesn't terminate gracefully
+            self.process.kill()
+            self.process.wait()

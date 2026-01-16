@@ -460,7 +460,8 @@ def _update_ref_des_text(fp, comp: Component, kicad_x: float, kicad_y: float):
     except AttributeError:
         try:
             ref_field = fp.GetField(0)
-        except:
+        except (AttributeError, RuntimeError, Exception) as e:
+            logger.warning("Could not get reference field for %s: %s", comp.reference, e)
             return
 
     if not ref_field:
@@ -496,8 +497,8 @@ def _update_ref_des_text(fp, comp: Component, kicad_x: float, kicad_y: float):
         except AttributeError:
             try:
                 ref_field.SetTextAngle(pcbnew.EDA_ANGLE(text_abs_rotation, pcbnew.DEGREES_T))
-            except:
-                pass  # Skip rotation update if method not available
+            except (AttributeError, RuntimeError) as e:
+                logger.debug("Could not set text angle for %s: %s", comp.reference, e)
 
         # Update text size if significantly different
         try:
@@ -507,23 +508,23 @@ def _update_ref_des_text(fp, comp: Component, kicad_x: float, kicad_y: float):
                     pcbnew.FromMM(ref_text.size),
                     pcbnew.FromMM(ref_text.size)
                 ))
-        except:
-            pass
+        except (AttributeError, RuntimeError) as e:
+            logger.debug("Could not set text size for %s: %s", comp.reference, e)
 
         # Update visibility
         try:
             if ref_field.IsVisible() != ref_text.visible:
                 ref_field.SetVisible(ref_text.visible)
-        except:
-            pass
+        except (AttributeError, RuntimeError) as e:
+            logger.debug("Could not set visibility for %s: %s", comp.reference, e)
 
         # Update layer
         try:
             target_layer = pcbnew.B_SilkS if ref_text.layer == Layer.BOTTOM_SILK else pcbnew.F_SilkS
             if ref_field.GetLayer() != target_layer:
                 ref_field.SetLayer(target_layer)
-        except:
-            pass
+        except (AttributeError, RuntimeError) as e:
+            logger.debug("Could not set layer for %s: %s", comp.reference, e)
 
     except Exception as e:
         logger.debug(f"Failed to update ref des text for {comp.reference}: {e}")
@@ -684,8 +685,8 @@ def _extract_polygon_outline(kicad_board) -> tuple:
                         for i in range(len(points)):
                             j = (i + 1) % len(points)
                             segments.append((points[i], points[j]))
-                except:
-                    pass
+                except (AttributeError, RuntimeError, IndexError) as e:
+                    logger.debug("Could not parse polygon shape: %s", e)
 
     if not segments:
         return None, []
@@ -711,6 +712,25 @@ def _extract_polygon_outline(kicad_board) -> tuple:
         f"Extracted board outline: main polygon with {len(main_polygon)} vertices "
         f"(area={main_area:.1f} mm²), {len(holes)} internal cutout(s)"
     )
+
+    # Validate containment: holes should be inside main polygon (Issue #4)
+    # This catches edge cases where area-based heuristic might fail
+    if holes:
+        holes_inside = []
+        for i, hole in enumerate(holes):
+            # Check if hole centroid is inside main polygon
+            centroid_x = sum(p[0] for p in hole) / len(hole)
+            centroid_y = sum(p[1] for p in hole) / len(hole)
+            if _point_in_polygon(centroid_x, centroid_y, main_polygon):
+                holes_inside.append(hole)
+            else:
+                hole_area = polygon_areas[i + 1][1]  # +1 because main is index 0
+                logger.warning(
+                    f"Detected polygon (area={hole_area:.1f} mm²) that appears to be "
+                    f"outside the main board outline. This may be a disjoint board region "
+                    f"or Edge.Cuts drawing error. It will be ignored."
+                )
+        holes = holes_inside
 
     # Warn if multiple large polygons detected (possible disjointed board)
     if len(polygon_areas) > 1:
@@ -807,6 +827,36 @@ def _polygon_area(polygon):
         area -= polygon[j][0] * polygon[i][1]
 
     return abs(area) / 2
+
+
+def _point_in_polygon(x: float, y: float, polygon) -> bool:
+    """Check if a point is inside a polygon using ray casting algorithm.
+
+    Args:
+        x, y: Point coordinates
+        polygon: List of (x, y) tuples representing polygon vertices
+
+    Returns:
+        True if point is inside the polygon
+    """
+    n = len(polygon)
+    if n < 3:
+        return False
+
+    inside = False
+    j = n - 1
+
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+
+        # Check if the ray from (x, y) going right crosses this edge
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+
+        j = i
+
+    return inside
 
 
 def _footprint_to_component(fp) -> Component:
@@ -976,7 +1026,8 @@ def _extract_ref_des_text(fp, fp_pos, fp_rotation: float,
         # Fallback for older KiCad versions
         try:
             ref_field = fp.GetField(0)  # Field 0 is typically Reference
-        except:
+        except (AttributeError, RuntimeError, Exception) as e:
+            logger.debug("Could not get reference field: %s", e)
             return RefDesText()  # Return defaults if we can't get the field
 
     if not ref_field:
@@ -1010,7 +1061,7 @@ def _extract_ref_des_text(fp, fp_pos, fp_rotation: float,
         except AttributeError:
             try:
                 text_abs_rotation = ref_field.GetTextAngle().AsDegrees()
-            except:
+            except (AttributeError, RuntimeError):
                 text_abs_rotation = 0.0
 
         text_local_rotation = (text_abs_rotation - fp_rotation) % 360
@@ -1019,19 +1070,19 @@ def _extract_ref_des_text(fp, fp_pos, fp_rotation: float,
         try:
             text_size = ref_field.GetTextSize()
             size = pcbnew.ToMM(text_size.y)  # Use height as size
-        except:
+        except (AttributeError, RuntimeError):
             size = 1.0  # Default 1mm
 
         # Get text thickness
         try:
             thickness = pcbnew.ToMM(ref_field.GetTextThickness())
-        except:
+        except (AttributeError, RuntimeError):
             thickness = 0.15  # Default
 
         # Get visibility
         try:
             visible = ref_field.IsVisible()
-        except:
+        except (AttributeError, RuntimeError):
             visible = True
 
         # Determine layer
@@ -1041,7 +1092,7 @@ def _extract_ref_des_text(fp, fp_pos, fp_rotation: float,
                 layer = Layer.BOTTOM_SILK
             else:
                 layer = Layer.TOP_SILK
-        except:
+        except (AttributeError, RuntimeError):
             layer = Layer.TOP_SILK
 
         return RefDesText(
@@ -1104,7 +1155,7 @@ def _estimate_unrotated_dimensions(fp, bbox_width: float, bbox_height: float,
             except AttributeError:
                 try:
                     pad_abs_rot = pad.GetOrientation().AsDegrees()
-                except:
+                except (AttributeError, RuntimeError):
                     pad_abs_rot = 0.0
 
             pad_local_rot = (pad_abs_rot - rotation) % 360
@@ -1225,7 +1276,7 @@ def _pad_to_pad(kicad_pad, fp_pos, fp_rotation: float,
         # Older KiCad versions may use different method
         try:
             pad_abs_rotation = kicad_pad.GetOrientation() / 10.0  # Was in decidegrees
-        except:
+        except (AttributeError, RuntimeError):
             pad_abs_rotation = 0.0
 
     pad_local_rotation = (pad_abs_rotation - fp_rotation) % 360
