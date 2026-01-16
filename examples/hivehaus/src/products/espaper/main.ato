@@ -1,0 +1,299 @@
+"""
+ESPHome-compatible Waveshare e-paper driver (ESP32-C3 based).
+"""
+
+#pragma experiment("BRIDGE_CONNECT")
+#pragma experiment("FOR_LOOP")
+
+import ElectricPower, SPI, ElectricLogic, Capacitor, Inductor, Diode, Electrical, Resistor, NFET
+
+from "atopile/espressif-esp32-c3/esp32_c3_mini.ato" import ESP32_C3_MINI_1_driver
+from "atopile/st-ldk220/st-ldk220.ato" import LDK220M_R
+from "atopile/usb-connectors/usb-connectors.ato" import USBCConn
+from "parts/XUNPU_FPC_05F_24PH20/XUNPU_FPC_05F_24PH20.ato" import XUNPU_FPC_05F_24PH20_package 
+from "atopile/batteries/eemb_battery_lp402535.ato" import EMB_BATTERY_LP402535_Example
+from "atopile/ti-bq25185/ti-bq25185.ato" import BQ25185_driver
+from "atopile/ti-tps63020/ti-tps63020.ato" import TPS63020_driver
+from "atopile/logos/logos.ato" import atopile_logo_4x4mm
+from "atopile/indicator-leds/indicator-leds.ato" import LEDIndicatorBlue
+from "atopile/indicator-leds/indicator-leds.ato" import LEDIndicatorRed
+
+
+module App:
+    """
+    Board-level composition: 5V input → LDO → 3V3 rail, ESP32-C3, and e-paper SPI
+    signals exposed for a Waveshare SPI e-paper panel.
+    """
+
+    # --- Power Rails ---
+    power_vbus = new ElectricPower
+    """
+    USB Connection power input
+    """
+    assert power_vbus.voltage is 5V +/- 5%
+
+    power_3v3 = new ElectricPower
+    """
+    ESP32-C3 and epaper panel input voltage
+    """
+    assert power_3v3.voltage is 3.3V +/- 5%
+
+    # --- Power Components ---
+    usb = new USBCConn
+    """
+    USB C Connector for power input and usb comms to the ESP32-C3
+    """
+    usb.usb2.usb_if.buspower ~ power_vbus
+
+    battery = new EMB_BATTERY_LP402535_Example
+    """
+    Small Lipo battery for extended runtime with epaper panel
+    """
+    battery.battery.model.capacity = 300mAh
+    assert battery.battery.model.voltage is 3V to 4.2V
+
+    charger = new BQ25185_driver
+    """
+    BQ25185 charger for the battery. Has power path to forward the usb power to load if connected.
+    """
+    charger.charge_current_limit = battery.battery.model.capacity / 2h +/- 10%
+    charger.input_current_limit = 500mA
+    assert charger.battery_voltage_limit_high is 4.2V
+    assert charger.battery_voltage_limit_low is 3.0V
+    temp_sensor = new Resistor
+    temp_sensor.resistance = 10kohm +/- 10%
+    temp_sensor.package = "0402"
+    charger.temperature_sense_manual_reset_control.line ~> temp_sensor ~> power_3v3.gnd
+
+    buck_boost = new TPS63020_driver
+    """
+    TPS63020 buck-boost regulator, will be supplied with either the USB or the battery
+    """
+    buck_boost.v_out = 3.3V +/- 5%
+
+    # --- Power Connections ---
+    usb.usb2.usb_if.buspower ~> charger ~> battery.power_battery
+    charger.power_sys ~> buck_boost ~> power_3v3
+    
+    # --- esp32 ---
+    esp32 = new ESP32_C3_MINI_1_driver
+    power_3v3 ~ esp32.power
+    
+    # --- E-paper control lines ---
+    epd_dc = new ElectricLogic
+    epd_dc.reference ~ power_3v3
+    epd_rst = new ElectricLogic
+    epd_rst.reference ~ power_3v3
+    epd_busy = new ElectricLogic
+    epd_busy.reference ~ power_3v3
+
+    # USB input capacitor
+    input_cap = new Capacitor
+    input_cap.capacitance = 4.7uF +/- 20%
+    input_cap.package = "0603"
+    power_vbus.hv ~> input_cap ~> power_vbus.lv
+
+    # --- E-paper FPC connector (24-pin, 0.5mm) ---
+    epd_fpc = new EPaperFPC
+    epd_fpc.power_3v3 ~ power_3v3
+
+    display_decoupling_caps = new Capacitor[10]
+    for c in display_decoupling_caps:
+        c.capacitance = 1uF +/- 20%
+        c.package = "0603"
+        assert c.max_voltage >= 20V
+
+    epd_fpc.vddio ~> display_decoupling_caps[0] ~> power_3v3.lv
+    epd_fpc.vgl.line ~> display_decoupling_caps[1] ~> power_3v3.lv
+    epd_fpc.vgh.line ~> display_decoupling_caps[2] ~> power_3v3.lv
+    epd_fpc.vdd.line ~> display_decoupling_caps[3] ~> power_3v3.lv
+    epd_fpc.vpp.line ~> display_decoupling_caps[4] ~> power_3v3.lv
+    epd_fpc.vsh.line ~> display_decoupling_caps[5] ~> power_3v3.lv
+    epd_fpc.prevgh.line ~> display_decoupling_caps[6] ~> power_3v3.lv
+    epd_fpc.vsl.line ~> display_decoupling_caps[7] ~> power_3v3.lv
+    epd_fpc.prevgl.line ~> display_decoupling_caps[8] ~> power_3v3.lv
+    epd_fpc.vcom.line ~> display_decoupling_caps[9] ~> power_3v3.lv
+
+    # --- Comms ---
+    esp32.usb_if ~ usb.usb2.usb_if
+    esp32.spi ~ epd_fpc.spi
+    esp32.gpio[12] ~ epd_fpc.spi_cs
+
+    esp32.gpio[4] ~ epd_dc
+    esp32.gpio[3] ~ epd_rst
+    esp32.gpio[2] ~ epd_busy
+    
+    epd_dc ~ epd_fpc.dc
+    epd_rst ~ epd_fpc.rst
+    epd_busy ~ epd_fpc.busy
+
+    # --- Charge Pump ---
+    sw_node = new Electrical
+
+    d_prevgh = new Diode
+    d_prevgh.lcsc_id = "C5204746"
+    sw_node ~> d_prevgh ~> epd_fpc.prevgh.line
+
+    d_gnd = new Diode  # D3 in schematic
+    d_gnd.lcsc_id = "C5204746"
+
+    prevgl_cap = new Capacitor
+    prevgl_cap.capacitance = 1uF +/- 20%
+    prevgl_cap.package = "0402"
+
+    d_prevgl = new Diode
+    d_prevgl.lcsc_id = "C5204746"
+    epd_fpc.prevgl.line ~> d_prevgl ~> prevgl_cap ~> sw_node
+    epd_fpc.prevgl.line ~> d_prevgl ~> d_gnd ~> power_3v3.lv
+
+    # C8 (475) and C3 (104) per schematic
+    charge_pump_input_cap = new Capacitor
+    charge_pump_input_cap.capacitance = 4.7uF +/- 20%
+    charge_pump_input_cap.package = "0402"
+    power_3v3.hv ~> charge_pump_input_cap ~> power_3v3.lv
+
+    charge_pump_inductor = new Inductor
+    charge_pump_inductor.inductance = 68uH +/- 20%
+    charge_pump_inductor.package = "0805"
+    power_3v3.hv ~> charge_pump_inductor ~> sw_node
+
+    fet_source_resistor = new Resistor
+    fet_source_resistor.resistance = 0.47ohm +/- 5%
+    fet_source_resistor.package = "0402"
+
+    mosfet = new NFET
+    mosfet.lcsc_id = "C7603347"
+    mosfet.drain ~> sw_node
+    mosfet.source ~> fet_source_resistor ~> power_3v3.lv
+    mosfet.source ~> epd_fpc.rese.line
+    mosfet.gate ~> epd_fpc.gdr.line
+    
+    # --- Pull-up resistors for control signals ---
+    cs_pullup = new Resistor
+    cs_pullup.resistance = 10kohm +/- 10%
+    cs_pullup.package = "0402"
+    epd_fpc.spi_cs.line ~> cs_pullup ~> power_3v3.hv
+    
+    dc_pullup = new Resistor
+    dc_pullup.resistance = 10kohm +/- 10%
+    dc_pullup.package = "0402"
+    epd_fpc.dc.line ~> dc_pullup ~> power_3v3.hv
+    
+    rst_pullup = new Resistor
+    rst_pullup.resistance = 10kohm +/- 10%
+    rst_pullup.package = "0402"
+    epd_fpc.rst.line ~> rst_pullup ~> power_3v3.hv
+    
+    busy_pullup = new Resistor
+    busy_pullup.resistance = 10kohm +/- 10%
+    busy_pullup.package = "0402"
+    epd_fpc.busy.line ~> busy_pullup ~> power_3v3.hv
+
+    bs_pulldown = new Resistor
+    bs_pulldown.resistance = 3.3ohm +/- 5%  # R7 in schematic
+    bs_pulldown.package = "0402"
+    epd_fpc.bs.line ~> bs_pulldown ~> power_3v3.lv
+
+    gdr_pulldown = new Resistor
+    gdr_pulldown.resistance = 10kohm +/- 10%
+    gdr_pulldown.package = "0402"
+    epd_fpc.gdr.line ~> gdr_pulldown ~> power_3v3.lv
+
+
+    power_vbus.hv.override_net_name = "POWER_VBUS"
+    power_3v3.hv.override_net_name = "POWER_3V3"
+    epd_dc.line.override_net_name = "EPD_DC"
+    epd_rst.line.override_net_name = "EPD_RST"
+    epd_busy.line.override_net_name = "EPD_BUSY"
+    epd_fpc.spi_cs.line.override_net_name = "EPD_SPI_CS"
+    epd_fpc.spi.sclk.line.override_net_name = "EPD_SPI_SCLK"
+    epd_fpc.spi.mosi.line.override_net_name = "EPD_SPI_MOSI"
+    epd_fpc.spi.miso.line.override_net_name = "EPD_SPI_MISO"
+
+    blue_led = new LEDIndicatorBlue
+    assert blue_led.current within 1mA to 2mA
+    esp32.gpio[1].line ~> blue_led ~> esp32.power.lv
+
+    red_led = new LEDIndicatorRed
+    assert red_led.current within 1mA to 2mA
+    power_3v3.hv ~> red_led ~> charger.status[1].line
+
+    lil_logo = new atopile_logo_4x4mm
+
+module EPaperFPC:
+    package = new XUNPU_FPC_05F_24PH20_package
+    power_3v3 = new ElectricPower
+
+    spi = new SPI
+    spi_cs = new ElectricLogic
+
+    hlt_ctl = new ElectricLogic
+    gdr = new ElectricLogic
+    rese = new ElectricLogic
+    vgl = new ElectricLogic
+    vgh = new ElectricLogic
+    tscl = new ElectricLogic
+    tsda = new ElectricLogic
+    bs = new ElectricLogic
+    busy = new ElectricLogic
+    rst = new ElectricLogic
+    dc = new ElectricLogic
+    # cs
+    # sclk
+    # sdi
+    vddio = new Electrical
+    # vci
+    # vss
+    vdd = new ElectricLogic
+    vpp = new ElectricLogic
+    vsh = new ElectricLogic
+    prevgh = new ElectricLogic
+    vsl = new ElectricLogic
+    prevgl = new ElectricLogic
+    vcom = new ElectricLogic
+
+    hlt_ctl.reference ~ power_3v3
+    gdr.reference ~ power_3v3
+    rese.reference ~ power_3v3
+    vgl.reference ~ power_3v3
+    vgh.reference ~ power_3v3
+    tscl.reference ~ power_3v3
+    tsda.reference ~ power_3v3
+    bs.reference ~ power_3v3
+    busy.reference ~ power_3v3
+    rst.reference ~ power_3v3
+    dc.reference ~ power_3v3
+    spi_cs.reference ~ power_3v3
+    spi.reference_shim ~ power_3v3
+    vdd.reference ~ power_3v3
+    vpp.reference ~ power_3v3
+    vsh.reference ~ power_3v3
+    prevgh.reference ~ power_3v3
+    vsl.reference ~ power_3v3
+    prevgl.reference ~ power_3v3
+    vcom.reference ~ power_3v3
+
+    package.1 ~ hlt_ctl.line
+    package.2 ~ gdr.line
+    package.3 ~ rese.line
+    package.4 ~ vgl.line
+    package.5 ~ vgh.line
+    package.6 ~ tscl.line
+    package.7 ~ tsda.line
+    package.8 ~ bs.line
+    package.9 ~ busy.line
+    package.10 ~ rst.line
+    package.11 ~ dc.line
+    package.12 ~ spi_cs.line
+    package.13 ~ spi.sclk.line
+    package.14 ~ spi.mosi.line
+    package.15 ~ vddio
+    package.16 ~ power_3v3.hv
+    package.17 ~ power_3v3.lv
+    package.18 ~ vdd.line
+    package.19 ~ vpp.line
+    package.20 ~ vsh.line
+    package.21 ~ prevgh.line
+    package.22 ~ vsl.line
+    package.23 ~ prevgl.line
+    package.24 ~ vcom.line

@@ -1,0 +1,20 @@
+{
+    "mcpServers": {
+        "atopile": {
+            "command": "/home/needspeed/.config/Cursor/User/globalStorage/atopile.atopile/uv-bin/uv",
+            "args": [
+                "tool",
+                "run",
+                "-p",
+                "3.13",
+                "--from",
+                "atopile",
+                "ato",
+                "mcp",
+                "start",
+                "--no-http"
+            ],
+            "env": {}
+        }
+    }
+}

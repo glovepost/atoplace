@@ -1,0 +1,29 @@
+---
+# Centralized workout data for both circuits
+# Used via: substitutions: !include schedules/circuit_unified.yaml
+
+# Circuit timing
+c1_start_hour: "9"
+c1_start_minute: "30"
+c2_start_hour: "14"
+c2_start_minute: "30"
+slot_minutes: "60"
+
+# Circuit 1 workouts
+circuit1_w1: "1 - Overhead Press + Pull Up"
+circuit1_w2: "2 - Row + Push Up"
+circuit1_w3: "3 - Lateral Raise + Split Squat"
+
+# Circuit 2 workouts
+circuit2_w1: "1 - Deadlift + Leg Raise"
+circuit2_w2: "2 - Tricep Extension + Chin Up"
+circuit2_w3: "3 - Shrug + Forearm"
+
+# Participants per column
+participants_1: "Narayan\nIoannis"
+participants_2: "Nick\nSam"
+participants_3: "Ray\nPerson 3"
+
+# Group workouts
+group_530_label: "Group Squat"
+group_630_label: "Group Plank"

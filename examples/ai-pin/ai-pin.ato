@@ -1,0 +1,105 @@
+#pragma experiment("BRIDGE_CONNECT")
+#pragma experiment("FOR_LOOP")
+
+import ElectricPower
+import I2C
+import SPI
+import I2S
+import Resistor
+import ElectricLogic
+
+from "atopile/espressif-esp32-c3/esp32_c3_mini.ato" import ESP32_C3_MINI_1_driver
+from "atopile/usb-connectors/usb-connectors.ato" import USB2_0TypeCHorizontalConnector
+from "atopile/st-ldk220/st-ldk220.ato" import LDK220M_R
+from "atopile/microphones/tdk_invensense_ics_43434.ato" import TDK_InvenSense_ICS_43434
+from "atopile/ti-bq25185/ti-bq25185.ato" import BQ25185_driver
+from "atopile/sd-card/sd-card-slots.ato" import MicroSDCardAssemblyWithRemovableSPI
+from "atopile/batteries/eemb_battery_lp402535.ato" import EMB_BATTERY_LP402535_driver
+from "atopile/logos/logos.ato" import atopile_logo_4x4mm
+from "atopile/indicator-leds/indicator-leds.ato" import LEDIndicatorRed
+from "atopile/opsco-sk6805-ec20/opsco-sk6805-ec20.ato" import OPSCO_SK6805_EC20
+
+module AIPin:
+    """
+    ESP32-C3 based AI pin with I2S microphone, USB-C power input, LiPo charger/power-path, and microSD over SPI. System rail ~3.3V.
+    """
+
+    # --- Power rails ---
+    power_vbus_5v = new ElectricPower
+    power_3v3 = new ElectricPower
+    power_batt = new ElectricPower
+    assert power_3v3.voltage within 2.97V to 3.15V
+
+    # --- Core components ---
+    mcu = new ESP32_C3_MINI_1_driver
+    usb_c = new USB2_0TypeCHorizontalConnector
+    ldo = new LDK220M_R
+
+    # --- Battery ---
+    battery = new EMB_BATTERY_LP402535_driver
+    battery.model.capacity = 300mAh
+    assert battery.model.voltage is 3V to 4.2V
+
+    # --- Battery charger ---
+    charger = new BQ25185_driver
+    charger.charge_current_limit = battery.model.capacity / 2h +/- 10%
+    charger.battery_voltage_limit_high = 4.2V
+    charger.battery_voltage_limit_low = 3.0V
+
+    # Temperature sensor - 10k ohm dummy resistor
+    temp_sensor = new Resistor
+    temp_sensor.resistance = 10kohm +/- 1%
+    temp_sensor.package = "0402"
+    charger.temperature_sense_manual_reset_control.line ~> temp_sensor ~> power_3v3.lv
+
+    # --- Microphone (I2S) ---
+    mic = new TDK_InvenSense_ICS_43434
+
+    # --- microSD (SPI) ---
+    microsd = new MicroSDCardAssemblyWithRemovableSPI
+
+    # --- Power tree ---
+    power_vbus_5v ~ usb_c.usb.usb_if.buspower
+    power_vbus_5v ~ charger.power_vbus
+
+    battery.power ~ power_batt
+    power_batt ~ charger.power_batt
+
+    charger.power_sys ~> ldo ~> power_3v3
+
+    power_3v3 ~ mcu.power
+    power_3v3 ~ mic.power
+    power_3v3 ~ microsd.power
+
+
+    # --- Comms connections ---
+    mcu.i2s ~ mic.i2s
+    mcu.usb_if ~ usb_c.usb.usb_if
+
+    mcu.spi ~ microsd.spi
+    mcu.gpio[4] ~ microsd.spi_cs
+
+    # --- I2C pull-ups tied to MCU I2C directly ---
+    mcu.i2c.sda.reference ~ power_3v3
+    mcu.i2c.scl.reference ~ power_3v3
+    i2c_pullups = new Resistor[2]
+    for r in i2c_pullups:
+        r.resistance = 10kohm +/- 1%
+        r.package = "0402"
+    mcu.i2c.sda.reference.hv ~> i2c_pullups[0] ~> mcu.i2c.sda.line
+    mcu.i2c.scl.reference.hv ~> i2c_pullups[1] ~> mcu.i2c.scl.line
+
+    red_led = new LEDIndicatorRed
+    assert red_led.current within 0.5mA to 1.5mA
+    mcu.gpio[20].line ~> red_led ~> mcu.power.lv
+    
+    addressable_led = new OPSCO_SK6805_EC20
+    addressable_led.power ~ mcu.power
+    addressable_led.data_in ~ mcu.gpio[21]
+
+    logo = new atopile_logo_4x4mm
+
+    microsd.receptacle.receptacle.sdbus.CD_DAT3.override_net_name = "sd_chip_select_1"
+    microsd.receptacle.receptacle.sdbus.CMD.override_net_name = "sd_mosi"
+    microsd.receptacle.receptacle.sdbus.CLK.override_net_name = "sd_clk"
+    microsd.receptacle.receptacle.sdbus.DAT0.override_net_name = "sd_miso"

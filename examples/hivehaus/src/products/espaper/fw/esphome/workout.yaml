@@ -1,0 +1,446 @@
+substitutions: !include schedules/circuit_unified.yaml
+
+esphome:
+  name: workout
+  includes:
+    - schedules/workout_logic.h
+  on_boot: 
+    then:
+      - lvgl.page.show: clock_page
+      - delay: 2s
+      - lambda: |-
+          // Initialize time globals from SNTP on boot
+          auto now = id(sntp_time).now();
+          if (now.is_valid()) {
+            id(fake_hour) = now.hour;
+            id(fake_minute) = now.minute;
+            id(fake_second) = now.second;
+            id(fake_day_of_week) = now.day_of_week;
+            id(fake_month) = now.month;
+            id(fake_day_of_month) = now.day_of_month;
+            ESP_LOGD("boot", "Initialized time from SNTP: %02d:%02d:%02d", now.hour, now.minute, now.second);
+          }
+      - script.execute: time_update
+      - script.execute: update_workout_display
+      - delay: 1s
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+globals:
+  - id: fake_hour
+    type: int
+    initial_value: '9'
+  - id: fake_minute
+    type: int
+    initial_value: '29'
+  - id: fake_second
+    type: int
+    initial_value: '0'
+  - id: fake_day_of_week
+    type: int
+    initial_value: '2'
+  - id: fake_month
+    type: int
+    initial_value: '1'
+  - id: fake_day_of_month
+    type: int
+    initial_value: '1'
+  - id: current_workout_idx
+    type: int
+    initial_value: '0'
+  - id: current_circuit_idx
+    type: int
+    initial_value: '0'
+
+
+api:
+  password: ""
+
+ota:
+  - platform: esphome
+    password: ""
+    port: 3232
+
+safe_mode:
+  reboot_timeout: 10min
+
+wifi:
+  ssid: "atopile"
+  password: "code2pcb"
+  fast_connect: true
+  reboot_timeout: 15min
+  power_save_mode: none
+
+  on_connect:
+    then:
+      - logger.log: "WiFi connected successfully"
+  on_disconnect:
+    then:
+      - logger.log: "WiFi disconnected"
+
+  ap:
+    ssid: "Workout Fallback Hotspot"
+    password: "QuxGYPMmHAe1"
+
+captive_portal:
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: America/Los_Angeles
+    on_time:
+      - seconds: 50
+        minutes: "*"
+        then:
+          - script.execute: time_update
+          - script.wait: time_update
+          - script.execute: update_workout_display
+          - script.wait: update_workout_display
+          - lvgl.pause:
+          - delay: 50ms
+          - lvgl.resume:
+          - delay: 100ms
+          - component.update: e_display
+
+# WiFi status monitoring
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "WiFi IP"
+    ssid:
+      name: "WiFi SSID"
+    mac_address:
+      name: "WiFi MAC"
+
+
+font:
+  - file: 'fonts/JetBrainsMono-Light.ttf'
+    id: sans_serif
+    size: 18
+  - file: 'fonts/JosefinSlab-Medium.ttf'
+    id: serif
+    size: 24
+  - file: 'fonts/JetBrainsMono-Light.ttf'
+    id: title_font
+    size: 32
+
+spi:
+  clk_pin: 10
+  mosi_pin: 7
+
+display:
+  - id: e_display
+    platform: waveshare_epaper
+    cs_pin: 0
+    dc_pin: 4
+    data_rate: 1MHz
+    busy_pin:
+      number: 2
+      inverted: true
+    reset_pin: 3
+    model: 7.50inV2
+    update_interval: never
+    auto_clear_enabled: false
+
+color:
+- id: paper_white # Really black, but will appear white on e-paper
+  hex: "000000"
+- id: paper_black # Really white, but will appear black on e-paper
+  hex: "FFFFFF"
+
+lvgl:
+  buffer_size: 12%
+  theme:
+    image:
+      image_recolor: paper_black
+  bg_color: paper_white
+  bg_opa: COVER
+  default_font: sans_serif
+  pages:
+  - id: clock_page
+    widgets:
+      - label:
+          id: workout_title_big
+          align: TOP_LEFT
+          x: 10
+          y: 10
+          text_color: paper_black
+          text_font: title_font
+      - label:
+          id: date_label_big
+          align: TOP_RIGHT
+          x: -10
+          y: 10
+          text_color: paper_black
+          text_font: title_font
+      - meter: # clock face
+          height: 280
+          width: 280
+          align: RIGHT_MID
+          bg_opa: TRANSP
+          text_color: paper_black
+          scales:
+            - range_from: 0 # minutes scale
+              range_to: 60
+              angle_range: 360
+              rotation: 270
+              ticks:
+                width: 1
+                count: 61
+                length: 5
+                color: paper_black
+              indicators:
+                - line:
+                    id: minute_hand
+                    width: 1
+                    color: paper_black
+                    r_mod: -4
+                    value: 0
+            - range_from: 1 # hours scale for labels
+              range_to: 12
+              angle_range: 330
+              rotation: 300
+              ticks:
+                width: 1
+                count: 12
+                length: 1
+                major:
+                  stride: 1
+                  width: 2
+                  length: 10
+                  color: paper_black
+                  label_gap: 12
+            - range_from: 0 # hi-res hours scale for hand
+              range_to: 720
+              angle_range: 360
+              rotation: 270
+              ticks:
+                count: 0
+              indicators:
+                - line:
+                    id: hour_hand
+                    width: 2
+                    color: paper_black
+                    r_mod: -30
+                    value: 0
+      - obj: # workout grid
+          height: 300
+          width: 520
+          align: LEFT_MID
+          pad_left: 16
+          bg_color: paper_white
+          layout:
+            type: grid
+            grid_rows: [fr(1), fr(1), fr(1), fr(1)]
+            grid_columns: [120px, fr(1)]
+            grid_row_align: center
+            grid_column_align: START
+            pad_column: 8
+          widgets:
+            - label:
+                id: participants_1
+                text: ""
+                width: 120
+                text_align: LEFT
+                long_mode: WRAP
+                # base_dir not supported in ESPHome LVGL; remove
+                # line spacing set to default; using WRAP + width for consistency
+                pad_left: 0
+                grid_cell_x_align: START
+            - label:
+                id: workout_1
+                text: ""
+                text_align: LEFT
+            - label:
+                id: participants_2
+                text: ""
+                width: 120
+                text_align: LEFT
+                long_mode: WRAP
+                # base_dir not supported in ESPHome LVGL; remove
+                # line spacing set to default; using WRAP + width for consistency
+                pad_left: 0
+                grid_cell_x_align: START
+            - label:
+                id: workout_2
+                text: ""
+                text_align: LEFT
+            - label:
+                id: participants_3
+                text: ""
+                width: 120
+                text_align: LEFT
+                long_mode: WRAP
+                # base_dir not supported in ESPHome LVGL; remove
+                # line spacing set to default; using WRAP + width for consistency
+                pad_left: 0
+                grid_cell_x_align: START
+            - label:
+                id: workout_3
+                text: ""
+                text_align: LEFT
+  
+
+script:
+  - id: time_update
+    then:
+      - lambda: |-
+          // Update time globals for the NEXT minute (trigger at :50, show :00 of next minute)
+          auto now = id(sntp_time).now();
+          if (!now.is_valid()) return;
+          
+          ESP_LOGD("time_update", "Current time: %02d:%02d:%02d", now.hour, now.minute, now.second);
+          
+          // Increment minute by 1 to get next minute
+          int next_minute = now.minute + 1;
+          int next_hour = now.hour;
+          // Handle minute overflow
+          while (next_minute >= 60) {
+            next_minute -= 60;
+            next_hour++;
+            if (next_hour >= 24) {
+              next_hour = 0;
+            }
+          }
+          
+          ESP_LOGD("time_update", "Setting display to: %02d:%02d:00", next_hour, next_minute);
+          
+          id(fake_hour) = next_hour;
+          id(fake_minute) = next_minute;
+          id(fake_second) = 0;
+          id(fake_day_of_week) = now.day_of_week;
+          id(fake_month) = now.month;
+          id(fake_day_of_month) = now.day_of_month;
+          
+          ESP_LOGD("time_update_script", "After setting: fake_hour=%d, fake_minute=%d", id(fake_hour), id(fake_minute));
+      - lvgl.page.show: clock_page
+      - globals.set:
+          id: current_circuit_idx
+          value: !lambda |-
+            ScheduleConfig cfg{atoi("${c1_start_hour}"), atoi("${c1_start_minute}"),
+                               atoi("${c2_start_hour}"), atoi("${c2_start_minute}"),
+                               atoi("${slot_minutes}")};
+            return get_circuit_idx(id(fake_hour), id(fake_minute), cfg);
+      - globals.set:
+          id: current_workout_idx
+          value: !lambda |-
+            ScheduleConfig cfg{atoi("${c1_start_hour}"), atoi("${c1_start_minute}"),
+                               atoi("${c2_start_hour}"), atoi("${c2_start_minute}"),
+                               atoi("${slot_minutes}")};
+            return get_workout_idx(id(fake_hour), id(fake_minute), id(current_circuit_idx), id(fake_day_of_week), cfg);
+      - lvgl.indicator.update:
+          id: minute_hand
+          value: !lambda |-
+            int val = minute_hand_value(id(fake_minute));
+            ESP_LOGD("time_update_script", "Setting minute_hand to %d", val);
+            return val;
+      - lvgl.indicator.update:
+          id: hour_hand
+          value: !lambda |-
+            int val = hour_hand_value(id(fake_hour), id(fake_minute));
+            ESP_LOGD("time_update_script", "Setting hour_hand to %d", val);
+            return val;
+      - lvgl.label.update:
+          id: date_label_big
+          text: !lambda |-
+            return build_date_with_day(id(fake_day_of_week), id(fake_month), id(fake_day_of_month));
+      - lvgl.label.update:
+          id: date_label_big
+          text: !lambda |-
+            return build_date_with_day(id(fake_day_of_week), id(fake_month), id(fake_day_of_month));
+      - delay: 100ms
+  - id: update_workout_display
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // Group windows:
+              //  - Group 1: 17:30 through 18:29
+              //  - Group 2: 18:30 through 19:29
+              int h = id(fake_hour);
+              int m = id(fake_minute);
+              bool group1 = (h == 17 && m >= 30) || (h == 18 && m < 30);
+              bool group2 = (h == 18 && m >= 30) || (h == 19 && m < 30);
+              return group1 || group2;
+          then:
+            - lvgl.label.update:
+                id: workout_title_big
+                text: !lambda |-
+                  int h = id(fake_hour);
+                  int m = id(fake_minute);
+                  if ((h == 17 && m >= 30) || (h == 18 && m < 30)) {
+                    return std::string("Group Suffering 1");
+                  } else {
+                    return std::string("Group Suffering 2");
+                  }
+            - lvgl.label.update:
+                id: participants_1
+                text: "Group"
+            - lvgl.label.update:
+                id: workout_1
+                text: !lambda |-
+                  int h = id(fake_hour);
+                  int m = id(fake_minute);
+                  if ((h == 17 && m >= 30) || (h == 18 && m < 30)) {
+                    return std::string(R"(${group_530_label})");
+                  } else {
+                    return std::string(R"(${group_630_label})");
+                  }
+            - lvgl.label.update:
+                id: participants_2
+                text: ""
+            - lvgl.label.update:
+                id: participants_3
+                text: ""
+            - lvgl.label.update:
+                id: workout_2
+                text: ""
+            - lvgl.label.update:
+                id: workout_3
+                text: ""
+          else:
+            - lvgl.label.update:
+                id: workout_title_big
+                text: !lambda |-
+                  return build_title(id(current_circuit_idx), id(current_workout_idx));
+            - lvgl.label.update:
+                id: participants_1
+                text: !lambda |-
+                  return std::string(R"(${participants_1})");
+            - lvgl.label.update:
+                id: participants_2
+                text: !lambda |-
+                  return std::string(R"(${participants_2})");
+            - lvgl.label.update:
+                id: participants_3
+                text: !lambda |-
+                  return std::string(R"(${participants_3})");
+            - lvgl.label.update:
+                id: workout_1
+                text: !lambda |-
+                  return std::string(get_workout_name(
+                    id(current_circuit_idx), id(current_workout_idx),
+                    R"(${circuit1_w1})", R"(${circuit1_w2})", R"(${circuit1_w3})",
+                    R"(${circuit2_w1})", R"(${circuit2_w2})", R"(${circuit2_w3})"));
+            - lvgl.label.update:
+                id: workout_2
+                text: !lambda |-
+                  return std::string(get_workout_name(
+                    id(current_circuit_idx), (id(current_workout_idx) + 1) % 3,
+                    R"(${circuit1_w1})", R"(${circuit1_w2})", R"(${circuit1_w3})",
+                    R"(${circuit2_w1})", R"(${circuit2_w2})", R"(${circuit2_w3})"));
+            - lvgl.label.update:
+                id: workout_3
+                text: !lambda |-
+                  return std::string(get_workout_name(
+                    id(current_circuit_idx), (id(current_workout_idx) + 2) % 3,
+                    R"(${circuit1_w1})", R"(${circuit1_w2})", R"(${circuit1_w3})",
+                    R"(${circuit2_w1})", R"(${circuit2_w2})", R"(${circuit2_w3})"));
+
+  

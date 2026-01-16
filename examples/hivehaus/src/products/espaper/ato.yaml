@@ -1,0 +1,49 @@
+requires-atopile: 0.11.1
+
+paths:
+  src: ./
+  layout: ./layouts
+
+builds:
+  default:
+    entry: main.ato:App
+    exclude_checks: [PCB.requires_drc_check]
+    hide_designators: true
+
+# This metadata is only required for publishing
+# Uncomment it and fill out the fields to publish your package
+# package:
+#   identifier: # fill me!/espaper
+#   repository: # fill me!
+#   version: "0.1.0"  # recommended first version
+#   authors:
+#     - name: Nicholas Krstevski
+#       email: nick@atopile.io
+#   summary: # fill me!
+#   license: MIT license
+#   homepage: # fill me!
+dependencies:
+- type: registry
+  identifier: atopile/espressif-esp32-c3
+  release: 0.1.4
+- type: registry
+  identifier: atopile/usb-connectors
+  release: 0.2.2
+- type: registry
+  identifier: atopile/st-ldk220
+  release: 0.2.1
+- type: registry
+  identifier: atopile/ti-bq25185
+  release: 0.1.0
+- type: registry
+  identifier: atopile/batteries
+  release: 0.2.0
+- type: registry
+  identifier: atopile/ti-tps63020
+  release: 0.2.1
+- type: registry
+  identifier: atopile/logos
+  release: 0.1.3
+- type: registry
+  identifier: atopile/indicator-leds
+  release: 0.1.5
