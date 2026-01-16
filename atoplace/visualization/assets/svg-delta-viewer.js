@@ -9,7 +9,9 @@
  *
  * Required globals (injected by Python template):
  * - boardBounds: {minX, minY, maxX, maxY, scale, padding}
- * - staticProps: {ref: {width, height, pads: [[x, y, w, h, net], ...]}}
+ * - staticProps: {ref: {width, height, pads: [[x, y, w, h, rotation, net, layer, is_through_hole], ...]}}
+ *   - layer: 'top', 'bottom', or 'inner' (pad's actual copper layer)
+ *   - is_through_hole: true if pad has drill hole (spans all layers)
  * - deltaFrames: [{changed_components: {ref: [x, y, rotation]}, ...}]
  * - totalFrames: number
  * - moduleColors: {module_name: color}
@@ -53,7 +55,7 @@ let dragOffset = { x: 0, y: 0 };
 // Layer visibility
 let layerVisibility = {
     top: true,
-    bottom: true,
+    bottom: false,
     edge: true,
     grid: false,
     ratsnest: false,
@@ -128,7 +130,9 @@ let currentState = {
     vias: [],            // [{x, y, drill, pad, net}]
     astar_explored: [],  // [[x, y, layer], ...] - A* explored nodes
     astar_frontier: [],  // [[x, y, layer], ...] - A* frontier nodes
-    astar_path: []       // [[x, y, layer], ...] - Current A* path
+    astar_path: [],      // [[x, y, layer], ...] - Current A* path
+    // Routing metrics (Issue #34)
+    nets_routed: 0       // Number of nets routed so far
 };
 
 function getPadColor(netName) {
@@ -422,10 +426,27 @@ function updateVisibility() {
     svg.querySelectorAll('.force-layer, .force-vector').forEach(el => {
         el.style.display = layerVisibility.forces ? '' : 'none';
     });
+    // Handle pad visibility based on pad's actual layer (Issue #37)
     svg.querySelectorAll('.pad-element').forEach(el => {
         const isTop = el.classList.contains('comp-top');
         const isBottom = el.classList.contains('comp-bottom');
-        const layerVisible = (isTop && layerVisibility.top) || (isBottom && layerVisibility.bottom) || (!isTop && !isBottom);
+        const isThroughHole = el.classList.contains('pad-through-hole');
+        const isInner = el.classList.contains('pad-inner');
+
+        // Through-hole pads are visible when either layer is visible
+        // Inner layer pads require a future inner layer toggle (show if any copper layer visible for now)
+        let layerVisible;
+        if (isThroughHole) {
+            // Through-hole pads span all layers - show when either top or bottom is visible
+            layerVisible = layerVisibility.top || layerVisibility.bottom;
+        } else if (isInner) {
+            // Inner layer pads - for now show when any copper layer is visible
+            // A future enhancement could add inner layer toggles
+            layerVisible = layerVisibility.top || layerVisibility.bottom;
+        } else {
+            // SMD pads - only show when their specific layer is visible
+            layerVisible = (isTop && layerVisibility.top) || (isBottom && layerVisibility.bottom) || (!isTop && !isBottom);
+        }
         el.style.display = (layerVisibility.pads && layerVisible) ? '' : 'none';
     });
     svg.querySelectorAll('.ref-label').forEach(el => {
@@ -724,9 +745,18 @@ function updateModuleVisibility() {
             }
 
             if (el.classList.contains('pad-element')) {
+                // Handle pad visibility based on pad's actual layer (Issue #37)
                 const isTop = el.classList.contains('comp-top');
                 const isBottom = el.classList.contains('comp-bottom');
-                const layerVisible = (isTop && layerVisibility.top) || (isBottom && layerVisibility.bottom) || (!isTop && !isBottom);
+                const isThroughHole = el.classList.contains('pad-through-hole');
+                const isInner = el.classList.contains('pad-inner');
+
+                let layerVisible;
+                if (isThroughHole || isInner) {
+                    layerVisible = layerVisibility.top || layerVisibility.bottom;
+                } else {
+                    layerVisible = (isTop && layerVisibility.top) || (isBottom && layerVisibility.bottom) || (!isTop && !isBottom);
+                }
                 el.style.display = (layerVisibility.pads && layerVisible) ? '' : 'none';
                 return;
             }
@@ -834,6 +864,7 @@ function reconstructState(toFrame) {
     currentState.max_move = 0;
     currentState.overlap_count = 0;
     currentState.wire_length = 0;
+    currentState.nets_routed = 0;
 
     // Replay all deltas from 0 to toFrame
     for (let i = 0; i <= toFrame; i++) {
@@ -896,6 +927,8 @@ function applyDelta(delta) {
     if (delta.astar_explored !== undefined) currentState.astar_explored = delta.astar_explored;
     if (delta.astar_frontier !== undefined) currentState.astar_frontier = delta.astar_frontier;
     if (delta.astar_path !== undefined) currentState.astar_path = delta.astar_path;
+    // Update routing metrics (Issue #34)
+    if (delta.nets_routed !== undefined) currentState.nets_routed = delta.nets_routed;
 }
 
 function updateSVGElements() {
@@ -1436,6 +1469,7 @@ function updatePads() {
     if (!svg) return;
 
     // Update pad positions based on component positions
+    // Pad data format: [x, y, w, h, rotation, net, layer, is_through_hole] (Issue #37)
     for (const [ref, comp] of Object.entries(currentState.components)) {
         const [x, y, rotation] = comp;
         const props = staticProps[ref];
@@ -1446,7 +1480,15 @@ function updatePads() {
         const sinR = Math.sin(radians);
 
         props.pads.forEach((pad, index) => {
-            const [pxRel, pyRel, pw, ph, padRotation, net] = pad;
+            // Support both old format [x, y, w, h, rot, net] and new format with layer info
+            const pxRel = pad[0];
+            const pyRel = pad[1];
+            const pw = pad[2];
+            const ph = pad[3];
+            const padRotation = pad[4] || 0;
+            const net = pad[5] || '';
+            const padLayer = pad[6] || 'top';  // Default to top for backward compatibility
+            const isThroughHole = pad[7] || false;
 
             // Apply rotation and translation (in board coordinates)
             const px = x + (pxRel * cosR - pyRel * sinR);
@@ -1464,22 +1506,56 @@ function updatePads() {
                 padEl.classList.add('pad-element');
                 padEl.setAttribute('data-ref', ref);
                 padEl.setAttribute('data-pad-index', index);
-                padEl.setAttribute('fill', getPadColor(net || ''));
                 padEl.setAttribute('stroke', '#ffffff');
                 padEl.setAttribute('stroke-width', '0.5');
-                const layerClass = componentLayers[ref] === 'bottom' ? 'comp-bottom' : 'comp-top';
-                padEl.classList.add(layerClass);
+
+                // Apply layer class based on pad's actual layer (Issue #37)
+                if (isThroughHole) {
+                    padEl.classList.add('pad-through-hole');
+                    padEl.setAttribute('fill', '#b8860b');  // Goldenrod for through-hole
+                } else if (padLayer === 'bottom') {
+                    padEl.classList.add('comp-bottom');
+                    padEl.setAttribute('fill', getPadColor(net));
+                } else if (padLayer === 'inner') {
+                    padEl.classList.add('pad-inner');
+                    padEl.setAttribute('fill', '#6a9');
+                } else {
+                    padEl.classList.add('comp-top');
+                    padEl.setAttribute('fill', getPadColor(net));
+                }
                 svg.appendChild(padEl);
             }
 
+            // Determine visibility based on pad's actual layer (Issue #37)
             const isTop = padEl.classList.contains('comp-top');
             const isBottom = padEl.classList.contains('comp-bottom');
-            const layerVisible = (isTop && layerVisibility.top) || (isBottom && layerVisibility.bottom) || (!isTop && !isBottom);
+            const isPadThroughHole = padEl.classList.contains('pad-through-hole');
+            const isInner = padEl.classList.contains('pad-inner');
+
+            let layerVisible;
+            if (isPadThroughHole) {
+                layerVisible = layerVisibility.top || layerVisibility.bottom;
+            } else if (isInner) {
+                layerVisible = layerVisibility.top || layerVisibility.bottom;
+            } else {
+                layerVisible = (isTop && layerVisibility.top) || (isBottom && layerVisibility.bottom) || (!isTop && !isBottom);
+            }
             padEl.style.display = (layerVisibility.pads && layerVisible) ? '' : 'none';
+
             padEl.setAttribute('x', pcx - phw);
             padEl.setAttribute('y', pcy - phh);
             padEl.setAttribute('width', ts(pw));
             padEl.setAttribute('height', ts(ph));
+
+            // Apply total rotation (component rotation + pad's own rotation)
+            // SVG Y-axis convention requires negating the rotation angle
+            const totalRotation = rotation + (padRotation || 0);
+            padEl.setAttribute('transform', `rotate(${-totalRotation} ${pcx} ${pcy})`);
+
+            // Update pad fill color (for both new and existing pads) - skip through-hole pads
+            if (!isPadThroughHole && !isInner) {
+                padEl.setAttribute('fill', getPadColor(net));
+            }
 
             const moduleName = currentState.modules[ref] || 'default';
             applyModuleClass(padEl, moduleName);
@@ -1893,20 +1969,43 @@ function drawEnergyGraph() {
 
     if (deltaFrames.length === 0) return;
 
-    // Extract energies and wire lengths from deltas
+    // Extract energies, wire lengths, and nets routed from deltas
     const energies = [];
     const wireLengths = [];
+    const netsRouted = [];
     let energy = 0;
     let wireLength = 0;
+    let routedNetsCount = 0;
+    let routedNetsSet = new Set();  // Fallback for older data without nets_routed field
+
     for (const delta of deltaFrames) {
         if (delta.energy !== undefined) energy = delta.energy;
         if (delta.wire_length !== undefined) wireLength = delta.wire_length;
+
+        // Use explicit nets_routed from delta if available (Issue #34)
+        // Fall back to counting from traces for backward compatibility
+        if (delta.nets_routed !== undefined) {
+            routedNetsCount = delta.nets_routed;
+        } else if (delta.traces && delta.traces.length > 0) {
+            // Fallback: count unique nets from traces (cumulative across routing frames)
+            for (const trace of delta.traces) {
+                if (trace.net) {
+                    routedNetsSet.add(trace.net);
+                }
+            }
+            routedNetsCount = routedNetsSet.size;
+        }
+
         energies.push(energy);
         wireLengths.push(wireLength);
+        netsRouted.push(routedNetsCount);
     }
 
     const maxEnergy = Math.max(...energies) || 1;
     const maxWireLength = Math.max(...wireLengths) || 1;
+    // Use total nets from netlist for proper percentage, not just max routed
+    const totalNets = (typeof netlist !== 'undefined' && netlist) ? Object.keys(netlist).length : 1;
+    const maxNetsRouted = Math.max(totalNets, Math.max(...netsRouted) || 1);
 
     // Draw graph
     ctx.fillStyle = '#16213e';
@@ -1941,6 +2040,23 @@ function drawEnergyGraph() {
         }
     }
     ctx.stroke();
+
+    // Draw nets routed line (orange) - only if there's routing data
+    if (maxNetsRouted > 0) {
+        ctx.strokeStyle = '#e67e22';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < netsRouted.length; i++) {
+            const x = (i / (netsRouted.length - 1)) * width;
+            const y = height - (netsRouted[i] / maxNetsRouted) * (height - 4) - 2;
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+    }
 
     // Draw current frame indicator
     const currentX = (currentFrame / (energies.length - 1)) * width;

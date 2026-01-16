@@ -5,6 +5,7 @@ This module consolidates all visualization functionality:
 - SVG delta-based frame playback
 - CSS styling
 - HTML template generation
+- Unified placement + routing visualization
 
 Assets are stored in visualization/assets/ and can be loaded either:
 - Inline (bundled into single HTML file)
@@ -16,6 +17,9 @@ from typing import Optional
 
 # Asset directory path
 ASSETS_DIR = Path(__file__).parent / "assets"
+
+# Import unified visualizer
+from .unified import UnifiedVisualizer, UnifiedFrame, create_unified_visualizer
 
 
 def get_asset_path(filename: str) -> Path:
@@ -47,4 +51,8 @@ __all__ = [
     "load_asset",
     "get_svg_delta_viewer_js",
     "get_styles_css",
+    # Unified visualizer
+    "UnifiedVisualizer",
+    "UnifiedFrame",
+    "create_unified_visualizer",
 ]
