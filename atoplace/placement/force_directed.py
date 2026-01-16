@@ -310,6 +310,74 @@ class ForceDirectedRefiner:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Added constraint: %s", getattr(constraint, "description", constraint))
 
+    def _compute_overlaps_from_state(
+        self,
+        state: PlacementState,
+        clearance: float = 0.1
+    ) -> List[Tuple[str, str, float]]:
+        """Compute component overlaps using positions from simulation state.
+
+        Unlike board.find_overlaps() which uses stale board component positions,
+        this method uses the current simulated positions from state.positions.
+
+        Args:
+            state: Current placement state with simulated positions
+            clearance: Minimum clearance between components (mm)
+
+        Returns:
+            List of (ref1, ref2, penetration_depth) tuples
+        """
+        overlaps = []
+        refs = list(state.positions.keys())
+
+        for i, ref1 in enumerate(refs):
+            comp1 = self.board.components.get(ref1)
+            if not comp1 or comp1.dnp:
+                continue
+
+            x1, y1 = state.positions[ref1]
+            rot1 = state.rotations.get(ref1, comp1.rotation)
+            hw1, hh1 = comp1.width / 2, comp1.height / 2
+
+            # Compute rotated AABB for comp1
+            rad1 = math.radians(rot1)
+            cos1, sin1 = abs(math.cos(rad1)), abs(math.sin(rad1))
+            half_w1 = hw1 * cos1 + hh1 * sin1
+            half_h1 = hw1 * sin1 + hh1 * cos1
+
+            # Bounding box with clearance
+            bb1 = (x1 - half_w1 - clearance, y1 - half_h1 - clearance,
+                   x1 + half_w1 + clearance, y1 + half_h1 + clearance)
+
+            for ref2 in refs[i + 1:]:
+                comp2 = self.board.components.get(ref2)
+                if not comp2 or comp2.dnp:
+                    continue
+
+                x2, y2 = state.positions[ref2]
+                rot2 = state.rotations.get(ref2, comp2.rotation)
+                hw2, hh2 = comp2.width / 2, comp2.height / 2
+
+                # Compute rotated AABB for comp2
+                rad2 = math.radians(rot2)
+                cos2, sin2 = abs(math.cos(rad2)), abs(math.sin(rad2))
+                half_w2 = hw2 * cos2 + hh2 * sin2
+                half_h2 = hw2 * sin2 + hh2 * cos2
+
+                bb2 = (x2 - half_w2, y2 - half_h2,
+                       x2 + half_w2, y2 + half_h2)
+
+                # Check AABB intersection
+                overlap_x = min(bb1[2], bb2[2]) - max(bb1[0], bb2[0])
+                overlap_y = min(bb1[3], bb2[3]) - max(bb1[1], bb2[1])
+
+                if overlap_x > 0 and overlap_y > 0:
+                    # Penetration depth is minimum separation needed
+                    penetration = min(overlap_x, overlap_y)
+                    overlaps.append((ref1, ref2, penetration))
+
+        return overlaps
+
     def _capture_viz_frame(
         self,
         state: PlacementState,
@@ -336,14 +404,14 @@ class ForceDirectedRefiner:
             # Width/height are in visualizer.static_props
             components[ref] = (x, y, rot)
 
-            # Extract pads - need to compute pad positions relative to centroid
-            # Pad.x,y is relative to KiCad origin, so we need to offset by -origin_offset
+            # Extract pads - compute pad positions in board coordinates
+            # Pad.x,y is already relative to component center (centroid)
+            # so we only need to apply rotation and translate to board coordinates
             pad_list = []
             for pad in comp.pads:
-                # Transform pad from KiCad-origin-relative to centroid-relative
-                # then apply rotation and translate to board coordinates
-                px = pad.x - comp.origin_offset_x
-                py = pad.y - comp.origin_offset_y
+                # Pad coordinates are centroid-relative, apply rotation then translate
+                px = pad.x
+                py = pad.y
                 if rot != 0:
                     rad = math.radians(rot)
                     cos_r = math.cos(rad)
@@ -366,8 +434,8 @@ class ForceDirectedRefiner:
                 force_tuples.append((f.fx, f.fy, f.force_type.value))
             force_data[ref] = force_tuples
 
-        # Find overlaps
-        overlap_pairs = self.board.find_overlaps(clearance=0.1)
+        # Find overlaps using simulated positions (not stale board positions)
+        overlap_pairs = self._compute_overlaps_from_state(state, clearance=0.1)
 
         self.visualizer.capture_frame(
             label=label,

@@ -111,17 +111,17 @@
   - **Issue:** Uses unrotated width/height AABB without pads, so overlaps on rotated/edge-mounted parts are missed, diverging from DRC/placement checks.
   - **Fix:** Updated to use `get_bounding_box_with_pads()` for proper rotation handling and pad extents; added `include_pads` parameter for flexibility
 
-- [ ] **Visualizer overlaps use stale board positions**
+- [x] ~~**Visualizer overlaps use stale board positions**~~ **FIXED**
   - **Location:** `atoplace/placement/force_directed.py:315-344`
   - **Severity:** MEDIUM
   - **Issue:** `_capture_viz_frame` calls `board.find_overlaps()` (board still at initial positions) instead of the simulated `PlacementState`, so overlap highlights/counts in captured frames are incorrect.
-  - **Action:** Derive overlaps from `state.positions` (or sync board prior to capture) to reflect the simulated state.
+  - **Fix:** Added `_compute_overlaps_from_state()` helper that computes overlaps from `state.positions` and `state.rotations`
 
-- [ ] **Pad coordinates double-offset in placement viz**
+- [x] ~~**Pad coordinates double-offset in placement viz**~~ **FIXED**
   - **Location:** `atoplace/placement/force_directed.py:292-309`
   - **Severity:** MEDIUM
   - **Issue:** Pads are offset by `pad.x - comp.origin_offset_x` even though `pad.x` is already centroid-relative, shifting pads in visualization frames.
-  - **Action:** Use centroid-relative pad coordinates directly (or normalize once) when emitting pad geometry for frames.
+  - **Fix:** Removed incorrect origin_offset subtraction; pad.x/y are already centroid-relative per abstraction.py
 
 ## Code Maintainability
 
@@ -162,9 +162,9 @@
 |----------|-------|--------|
 | CRITICAL | 3 | ✅ All Fixed |
 | HIGH | 5 | ✅ All Fixed |
-| MEDIUM | 4 | ✅ All Fixed |
+| MEDIUM | 6 | ✅ All Fixed |
 | LOW | 4 | 2 Fixed, 2 Remaining |
 
-**Total Issues:** 16 tracked issues
-**Fixed:** 14 issues (3 CRITICAL, 5 HIGH, 4 MEDIUM, 2 LOW)
+**Total Issues:** 18 tracked issues
+**Fixed:** 16 issues (3 CRITICAL, 5 HIGH, 6 MEDIUM, 2 LOW)
 **Remaining:** 2 issues (0 CRITICAL, 0 HIGH, 0 MEDIUM, 2 LOW)
