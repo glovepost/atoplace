@@ -209,11 +209,50 @@ class IPCSession:
                 })
 
         if updates:
+            attempted_refs = {u.get("ref") for u in updates if u.get("ref")}
             try:
-                self._client.call("update_components", updates=updates)
-                self._dirty_refs.clear()
+                response = self._client.call("update_components", updates=updates)
             except IPCError as e:
                 logger.error("Failed to sync to bridge: %s", e.message)
+                return
+
+            results = response.get("results")
+            if not results:
+                logger.error(
+                    "Bridge update returned no results; keeping %d dirty refs",
+                    len(self._dirty_refs),
+                )
+                return
+
+            failed_refs = set()
+            successful_refs = set()
+            for item in results:
+                ref = item.get("ref")
+                if item.get("success"):
+                    if ref:
+                        successful_refs.add(ref)
+                    continue
+
+                if ref:
+                    failed_refs.add(ref)
+                message = item.get("message")
+                if ref and message:
+                    logger.warning("Bridge update failed for %s: %s", ref, message)
+                elif ref:
+                    logger.warning("Bridge update failed for %s", ref)
+
+            missing_refs = attempted_refs - successful_refs - failed_refs
+            if missing_refs:
+                logger.warning(
+                    "Bridge update missing results for refs: %s",
+                    sorted(missing_refs),
+                )
+                failed_refs.update(missing_refs)
+
+            if failed_refs:
+                self._dirty_refs = failed_refs
+            else:
+                self._dirty_refs.clear()
 
     def _refresh_from_bridge(self):
         """Refresh local board state from bridge."""

@@ -277,7 +277,8 @@ class KiCadBridge:
                 results.append({"ref": ref, "success": False, "message": "Not found"})
                 continue
 
-            if comp.locked:
+            locked_value = update.get("locked")
+            if comp.locked and locked_value is not False:
                 results.append({"ref": ref, "success": False, "message": "Locked"})
                 continue
 

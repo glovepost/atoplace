@@ -19,7 +19,7 @@ from ..board.abstraction import Board, Net
 from ..dfm.profiles import DFMProfile
 from .astar_router import AStarRouter, RouterConfig, RoutingResult, NetOrderer
 from .fanout import FanoutGenerator, FanoutStrategy, FanoutResult
-from .obstacle_map import ObstacleMapBuilder
+from .obstacle_map import ObstacleMapBuilder, _deterministic_hash
 from .visualizer import RouteVisualizer
 
 logger = logging.getLogger(__name__)
@@ -185,6 +185,7 @@ class RoutingManager:
                 
             # Add traces
             for trace in result.traces:
+                net_id = _deterministic_hash(trace.net_name) if trace.net_name else None
                 min_x = min(trace.start[0], trace.end[0]) - trace.width/2
                 max_x = max(trace.start[0], trace.end[0]) + trace.width/2
                 min_y = min(trace.start[1], trace.end[1]) - trace.width/2
@@ -194,19 +195,20 @@ class RoutingManager:
                     min_x=min_x, min_y=min_y, max_x=max_x, max_y=max_y,
                     layer=trace.layer,
                     clearance=0, # Router handles clearance
-                    net_id=None, # Block all for now (simplification)
+                    net_id=net_id,
                     obstacle_type="fanout_trace"
                 ))
                 
             # Add vias
             for via in result.vias:
+                net_id = _deterministic_hash(via.net_name) if via.net_name else None
                 r = via.pad_diameter / 2
                 self.obstacle_index.add(Obstacle(
                     min_x=via.x - r, min_y=via.y - r,
                     max_x=via.x + r, max_y=via.y + r,
                     layer=-1, # All layers
                     clearance=0,
-                    net_id=None,
+                    net_id=net_id,
                     obstacle_type="fanout_via"
                 ))
 

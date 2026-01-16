@@ -26,6 +26,7 @@ import signal
 import time
 import atexit
 import logging
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -33,7 +34,26 @@ from typing import Optional
 SOCKET_PATH = "/tmp/atoplace-bridge.sock"
 
 # Configure logging to file (keeps STDIO clean for MCP protocol)
-LOG_FILE = os.environ.get("ATOPLACE_LOG", "/tmp/atoplace.log")
+def _get_default_log_path() -> str:
+    """Get secure default log file path for the launcher."""
+    home = Path.home()
+    cache_dir = home / ".cache" / "atoplace"
+
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.chmod(0o700)
+        return str(cache_dir / "launcher.log")
+    except (OSError, PermissionError):
+        import getpass
+
+        try:
+            username = getpass.getuser()
+        except Exception:
+            username = "unknown"
+        return f"/tmp/atoplace-launcher-{username}.log"
+
+# Configure logging to file (keeps STDIO clean for MCP protocol)
+LOG_FILE = os.environ.get("ATOPLACE_LOG", _get_default_log_path())
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +62,10 @@ logging.basicConfig(
     handlers=[logging.FileHandler(LOG_FILE, mode="a")],
 )
 logger = logging.getLogger("atoplace.launcher")
+try:
+    os.chmod(LOG_FILE, 0o600)
+except (OSError, PermissionError):
+    pass
 
 
 class MCPLauncher:
@@ -53,6 +77,7 @@ class MCPLauncher:
         self.kicad_python: Optional[str] = None
         self.project_root = str(Path(__file__).parent.parent.parent)
         self._shutdown_called = False
+        self._bridge_output_thread: Optional[threading.Thread] = None
 
     def start(self) -> int:
         """
@@ -182,6 +207,21 @@ class MCPLauncher:
         )
 
         logger.info("Bridge started (PID: %d)", self.bridge_proc.pid)
+        self._start_bridge_output_reader()
+
+    def _start_bridge_output_reader(self):
+        """Drain bridge stdout to avoid blocking on a full pipe."""
+        if not self.bridge_proc or not self.bridge_proc.stdout:
+            return
+
+        def _reader():
+            for line in self.bridge_proc.stdout:
+                line = line.rstrip()
+                if line:
+                    logger.info("[bridge] %s", line)
+
+        self._bridge_output_thread = threading.Thread(target=_reader, daemon=True)
+        self._bridge_output_thread.start()
 
     def _wait_for_bridge(self, timeout: float = 10.0) -> bool:
         """Wait for bridge socket to be ready."""
@@ -190,8 +230,10 @@ class MCPLauncher:
         while time.time() - start < timeout:
             # Check if bridge died
             if self.bridge_proc.poll() is not None:
-                output = self.bridge_proc.stdout.read()
-                logger.error("Bridge exited unexpectedly:\n%s", output)
+                logger.error(
+                    "Bridge exited unexpectedly (code: %s)",
+                    self.bridge_proc.returncode,
+                )
                 return False
 
             # Check if socket exists

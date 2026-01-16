@@ -247,15 +247,22 @@ class AtoplaceLock:
         # Parse timestamps
         created = None
         modified = None
-        if data.get("created"):
+        created_value = data.get("created")
+        if isinstance(created_value, datetime):
+            created = created_value
+        elif isinstance(created_value, str):
             try:
-                created = datetime.fromisoformat(data["created"])
-            except (ValueError, TypeError):
+                created = datetime.fromisoformat(created_value)
+            except ValueError:
                 pass
-        if data.get("modified"):
+
+        modified_value = data.get("modified")
+        if isinstance(modified_value, datetime):
+            modified = modified_value
+        elif isinstance(modified_value, str):
             try:
-                modified = datetime.fromisoformat(data["modified"])
-            except (ValueError, TypeError):
+                modified = datetime.fromisoformat(modified_value)
+            except ValueError:
                 pass
 
         return cls(

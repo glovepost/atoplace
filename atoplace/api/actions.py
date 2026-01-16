@@ -189,27 +189,36 @@ class LayoutActions:
             if not c: return ActionResult(False, f"Component {r} not found", [])
             components.append(c)
 
+        # Normalize axis selection
+        if axis == "auto":
+            # Guess axis based on spread
+            x_spread = max(c.x for c in components) - min(c.x for c in components)
+            y_spread = max(c.y for c in components) - min(c.y for c in components)
+            axis = "x" if x_spread > y_spread else "y"
+
+        start_comp = None
+        end_comp = None
+
         # Determine start/end components (anchors)
         if start_ref:
             start_comp = self.board.components.get(start_ref)
-            if not start_comp: return ActionResult(False, f"Start ref {start_ref} not found", [])
-        else:
-            # Find extreme based on axis guess
-            if axis == "auto":
-                # Guess axis based on spread
-                x_spread = max(c.x for c in components) - min(c.x for c in components)
-                y_spread = max(c.y for c in components) - min(c.y for c in components)
-                axis = "x" if x_spread > y_spread else "y"
-
-            # Sort by axis
-            attr = "x" if axis == "x" else "y"
-            components.sort(key=lambda c: getattr(c, attr))
-            start_comp = components[0]
-            end_comp = components[-1]
+            if not start_comp:
+                return ActionResult(False, f"Start ref {start_ref} not found", [])
 
         if end_ref:
             end_comp = self.board.components.get(end_ref)
-            if not end_comp: return ActionResult(False, f"End ref {end_ref} not found", [])
+            if not end_comp:
+                return ActionResult(False, f"End ref {end_ref} not found", [])
+
+        if start_comp is None or end_comp is None:
+            attr = "x" if axis == "x" else "y"
+            sorted_components = sorted(components, key=lambda c: getattr(c, attr))
+            if start_comp is None:
+                start_comp = sorted_components[0]
+            if end_comp is None:
+                end_comp = sorted_components[-1]
+            if start_ref is None:
+                components = sorted_components
 
         # Filter out locked components (except anchors which define the span)
         # Anchors are never moved regardless of lock state

@@ -108,8 +108,9 @@ class BoardInspector:
         Raises:
             ValueError: If filter_by is not a valid field name
         """
+        filter_by = filter_by.lower()
         valid_filters = {"ref", "value", "footprint"}
-        if filter_by.lower() not in valid_filters:
+        if filter_by not in valid_filters:
             raise ValueError(
                 f"Invalid filter '{filter_by}'. Must be one of: {', '.join(valid_filters)}"
             )

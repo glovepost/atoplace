@@ -2,6 +2,13 @@
 
 ## Security Issues
 
+- [x] ~~**Launcher Log File Permissions**~~ **FIXED**
+  - **Location:** `atoplace/mcp/launcher.py:35-43`
+  - **Severity:** LOW
+  - **Issue:** Launcher defaults to `/tmp/atoplace.log` without restricting permissions.
+  - **Impact:** Logs may be world-readable on multi-user systems, exposing board paths or debug output.
+  - **Fix:** Use a user-specific log directory or `chmod` the log file to `0o600` after creation.
+
 - [x] ~~**Socket File Permissions Vulnerability**~~ **FIXED**
   - **Location:** `atoplace/mcp/ipc.py:258`
   - **Severity:** HIGH
@@ -10,6 +17,13 @@
   - **Fix:** Changed to `os.chmod(self.socket_path, 0o600)` to restrict access to owner only
 
 ## Resource Leaks
+
+- [x] ~~**Bridge Stdout Pipe Not Drained**~~ **FIXED**
+  - **Location:** `atoplace/mcp/launcher.py:175-182`
+  - **Severity:** MEDIUM
+  - **Issue:** Bridge subprocess is started with `stdout=PIPE` but no reader consumes the stream.
+  - **Impact:** If the bridge logs enough output, the pipe buffer can fill and block the bridge process.
+  - **Fix:** Stream bridge output to a log file or spawn a background reader thread.
 
 - [x] ~~**Unclosed File Handle in CLI**~~ **FIXED**
   - **Location:** `atoplace/cli.py:118`
@@ -80,6 +94,55 @@
   - **Action:** Implement proper layer stack configuration when creating new boards from scratch.
 
 ## Functional Bugs
+
+- [x] ~~**IPC Batch Update Cannot Unlock Locked Components**~~ **FIXED**
+  - **Location:** `atoplace/mcp/bridge.py:265-292`
+  - **Severity:** HIGH
+  - **Issue:** `handle_update_components` rejects any locked component, even when the update explicitly sets `locked=False`.
+  - **Impact:** IPC clients cannot unlock components via batch updates; MCP lock/unlock calls in IPC mode silently fail.
+  - **Fix:** Allow updates that explicitly unlock (`locked` is `False`) or mirror `handle_update_component` behavior.
+
+- [x] ~~**IPC Session Drops Failed Updates**~~ **FIXED**
+  - **Location:** `atoplace/mcp/ipc_session.py:194-215`
+  - **Severity:** MEDIUM
+  - **Issue:** `_sync_to_bridge` ignores per-component failures from `update_components` and clears `_dirty_refs` regardless.
+  - **Impact:** Local board state can diverge from the bridge (e.g., locked/not-found refs), losing pending changes.
+  - **Fix:** Inspect response results and keep failed refs dirty or refresh from the bridge on partial failure.
+
+- [x] ~~**Fanout Obstacles Block Same-Net Routing**~~ **FIXED**
+  - **Location:** `atoplace/routing/manager.py:193-210`
+  - **Severity:** HIGH
+  - **Issue:** Fanout traces/vias are added with `net_id=None`, so they block all nets including their own.
+  - **Impact:** Nets with fanout can become unroutable because the router treats their own escape geometry as obstacles.
+  - **Fix:** Assign `net_id` for fanout traces/vias (e.g., hash of `net_name`) so same-net filtering works.
+
+- [x] ~~**KiPy Lock State Not Synced**~~ **FIXED**
+  - **Location:** `atoplace/mcp/kipy_session.py:508-536`
+  - **Severity:** MEDIUM
+  - **Issue:** `_sync_to_kicad` omits the `locked` field from batch updates.
+  - **Impact:** Lock/unlock operations update the local model but never reach KiCad; components stay movable in KiCad UI.
+  - **Fix:** Include `locked` in batch updates or apply lock changes via `update_component`.
+
+- [x] ~~**find_components Filter Case Handling**~~ **FIXED**
+  - **Location:** `atoplace/api/inspection.py:111-126`
+  - **Severity:** LOW
+  - **Issue:** `filter_by.lower()` is validated but the original `filter_by` is used, so `Ref`/`FOOTPRINT` yield no matches.
+  - **Impact:** Clients using mixed-case filter names get empty search results.
+  - **Fix:** Normalize `filter_by = filter_by.lower()` before branching.
+
+- [x] ~~**distribute_evenly Ignores Auto Axis With Explicit Start**~~ **FIXED**
+  - **Location:** `atoplace/api/actions.py:192-208`
+  - **Severity:** LOW
+  - **Issue:** Auto-axis detection only runs when `start_ref` is not provided; with `start_ref` it defaults to `y`.
+  - **Impact:** Components may distribute along the wrong axis in common calls.
+  - **Fix:** Resolve `axis="auto"` regardless of anchor selection.
+
+- [x] ~~**Lock File Timestamps Lost on Load**~~ **FIXED**
+  - **Location:** `atoplace/board/lock_file.py:238-258`
+  - **Severity:** LOW
+  - **Issue:** PyYAML `safe_load` converts ISO timestamps to `datetime`, but `from_dict` expects strings and drops them.
+  - **Impact:** `created`/`modified` fields reset to “now” after load/save cycles.
+  - **Fix:** Accept `datetime` objects or stringify before parsing.
 
 - [x] ~~**RPC DRC endpoint crashes**~~ **FIXED**
   - **Location:** `atoplace/rpc/worker.py:212-234`
@@ -161,10 +224,11 @@
 | Severity | Count | Status |
 |----------|-------|--------|
 | CRITICAL | 3 | ✅ All Fixed |
-| HIGH | 5 | ✅ All Fixed |
-| MEDIUM | 6 | ✅ All Fixed |
-| LOW | 4 | 2 Fixed, 2 Remaining |
+| HIGH | 6 | ✅ All Fixed |
+| MEDIUM | 8 | ✅ All Fixed |
+| LOW | 7 | 6 Fixed, 1 Remaining |
+| UNSPECIFIED | 7 | 1 Fixed, 6 Remaining |
 
-**Total Issues:** 18 tracked issues
-**Fixed:** 16 issues (3 CRITICAL, 5 HIGH, 6 MEDIUM, 2 LOW)
-**Remaining:** 2 issues (0 CRITICAL, 0 HIGH, 0 MEDIUM, 2 LOW)
+**Total Issues:** 31 tracked issues
+**Fixed:** 24 issues (3 CRITICAL, 6 HIGH, 8 MEDIUM, 6 LOW, 1 UNSPECIFIED)
+**Remaining:** 7 issues (0 CRITICAL, 0 HIGH, 0 MEDIUM, 1 LOW, 6 UNSPECIFIED)

@@ -435,6 +435,7 @@ class KiPySession:
             x = update.get('x')
             y = update.get('y')
             rotation = update.get('rotation')
+            locked = update.get('locked')
 
             if x is not None or y is not None:
                 current_pos = fp.position
@@ -444,6 +445,9 @@ class KiPySession:
 
             if rotation is not None:
                 fp.orientation = Angle.from_degrees(rotation)
+
+            if locked is not None and hasattr(fp, 'locked'):
+                fp.locked = locked
 
             modified_fps.append(fp)
 
@@ -456,6 +460,8 @@ class KiPySession:
                     comp.y = y
                 if rotation is not None:
                     comp.rotation = rotation
+                if locked is not None:
+                    comp.locked = locked
 
             results[ref] = True
             self._dirty_refs.add(ref)
@@ -523,7 +529,8 @@ class KiPySession:
                     'ref': ref,
                     'x': comp.x,
                     'y': comp.y,
-                    'rotation': comp.rotation
+                    'rotation': comp.rotation,
+                    'locked': comp.locked,
                 })
 
         if updates:
