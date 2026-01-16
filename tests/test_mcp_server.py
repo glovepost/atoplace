@@ -170,27 +170,7 @@ class TestPlacementActions:
         assert result["status"] == "error"
         assert result["code"] == "invalid_axis"
 
-    def test_swap_positions_success(self, mcp_session, monkeypatch):
-        """Swapping positions should succeed."""
-        monkeypatch.setattr(server, "session", mcp_session)
-        orig_r1_x = mcp_session.board.components["R1"].x
-        orig_c1_x = mcp_session.board.components["C1"].x
-
-        result = json.loads(server.swap_positions("R1", "C1"))
-        assert result["success"] is True
-        assert mcp_session.board.components["R1"].x == orig_c1_x
-        assert mcp_session.board.components["C1"].x == orig_r1_x
-
-    def test_swap_positions_locked_component(self, board_with_locked, monkeypatch):
-        """Swapping with locked component should fail."""
-        session = Session()
-        session.board = board_with_locked
-        session.source_path = Path("/tmp/test.kicad_pcb")
-        monkeypatch.setattr(server, "session", session)
-
-        result = json.loads(server.swap_positions("U1", "U2"))
-        assert result["status"] == "error"
-        assert "locked" in result["message"].lower()
+    # Note: swap_positions is not implemented in the current server API
 
 
 class TestDiscoveryTools:
@@ -200,14 +180,16 @@ class TestDiscoveryTools:
         """Finding components by ref should work."""
         monkeypatch.setattr(server, "session", mcp_session)
         result = json.loads(server.find_components("U", "ref"))
-        assert result["status"] == "success"
+        # Response uses pagination format (no status field for success)
+        assert "total_count" in result
         assert result["count"] >= 1
 
     def test_find_components_by_value(self, mcp_session, monkeypatch):
         """Finding components by value should work."""
         monkeypatch.setattr(server, "session", mcp_session)
         result = json.loads(server.find_components("10k", "value"))
-        assert result["status"] == "success"
+        # Response uses pagination format (no status field for success)
+        assert "total_count" in result
 
     def test_find_components_invalid_filter(self, mcp_session, monkeypatch):
         """Finding with invalid filter should fail."""
@@ -216,88 +198,108 @@ class TestDiscoveryTools:
         assert result["status"] == "error"
         assert result["code"] == "invalid_filter"
 
-    def test_get_board_bounds(self, mcp_session, monkeypatch):
-        """Getting board bounds should return dimensions."""
-        monkeypatch.setattr(server, "session", mcp_session)
-        result = json.loads(server.get_board_bounds())
-        assert result["status"] == "success"
-        assert "width" in result
-        assert "height" in result
-        assert result["component_count"] > 0
+    # Note: get_board_bounds is not implemented in the current server API
+    # Board info is available via get_board_summary
 
     def test_get_unplaced_components(self, mcp_session, monkeypatch):
         """Getting unplaced components should return list."""
         monkeypatch.setattr(server, "session", mcp_session)
         result = json.loads(server.get_unplaced_components())
-        assert result["status"] == "success"
+        # Response uses pagination format (no status field for success)
         assert "refs" in result
+        assert "total_count" in result
         assert "count" in result
 
 
 class TestTopologyTools:
     """Test topology tools."""
 
-    def test_get_connected_components(self, mcp_session, monkeypatch):
-        """Getting connected components should return connections."""
-        monkeypatch.setattr(server, "session", mcp_session)
-        result = json.loads(server.get_connected_components("U1"))
-        assert result["status"] == "success"
-        assert result["ref"] == "U1"
-        assert "connections" in result
-
-    def test_get_connected_components_invalid_ref(self, mcp_session, monkeypatch):
-        """Getting connections for invalid ref should fail."""
-        monkeypatch.setattr(server, "session", mcp_session)
-        result = json.loads(server.get_connected_components("INVALID"))
-        assert result["status"] == "error"
-        assert result["code"] == "invalid_ref"
-
-    def test_get_critical_nets(self, mcp_session, monkeypatch):
-        """Getting critical nets should return power/ground nets."""
-        monkeypatch.setattr(server, "session", mcp_session)
-        result = json.loads(server.get_critical_nets())
-        assert result["status"] == "success"
-        assert "critical_nets" in result
+    # Note: get_connected_components and get_critical_nets are not implemented
+    # in the current server API. Connectivity information is available via
+    # inspect_region and detect_modules tools.
 
 
 class TestContextTools:
     """Test context generation tools."""
 
     def test_inspect_region(self, mcp_session, monkeypatch):
-        """Inspecting region should return geometry data."""
+        """Inspecting region should return correct geometry data."""
         monkeypatch.setattr(server, "session", mcp_session)
         result = json.loads(server.inspect_region(["U1", "R1"]))
+
+        # Verify structure
         assert "viewport" in result
         assert "objects" in result
 
+        # Verify viewport structure (center and size)
+        # U1 is at (50, 50) with size (4, 5)
+        # R1 is at (45, 55) with size (1.6, 0.8)
+        viewport = result["viewport"]
+        assert "center" in viewport
+        assert "size" in viewport
+        assert len(viewport["center"]) == 2  # (x, y) tuple
+        assert len(viewport["size"]) == 2   # (width, height) tuple
+
+        # Verify viewport encompasses both components
+        center_x, center_y = viewport["center"]
+        width, height = viewport["size"]
+        # Calculate bounds from center and size
+        min_x = center_x - width / 2
+        max_x = center_x + width / 2
+        min_y = center_y - height / 2
+        max_y = center_y + height / 2
+
+        # Viewport should include both components (with padding)
+        assert min_x < 45  # Should include R1 left edge
+        assert max_x > 50  # Should include U1 right edge
+        assert min_y < 50  # Should include U1 bottom edge
+        assert max_y > 55  # Should include R1 top edge
+
+        # Verify objects contain correct components
+        assert len(result["objects"]) >= 2
+        refs = [obj["ref"] for obj in result["objects"]]
+        assert "U1" in refs
+        assert "R1" in refs
+
+        # Verify component data correctness
+        # ObjectView uses "location" (tuple), not separate x/y
+        u1_obj = next(obj for obj in result["objects"] if obj["ref"] == "U1")
+        assert "location" in u1_obj
+        assert u1_obj["location"][0] == 50.0  # x coordinate
+        assert u1_obj["location"][1] == 50.0  # y coordinate
+        assert u1_obj["type"] == "IC"
+
+        r1_obj = next(obj for obj in result["objects"] if obj["ref"] == "R1")
+        assert "location" in r1_obj
+        assert r1_obj["location"][0] == 45.0  # x coordinate
+        assert r1_obj["location"][1] == 55.0  # y coordinate
+        assert r1_obj["type"] == "Resistor"
+
     def test_get_board_summary(self, mcp_session, monkeypatch):
-        """Getting board summary should return statistics."""
+        """Getting board summary should return correct statistics."""
         monkeypatch.setattr(server, "session", mcp_session)
         result = json.loads(server.get_board_summary())
+
+        # Verify structure
         assert "component_count" in result
         assert "net_count" in result
 
-    def test_get_semantic_grid(self, mcp_session, monkeypatch):
-        """Getting semantic grid should return zone mapping."""
-        monkeypatch.setattr(server, "session", mcp_session)
-        result = json.loads(server.get_semantic_grid())
-        assert "zones" in result
-        assert "zone_counts" in result
+        # Verify correct counts from test_board fixture
+        # test_board has: U1, R1, C1, J1 = 4 components
+        # test_board has: VCC, GND, PB0 = 3 nets
+        assert result["component_count"] == 4
+        assert result["net_count"] == 3
 
-    def test_get_module_map(self, mcp_session, monkeypatch):
-        """Getting module map should return hierarchy."""
-        monkeypatch.setattr(server, "session", mcp_session)
-        result = json.loads(server.get_module_map())
-        assert "root" in result
-        assert "flat_modules" in result
+        # Verify board dimensions if present
+        if "board_area" in result:
+            # Board is 100x100 mm = 10000 mm²
+            assert result["board_area"] == 10000.0
 
-    def test_render_region(self, mcp_session, monkeypatch):
-        """Rendering region should return SVG."""
-        monkeypatch.setattr(server, "session", mcp_session)
-        result = json.loads(server.render_region(["U1", "R1"]))
-        assert result["status"] == "success"
-        assert "svg" in result
-        assert "<svg" in result["svg"]
+    # Note: get_semantic_grid and get_module_map are not implemented in the
+    # current server API. Use detect_modules for module hierarchy information.
+
+    # Note: render_region is not implemented in the current server API.
+    # Use inspect_region with include_image=True for SVG visualization.
 
 
 class TestValidationTools:
@@ -308,7 +310,9 @@ class TestValidationTools:
         monkeypatch.setattr(server, "session", mcp_session)
         result = json.loads(server.check_overlaps())
         assert result["status"] == "success"
-        assert "overlap_count" in result
+        # Response uses pagination format with total_count instead of overlap_count
+        assert "total_count" in result
+        assert "overlaps" in result
 
     def test_check_overlaps_specific_refs(self, mcp_session, monkeypatch):
         """Checking overlaps for specific refs."""
@@ -317,27 +321,30 @@ class TestValidationTools:
         assert result["status"] == "success"
 
     def test_validate_placement(self, mcp_session, monkeypatch):
-        """Validating placement should return issues."""
+        """Validating placement should return scores and flags."""
         monkeypatch.setattr(server, "session", mcp_session)
         result = json.loads(server.validate_placement())
-        assert result["status"] == "success"
-        assert "valid" in result
-        assert "issues" in result
+        # Response format includes scores and paginated flags
+        assert "overall_score" in result
+        assert "placement_score" in result
+        assert "flags" in result
 
 
 class TestResources:
     """Test MCP resources."""
 
-    def test_board_summary_resource_no_board(self, empty_session, monkeypatch):
-        """Board summary resource without board should return error."""
-        monkeypatch.setattr(server, "session", empty_session)
-        result = json.loads(server.board_summary_resource())
-        assert result["status"] == "error"
-        assert result["code"] == "no_board"
+    def test_system_prompt_resource(self):
+        """System prompt resource should return the system prompt."""
+        result = server.system_prompt_resource()
+        assert isinstance(result, str)
+        assert len(result) > 0
 
-    def test_board_modules_resource_no_board(self, empty_session, monkeypatch):
-        """Board modules resource without board should return error."""
-        monkeypatch.setattr(server, "session", empty_session)
-        result = json.loads(server.board_modules_resource())
-        assert result["status"] == "error"
-        assert result["code"] == "no_board"
+    def test_fix_overlaps_prompt_resource(self):
+        """Fix overlaps prompt resource should return the prompt."""
+        result = server.fix_overlaps_prompt_resource()
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    # Note: board_summary_resource and board_modules_resource are not implemented
+    # in the current server API. Resources are exposed via MCP @resource decorator
+    # and accessed via prompts://system and prompts://fix_overlaps URIs.
