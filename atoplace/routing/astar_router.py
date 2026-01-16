@@ -322,7 +322,8 @@ class AStarRouter:
                             all_vias.append(Via(
                                 x=best_start.x, y=best_start.y,
                                 drill_diameter=0.3, pad_diameter=0.6,
-                                net_id=net_id
+                                net_id=net_id,
+                                net_name=net_name
                             ))
                         result = alt_result
                         if result.success:
@@ -637,7 +638,8 @@ class AStarRouter:
                     y=curr.y,
                     drill_diameter=0.3,  # Standard via
                     pad_diameter=0.6,
-                    net_id=net_id
+                    net_id=net_id,
+                    net_name=net_name
                 ))
             else:
                 # Trace segment
@@ -646,7 +648,8 @@ class AStarRouter:
                     end=(next_.x, next_.y),
                     layer=curr.layer,
                     width=trace_width,
-                    net_id=net_id
+                    net_id=net_id,
+                    net_name=net_name
                 )
                 segments.append(seg)
                 total_length += curr.distance_to(next_)
@@ -896,9 +899,11 @@ def route_board(
             # Add routed traces as obstacles for subsequent nets
             for seg in result.segments:
                 seg.net_id = net.net_id
+                seg.net_name = net.net_name  # Ensure net_name is set (Issue #31)
                 router.add_routed_trace(seg)
             for via in result.vias:
                 via.net_id = net.net_id
+                via.net_name = net.net_name  # Ensure net_name is set (Issue #31)
                 router.add_routed_via(via)
 
             logger.debug(

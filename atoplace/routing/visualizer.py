@@ -29,6 +29,7 @@ class RouteSegment:
     layer: int
     width: float
     net_id: Optional[int] = None
+    net_name: Optional[str] = None  # For visualization net counting (Issue #31)
 
 
 @dataclass
@@ -39,6 +40,7 @@ class Via:
     drill_diameter: float
     pad_diameter: float
     net_id: Optional[int] = None
+    net_name: Optional[str] = None  # For visualization net counting (Issue #31)
 
 
 @dataclass

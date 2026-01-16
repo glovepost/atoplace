@@ -96,6 +96,7 @@ from .diff_pairs import (
     DiffPairSpec,
     DiffPairResult,
     DiffPairPattern,
+    DiffPairGeometry,
     LengthMatcher,
 )
 
@@ -166,6 +167,7 @@ __all__ = [
     "DiffPairSpec",
     "DiffPairResult",
     "DiffPairPattern",
+    "DiffPairGeometry",
     "LengthMatcher",
     # BGA Fanout
     "FanoutGenerator",
