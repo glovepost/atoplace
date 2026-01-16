@@ -1,6 +1,107 @@
 # Component Classification Patterns
 # This configuration file defines patterns for classifying components and nets
-# Used by constraint_parser.py and confidence.py for intelligent component grouping and validation
+# Used by constraint_parser.py, module_detector.py, and confidence.py for
+# intelligent component grouping, module detection, and validation
+#
+# IMPORTANT: This is the single source of truth for component classification patterns.
+# Do NOT duplicate these patterns in Python code.
+
+# =============================================================================
+# MODULE DETECTION PATTERNS
+# Used by module_detector.py to identify functional modules in the design
+# =============================================================================
+
+# Microcontroller Patterns
+# Used to identify microcontroller ICs for module grouping
+microcontroller_patterns:
+  - 'STM32'      # STMicroelectronics MCUs
+  - 'ESP32'      # Espressif MCUs
+  - 'ATMEGA'     # Atmel/Microchip AVR MCUs
+  - 'PIC'        # Microchip PIC MCUs
+  - 'NRF5'       # Nordic nRF52/nRF53 series
+  - 'RP2040'     # Raspberry Pi Pico MCU
+  - 'SAMD'       # Microchip SAM D series
+  - 'EFM32'      # Silicon Labs EFM32 series
+  - 'IMXRT'      # NXP i.MX RT series
+  - 'RAK3172'    # RAKwireless LoRa MCU
+
+# RF/Wireless Component Patterns
+# Used to identify RF front-end components
+rf_patterns:
+  - 'RF'         # General RF components
+  - 'LORA'       # LoRa modules
+  - 'WIFI'       # WiFi modules
+  - 'BLE'        # Bluetooth Low Energy
+  - 'ANT'        # Antenna components
+  - 'BALUN'      # Balun transformers
+  - 'LNA'        # Low-noise amplifiers
+  - 'PA_'        # Power amplifiers (underscore to avoid false matches)
+  - 'MIXER'      # RF mixers
+
+# Power Regulator Patterns
+# Used to identify power supply/regulator ICs
+power_regulator_patterns:
+  - 'LDO'        # Low-dropout regulators
+  - 'BUCK'       # Buck converters
+  - 'BOOST'      # Boost converters
+  - 'REG'        # Generic regulators
+  - 'TPS7'       # Texas Instruments TPS7xxx series
+  - 'TLV75'      # Texas Instruments TLV75x series
+  - 'AP2112'     # Diodes Inc AP2112
+  - 'AMS1117'    # Advanced Monolithic Systems LDO
+  - 'MCP1700'    # Microchip MCP1700 series
+  - 'RT9080'     # Richtek RT9080 series
+
+# Sensor Patterns
+# Used to identify sensor ICs
+sensor_patterns:
+  - 'BME'        # Bosch BME sensors (temp/humidity/pressure)
+  - 'BMP'        # Bosch BMP pressure sensors
+  - 'MPU'        # InvenSense MPU IMUs
+  - 'ICM'        # InvenSense ICM IMUs
+  - 'LIS'        # ST LIS accelerometers
+  - 'LSM'        # ST LSM IMUs
+  - 'HDC'        # Texas Instruments humidity sensors
+  - 'SHT'        # Sensirion SHT humidity sensors
+  - 'MAX'        # Maxim sensor ICs
+  - 'TMP'        # Texas Instruments temperature sensors
+  - 'LMT'        # Texas Instruments LMT temperature sensors
+  - 'VEML'       # Vishay VEML light sensors
+  - 'TSL'        # TAOS/ams TSL light sensors
+  - 'QMI'        # QST QMI IMUs
+
+# ESD Protection Patterns
+# Used to identify ESD protection devices
+esd_patterns:
+  - 'ESD'        # Generic ESD protection
+  - 'TVS'        # TVS diodes
+  - 'SP0503'     # Littelfuse SP0503 series
+  - 'USBLC'      # ST USBLC USB protection
+  - 'PRTR'       # Nexperia PRTR series
+
+# Connector Patterns
+# Used to identify connector components
+connector_patterns:
+  - 'USB'        # USB connectors
+  - 'HDR'        # Header connectors
+  - 'CONN'       # Generic connectors
+  - 'JST'        # JST connectors
+  - 'MOLEX'      # Molex connectors
+  - 'SMA'        # SMA RF connectors
+
+# Crystal/Oscillator Patterns
+# Used to identify crystal oscillator circuits
+crystal_patterns:
+  - 'XTAL'       # Crystal oscillators
+  - 'OSC'        # Oscillators
+  - 'CRYSTAL'    # Crystal components
+  - '32K'        # 32.768 kHz crystals
+  - 'ABM'        # Abracon ABM series crystals
+
+# =============================================================================
+# CONSTRAINT PARSER PATTERNS
+# Used by constraint_parser.py for natural language component classification
+# =============================================================================
 
 # Analog Component Patterns
 # Used to identify analog components for grouping and separation constraints

@@ -4,6 +4,10 @@ Module Detector
 Automatically identifies functional modules (power, RF, digital, analog)
 from component connectivity and characteristics. This enables intelligent
 grouping during placement.
+
+NOTE: Component classification patterns are loaded from component_patterns.yaml
+via the centralized patterns module. Do NOT hardcode patterns here - update
+the YAML configuration instead.
 """
 
 from dataclasses import dataclass, field
@@ -12,6 +16,7 @@ from enum import Enum
 import re
 
 from ..board.abstraction import Board, Component, Net
+from ..patterns import get_patterns
 
 
 class ModuleType(Enum):
@@ -55,39 +60,10 @@ class ModuleDetector:
     2. Footprint patterns (QFN, SOT-23, 0402, etc.)
     3. Net connectivity (power rails, signal paths)
     4. Heuristics for common patterns (decoupling, ESD, etc.)
-    """
 
-    # Patterns for component identification
-    COMPONENT_PATTERNS = {
-        'microcontroller': [
-            r'STM32', r'ESP32', r'ATMEGA', r'PIC', r'NRF5', r'RP2040',
-            r'SAMD', r'EFM32', r'IMXRT', r'RAK3172',
-        ],
-        'rf': [
-            r'RF', r'LORA', r'WIFI', r'BLE', r'ANT', r'BALUN',
-            r'LNA', r'PA_', r'MIXER',
-        ],
-        'power_regulator': [
-            r'LDO', r'BUCK', r'BOOST', r'REG', r'TPS7', r'TLV75',
-            r'AP2112', r'AMS1117', r'MCP1700', r'RT9080',
-        ],
-        'sensor': [
-            r'BME', r'BMP', r'MPU', r'ICM', r'LIS', r'LSM', r'HDC',
-            r'SHT', r'MAX', r'TMP', r'LMT', r'VEML', r'TSL', r'QMI',
-        ],
-        'esd': [
-            r'ESD', r'TVS', r'SP0503', r'USBLC', r'PRTR',
-        ],
-        'opamp': [
-            r'OPA', r'LM358', r'TL08', r'AD8', r'MCP6',
-        ],
-        'connector': [
-            r'USB', r'HDR', r'CONN', r'JST', r'MOLEX', r'SMA',
-        ],
-        'crystal': [
-            r'XTAL', r'OSC', r'CRYSTAL', r'32K', r'ABM',
-        ],
-    }
+    Component classification patterns are loaded from the centralized
+    component_patterns.yaml configuration file via the patterns module.
+    """
 
     # Mapping from pattern keys to ModuleType enum values
     PATTERN_TO_MODULE_TYPE = {
@@ -101,10 +77,22 @@ class ModuleDetector:
         'crystal': ModuleType.CRYSTAL_OSCILLATOR,
     }
 
-    def __init__(self, board: Board):
+    def __init__(self, board: Board, patterns_config: Optional[str] = None):
+        """
+        Initialize module detector.
+
+        Args:
+            board: The board to analyze for functional modules.
+            patterns_config: Optional path to custom patterns YAML file.
+                           If None, uses default component_patterns.yaml.
+        """
         self.board = board
         self.modules: List[FunctionalModule] = []
         self._component_to_module: Dict[str, FunctionalModule] = {}
+
+        # Load patterns from centralized configuration
+        self._patterns = get_patterns(patterns_config)
+        self._component_patterns = self._patterns.get_module_patterns()
 
     def detect(self) -> List[FunctionalModule]:
         """
@@ -156,8 +144,8 @@ class ModuleDetector:
 
             module_type = ModuleType.UNKNOWN
 
-            # Check against known patterns
-            for mtype, patterns in self.COMPONENT_PATTERNS.items():
+            # Check against known patterns from centralized configuration
+            for mtype, patterns in self._component_patterns.items():
                 for pattern in patterns:
                     if re.search(pattern, value) or re.search(pattern, fp):
                         module_type = self.PATTERN_TO_MODULE_TYPE.get(mtype, ModuleType.UNKNOWN)
@@ -187,7 +175,7 @@ class ModuleDetector:
             value = comp.value.upper()
 
             is_regulator = False
-            for pattern in self.COMPONENT_PATTERNS['power_regulator']:
+            for pattern in self._component_patterns['power_regulator']:
                 if re.search(pattern, value) or re.search(pattern, fp):
                     is_regulator = True
                     break
@@ -216,7 +204,7 @@ class ModuleDetector:
             fp = comp.footprint.upper()
             value = comp.value.upper()
 
-            for pattern in self.COMPONENT_PATTERNS['rf']:
+            for pattern in self._component_patterns['rf']:
                 if re.search(pattern, value) or re.search(pattern, fp):
                     rf_components.add(ref)
                     break
@@ -291,7 +279,7 @@ class ModuleDetector:
             value = comp.value.upper()
 
             is_connector = ref.startswith('J') or ref.startswith('P')
-            for pattern in self.COMPONENT_PATTERNS['connector']:
+            for pattern in self._component_patterns['connector']:
                 if re.search(pattern, value) or re.search(pattern, fp):
                     is_connector = True
                     break
@@ -307,7 +295,7 @@ class ModuleDetector:
 
                 # Add ESD protection if connected
                 self._add_connected_by_type(module, ref, ['D', 'U'],
-                                            self.COMPONENT_PATTERNS.get('esd', []))
+                                            self._component_patterns.get('esd', []))
 
                 self.modules.append(module)
                 self._component_to_module[ref] = module
@@ -322,7 +310,7 @@ class ModuleDetector:
             value = comp.value.upper()
 
             is_crystal = ref.startswith('Y') or ref.startswith('X')
-            for pattern in self.COMPONENT_PATTERNS['crystal']:
+            for pattern in self._component_patterns['crystal']:
                 if re.search(pattern, value) or re.search(pattern, fp):
                     is_crystal = True
                     break

@@ -132,7 +132,7 @@ def generate_viewer_html_template(
             <div class="energy-graph" onclick="seekToFrame(event)" onmousedown="startSeeking(event)" onmousemove="continueSeeking(event)" onmouseup="stopSeeking()" onmouseleave="stopSeeking()">
                 <canvas id="energy-canvas"></canvas>
                 <div class="graph-labels">
-                    <span>Energy (blue) / Wire Length (green)</span>
+                    <span>Energy (blue) / Wire Length (green) / Nets Routed (orange)</span>
                     <span id="graph-range"></span>
                 </div>
             </div>
@@ -174,7 +174,7 @@ def generate_viewer_html_template(
                             <span class="layer-key">1</span>
                         </div>
                         <div class="layer-item">
-                            <input type="checkbox" class="layer-checkbox" id="show-bottom" checked onchange="updateLayers()">
+                            <input type="checkbox" class="layer-checkbox" id="show-bottom" onchange="updateLayers()">
                             <span class="color-swatch" style="background: #3498db;"></span>
                             <span class="layer-name">Bottom (B.Cu)</span>
                             <span class="layer-key">2</span>
@@ -188,47 +188,6 @@ def generate_viewer_html_template(
                     </div>
                 </div>
 
-                <!-- Grid Options Section -->
-                <div class="panel-section">
-                    <div class="section-header" onclick="toggleSection(this)">
-                        <span>Grid Options</span>
-                        <span class="section-icon">&#9660;</span>
-                    </div>
-                    <div class="section-content">
-                        <div class="layer-item">
-                            <input type="checkbox" class="layer-checkbox" id="show-grid" onchange="updateLayers()">
-                            <span class="layer-icon">&#9783;</span>
-                            <span class="layer-name">Show Grid</span>
-                            <span class="layer-key">G</span>
-                        </div>
-                        <div class="option-row">
-                            <label class="option-label">Spacing</label>
-                            <select id="grid-spacing" class="option-select" onchange="updateGridSpacing()">
-                                <option value="0.25">0.25 mm</option>
-                                <option value="0.5">0.5 mm</option>
-                                <option value="1" selected>1.0 mm</option>
-                                <option value="2">2.0 mm</option>
-                                <option value="2.54">2.54 mm (0.1")</option>
-                                <option value="5">5.0 mm</option>
-                                <option value="10">10.0 mm</option>
-                            </select>
-                        </div>
-                        <div class="option-row">
-                            <label class="option-label">Style</label>
-                            <select id="grid-style" class="option-select" onchange="updateGridStyle()">
-                                <option value="lines" selected>Lines</option>
-                                <option value="dots">Dots</option>
-                                <option value="crosses">Crosses</option>
-                            </select>
-                        </div>
-                        <div class="option-row">
-                            <label class="option-label">Opacity</label>
-                            <input type="range" id="grid-opacity" class="option-slider" min="10" max="100" value="40" onchange="updateGridOpacity()">
-                            <span class="slider-value" id="grid-opacity-value">40%</span>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Display Layers Section -->
                 <div class="panel-section">
                     <div class="section-header" onclick="toggleSection(this)">
@@ -236,6 +195,12 @@ def generate_viewer_html_template(
                         <span class="section-icon">&#9660;</span>
                     </div>
                     <div class="section-content">
+                        <div class="layer-item">
+                            <input type="checkbox" class="layer-checkbox" id="show-grid" onchange="updateLayers()">
+                            <span class="layer-icon">&#9783;</span>
+                            <span class="layer-name">Grid</span>
+                            <span class="layer-key">G</span>
+                        </div>
                         <div class="layer-item">
                             <input type="checkbox" class="layer-checkbox" id="show-ratsnest" checked onchange="updateLayers()">
                             <span class="layer-icon" style="color:#4a6fa5;">&#9644;</span>
@@ -292,37 +257,6 @@ def generate_viewer_html_template(
                     </div>
                 </div>
 
-                <!-- Animation Settings Section -->
-                <div class="panel-section">
-                    <div class="section-header" onclick="toggleSection(this)">
-                        <span>Animation</span>
-                        <span class="section-icon">&#9660;</span>
-                    </div>
-                    <div class="section-content">
-                        <div class="option-row">
-                            <label class="option-label">Playback</label>
-                            <select id="playback-mode" class="option-select" onchange="updatePlaybackMode()">
-                                <option value="forward" selected>Forward</option>
-                                <option value="loop">Loop</option>
-                                <option value="pingpong">Ping-Pong</option>
-                            </select>
-                        </div>
-                        <div class="option-row">
-                            <label class="option-label">Frame Skip</label>
-                            <select id="frame-skip" class="option-select" onchange="updateFrameSkip()">
-                                <option value="1" selected>Every frame</option>
-                                <option value="2">Every 2nd</option>
-                                <option value="5">Every 5th</option>
-                                <option value="10">Every 10th</option>
-                            </select>
-                        </div>
-                        <div class="option-row">
-                            <label class="option-label">Auto-pause</label>
-                            <input type="checkbox" class="layer-checkbox" id="auto-pause-overlaps" onchange="updateAutoPause()">
-                            <span class="option-hint">on overlaps</span>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
     </div>
