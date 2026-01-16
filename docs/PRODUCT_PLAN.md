@@ -12,6 +12,7 @@ Marketing and product vision live in `README.md`.
 - **Placement Engine:** Core force-directed solver is implemented with **Star Model** and **Adaptive Damping**.
 - **Legalization:** Professional **Manhattan Legalizer** implemented with grid snapping, PCA-based row/column alignment, and priority-based overlap resolution.
 - **Routing:** Internal **A* Geometric Router** implemented with Greedy Multiplier, Spatial Hash Indexing, obstacle map builder, and net ordering.
+- **BGA Fanout:** **FanoutGenerator** implemented with dogbone/VIP patterns, onion-model layer assignment, and escape routing for high-density BGAs.
 - **CLI Routing:** `atoplace route` command is functional with optional visualization.
 - **Atopile Integration:** Project detection, `ato.yaml` parsing (fallback parser), and `ato-lock.yaml` module-to-ref mapping are functional.
 - **Validation & MCP:** Pre-route and confidence scoring pipelines are functional; MCP exposes context tools/resources and DRC runner.
@@ -21,10 +22,10 @@ Marketing and product vision live in `README.md`.
 ## Known Gaps (track details in `ISSUES.md`)
 
 - ~~**Atopile Persistence:** `atoplace.lock` sidecar logic is planned but not yet implemented.~~ **IMPLEMENTED** - Full sidecar persistence with `atoplace.lock` files.
-- **BGA Fanout:** Specialized BGA fanout is not yet implemented (Plan created).
+- ~~**BGA Fanout:** Specialized BGA fanout is not yet implemented (Plan created).~~ **IMPLEMENTED** - Full fanout module with dogbone/VIP patterns, onion-model layer assignment, and escape routing.
 - **Routing Advanced:** Differential pair detection is not yet implemented.
 - **Routing Fallback:** Freerouting runner is not yet implemented for failed nets.
-- **MCP Routing:** No `route_board` MCP tool yet (CLI-only routing).
+- **MCP Routing:** No `route_board` MCP tool yet (CLI-only routing). BGA fanout tools are available.
 
 ---
 
@@ -76,6 +77,11 @@ To handle 50k+ line board files:
     - [x] Implement **Net Orderer** (hardest first).
     - [x] CLI `atoplace route` command.
 
+- **Milestone D: Advanced Routing**
+    - [x] Implement **BGA Fanout Generator** (Dogbone/VIP, Escape Routing).
+    - [ ] Implement **Differential Pair Router** (Dual-grid geometric planner).
+    - [ ] Implement **Freerouting Fallback**.
+
 ---
 
 ## Implementation Phases
@@ -112,10 +118,12 @@ To handle 50k+ line board files:
 - [ ] `atoplace.routing.freerouting`: Java runner for fallback.
 
 **Phase 2D - BGA Fanout (New):**
-- [ ] `atoplace.routing.fanout.patterns`: Dogbone/VIP geometry generators.
-- [ ] `atoplace.routing.fanout.layer_assigner`: Onion-model ring analysis.
-- [ ] `atoplace.routing.fanout.escape_router`: Spoke routing to clear space.
-- [ ] `atoplace.routing.fanout.generator`: Main FanoutGenerator class.
+- [x] `atoplace.routing.fanout.patterns`: Dogbone/VIP geometry generators.
+- [x] `atoplace.routing.fanout.layer_assigner`: Onion-model ring analysis.
+- [x] `atoplace.routing.fanout.escape_router`: Spoke routing to clear space.
+- [x] `atoplace.routing.fanout.generator`: Main FanoutGenerator class.
+- [x] CLI `atoplace fanout` command.
+- [x] MCP fanout tools (detect_bga_components, fanout_component, fanout_all_bgas, get_fanout_preview).
 
 ### Phase 3: Atopile & NLP
 - [x] Atopile project detection
@@ -127,6 +135,7 @@ To handle 50k+ line board files:
 - [ ] `place_board` tool
 - [ ] `route_board` tool
 - [x] `run_drc` tool (atoplace + KiCad)
+- [x] BGA fanout tools (detect_bga_components, fanout_component, fanout_all_bgas, get_fanout_preview)
 - [x] Resource: Board Summary (Level 1)
 - [~] Resource: Connectivity Graph (Level 2)
 

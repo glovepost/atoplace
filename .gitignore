@@ -29,6 +29,10 @@ env/
 # IDE
 .idea/
 .vscode/
+.windsurf/
+.cursor/
+.grok/
+.claude/
 *.swp
 *.swo
 *~

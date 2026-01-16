@@ -1,0 +1,29 @@
+{
+    "mcpServers": {
+        "atoplace": {
+            "type": "stdio",
+            "command": "/Users/glovepost/Projects/atoplace/.venv/bin/python",
+            "args": [
+                "-m",
+                "atoplace.mcp.launcher"
+            ],
+            "env": {}
+        },
+        "atopile": {
+            "command": "/Users/glovepost/Library/Application Support/Antigravity/User/globalStorage/atopile.atopile/uv-bin/uv",
+            "args": [
+                "tool",
+                "run",
+                "-p",
+                "3.13",
+                "--from",
+                "atopile",
+                "ato",
+                "mcp",
+                "start",
+                "--no-http"
+            ],
+            "env": {}
+        }
+    }
+}

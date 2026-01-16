@@ -44,6 +44,7 @@ dev = [
 ]
 mcp = [
     "mcp>=1.0.0",
+    "psutil>=5.9.0",  # For robust orphaned process cleanup
 ]
 kipy = [
     "kicad-python>=0.4.0",  # Official KiCad IPC API (KiCad 9+)
@@ -53,6 +54,7 @@ streaming = [
 ]
 all = [
     "mcp>=1.0.0",
+    "psutil>=5.9.0",
     "kicad-python>=0.4.0",
     "websockets>=12.0",
 ]
@@ -104,6 +106,6 @@ warn_unused_configs = true
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "scripts"]
+testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
