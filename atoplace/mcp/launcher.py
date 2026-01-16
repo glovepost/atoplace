@@ -7,9 +7,16 @@ with KiCad bridge. Just run: python -m atoplace.mcp.launcher
 
 The launcher:
 1. Auto-detects KiCad Python (no env vars needed in most cases)
-2. Starts the KiCad bridge process
-3. Starts the MCP server
+2. Starts the KiCad bridge process (for IPC fallback)
+3. Starts the MCP server with intelligent backend selection:
+   - Tries KIPY mode first (real-time sync with running KiCad 9+)
+   - Falls back to IPC mode if KiCad not running
+   - Falls back to DIRECT mode if IPC unavailable
 4. Manages lifecycle and clean shutdown
+
+Backend Selection:
+- Set ATOPLACE_BACKEND=kipy|ipc|direct to force a specific mode
+- Default: KIPY with automatic fallback
 """
 
 import os
@@ -58,19 +65,22 @@ class MCPLauncher:
             # Step 1: Find and validate KiCad Python
             self._setup_kicad_python()
 
-            # Step 2: Clean up any stale socket
+            # Step 2: Clean up orphaned processes from previous runs
+            self._cleanup_orphaned_processes()
+
+            # Step 3: Clean up any stale socket
             self._cleanup_socket()
 
-            # Step 3: Start bridge process
+            # Step 4: Start bridge process
             self._start_bridge()
 
-            # Step 4: Wait for bridge to be ready
+            # Step 5: Wait for bridge to be ready
             if not self._wait_for_bridge():
                 logger.error("Bridge failed to start")
                 self.shutdown()
                 return 1
 
-            # Step 5: Start MCP server (takes over STDIO)
+            # Step 6: Start MCP server (takes over STDIO)
             return self._run_mcp_server()
 
         except Exception as e:
@@ -93,6 +103,56 @@ class MCPLauncher:
                 logger.debug("Removed stale socket: %s", SOCKET_PATH)
             except OSError:
                 pass
+
+    def _cleanup_orphaned_processes(self):
+        """Kill any orphaned bridge processes from previous runs.
+
+        This handles cases where bridge processes didn't shut down cleanly,
+        which can prevent new connections from succeeding.
+        """
+        try:
+            import psutil
+
+            # Find all bridge processes
+            orphaned = []
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    cmdline = proc.info.get('cmdline', [])
+                    if cmdline and 'atoplace.mcp.bridge' in ' '.join(cmdline):
+                        orphaned.append(proc)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            if orphaned:
+                logger.warning("Found %d orphaned bridge process(es), cleaning up...", len(orphaned))
+                for proc in orphaned:
+                    try:
+                        logger.debug("Killing orphaned bridge process (PID: %d)", proc.pid)
+                        proc.kill()
+                        proc.wait(timeout=2)
+                    except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                        pass
+                logger.info("Cleaned up %d orphaned bridge process(es)", len(orphaned))
+            else:
+                logger.debug("No orphaned bridge processes found")
+
+        except ImportError:
+            # psutil not available - try fallback method using subprocess
+            logger.debug("psutil not available, using fallback cleanup method")
+            try:
+                import platform
+                if platform.system() in ('Darwin', 'Linux'):
+                    # Use pkill on Unix-like systems
+                    result = subprocess.run(
+                        ['pkill', '-f', 'atoplace.mcp.bridge'],
+                        capture_output=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        logger.info("Cleaned up orphaned bridge processes (via pkill)")
+                        time.sleep(0.5)  # Give processes time to die
+            except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+                logger.debug("Fallback cleanup failed (may be OK): %s", e)
 
     def _start_bridge(self):
         """Start the KiCad bridge process."""
@@ -145,9 +205,15 @@ class MCPLauncher:
         return False
 
     def _run_mcp_server(self) -> int:
-        """Run the MCP server (blocks until completion)."""
+        """Run the MCP server (blocks until completion).
+
+        The server will attempt backends in this order:
+        1. KIPY - Real-time sync with running KiCad 9+
+        2. IPC - Bridge to pcbnew via socket (fallback)
+        3. DIRECT - Direct pcbnew access (fallback)
+        """
         env = os.environ.copy()
-        env["ATOPLACE_USE_IPC"] = "1"
+        # Set IPC socket path for fallback (if KIPY mode fails, will use IPC)
         env["ATOPLACE_IPC_SOCKET"] = SOCKET_PATH
 
         cmd = [
@@ -156,7 +222,7 @@ class MCPLauncher:
             "atoplace.mcp.server",
         ]
 
-        logger.info("Starting MCP server")
+        logger.info("Starting MCP server with KIPY as default (auto-fallback enabled)")
 
         # MCP server takes over STDIO
         self.mcp_proc = subprocess.Popen(
