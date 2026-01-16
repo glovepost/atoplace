@@ -201,33 +201,37 @@ class TestDiffPairDetector:
 class TestDiffPairSpec:
     """Test DiffPairSpec dataclass."""
 
-    def test_default_electrical_params(self):
-        """Test default electrical parameters."""
+    def test_default_params(self):
+        """Test default parameters."""
         spec = DiffPairSpec(
-            name="USB",
-            positive_net="USB_D+",
-            negative_net="USB_D-",
+            net_p="USB_D+",
+            net_n="USB_D-",
             pattern=DiffPairPattern.USB_STYLE,
         )
 
-        assert spec.impedance == 100.0
-        assert spec.trace_width == 0.2
-        assert spec.spacing == 0.15
-        assert spec.max_skew == 0.1
-        assert spec.max_uncoupled == 2.0
+        # Check default values
+        assert spec.gap == 0.15
+        assert spec.width == 0.2
+        assert spec.uncoupled_length_max == 5.0
+        assert spec.phase_tolerance == 0.5
 
-    def test_custom_electrical_params(self):
-        """Test custom electrical parameters."""
+        # Check aliases
+        assert spec.positive_net == "USB_D+"
+        assert spec.negative_net == "USB_D-"
+
+        # Check auto-generated name
+        assert spec.name == "USB_D"
+
+    def test_custom_params(self):
+        """Test custom parameters."""
         spec = DiffPairSpec(
-            name="HDMI",
-            positive_net="HDMI_D0_P",
-            negative_net="HDMI_D0_N",
+            net_p="HDMI_D0_P",
+            net_n="HDMI_D0_N",
             pattern=DiffPairPattern.PLUS_MINUS,
-            impedance=90.0,
-            trace_width=0.15,
-            spacing=0.1,
+            gap=0.1,
+            width=0.15,
         )
 
-        assert spec.impedance == 90.0
-        assert spec.trace_width == 0.15
-        assert spec.spacing == 0.1
+        assert spec.gap == 0.1
+        assert spec.width == 0.15
+        assert spec.name == "HDMI_D0"
