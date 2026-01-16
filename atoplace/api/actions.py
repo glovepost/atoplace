@@ -177,6 +177,8 @@ class LayoutActions:
     ) -> ActionResult:
         """
         Distribute components evenly between two points or outer extremes.
+
+        Locked components are skipped and not repositioned.
         """
         if len(refs) < 3:
             return ActionResult(False, "Need at least 3 components to distribute", [])
@@ -198,7 +200,7 @@ class LayoutActions:
                 x_spread = max(c.x for c in components) - min(c.x for c in components)
                 y_spread = max(c.y for c in components) - min(c.y for c in components)
                 axis = "x" if x_spread > y_spread else "y"
-            
+
             # Sort by axis
             attr = "x" if axis == "x" else "y"
             components.sort(key=lambda c: getattr(c, attr))
@@ -209,30 +211,44 @@ class LayoutActions:
             end_comp = self.board.components.get(end_ref)
             if not end_comp: return ActionResult(False, f"End ref {end_ref} not found", [])
 
-        # Calculate pitch
-        count = len(components)
+        # Filter out locked components (except anchors which define the span)
+        # Anchors are never moved regardless of lock state
+        movable = [c for c in components
+                   if not c.locked and c.reference not in (start_comp.reference, end_comp.reference)]
+        skipped = [c.reference for c in components if c.locked]
+
+        if len(movable) == 0:
+            msg = "No movable components to distribute"
+            if skipped:
+                msg += f" (skipped {len(skipped)} locked: {', '.join(skipped)})"
+            return ActionResult(True, msg, [])
+
+        # Calculate pitch based on movable count + anchors
+        # We distribute (movable + 2 anchors) positions evenly
+        total_positions = len(movable) + 2  # +2 for start and end anchors
+
         if axis == "x":
             total_dist = end_comp.x - start_comp.x
-            pitch = total_dist / (count - 1)
+            pitch = total_dist / (total_positions - 1)
             start_pos = start_comp.x
-            
-            for i, comp in enumerate(components):
-                if comp.reference in (start_comp.reference, end_comp.reference) and comp.locked:
-                    continue
-                if not comp.locked:
-                    comp.x = start_pos + (i * pitch)
+
+            # Distribute only movable components (anchors stay fixed)
+            for i, comp in enumerate(movable, start=1):  # start=1 to skip anchor position
+                comp.x = start_pos + (i * pitch)
         else:
             total_dist = end_comp.y - start_comp.y
-            pitch = total_dist / (count - 1)
+            pitch = total_dist / (total_positions - 1)
             start_pos = start_comp.y
-            
-            for i, comp in enumerate(components):
-                if comp.reference in (start_comp.reference, end_comp.reference) and comp.locked:
-                    continue
-                if not comp.locked:
-                    comp.y = start_pos + (i * pitch)
 
-        return ActionResult(True, f"Distributed {len(components)} components along {axis}", refs)
+            # Distribute only movable components (anchors stay fixed)
+            for i, comp in enumerate(movable, start=1):  # start=1 to skip anchor position
+                comp.y = start_pos + (i * pitch)
+
+        moved_refs = [c.reference for c in movable]
+        msg = f"Distributed {len(movable)} components along {axis}"
+        if skipped:
+            msg += f" (skipped {len(skipped)} locked)"
+        return ActionResult(True, msg, moved_refs)
 
     def stack_components(
         self,

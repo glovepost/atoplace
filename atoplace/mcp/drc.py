@@ -264,9 +264,10 @@ class DRCRunner:
         finally:
             # Clean up temp file
             try:
-                output_path.unlink()
-            except Exception:
-                pass
+                if output_path.exists():
+                    output_path.unlink()
+            except OSError as e:
+                logger.debug("Failed to cleanup temp DRC file: %s", e)
 
     def _parse_kicad_cli_output(self, data: Dict) -> DRCResult:
         """Parse kicad-cli JSON output into DRCResult."""

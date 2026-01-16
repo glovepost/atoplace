@@ -44,8 +44,9 @@ try:
         # Re-enable logging but at a higher threshold to filter debug messages
         wx.Log.EnableLogging(True)
         wx.Log.SetLogLevel(wx.LOG_Warning)
-    except (ImportError, RuntimeError, AttributeError, Exception):
-        # wx not available or already initialized - that's fine
+    except (ImportError, RuntimeError, AttributeError, TypeError):
+        # wx not available, already initialized, or method signature changed - that's fine
+        # These are expected when running outside KiCad environment
         pass
 
     import pcbnew
