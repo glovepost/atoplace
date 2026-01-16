@@ -100,6 +100,7 @@ except ImportError:
         def run(self): print("MCP not installed")
 
 from ..api.actions import LayoutActions
+from ..api.inspection import BoardInspector
 from ..api.session import Session
 from .context.micro import Microscope
 from .context.macro import MacroContext
@@ -267,6 +268,25 @@ def _validate_refs(refs: List[str]) -> Optional[str]:
     return None
 
 
+# Valid values for side and axis parameters
+VALID_SIDES = {"top", "bottom", "left", "right"}
+VALID_AXES = {"x", "y"}
+
+
+def _validate_side(side: str) -> Optional[str]:
+    """Validate side parameter. Returns error message or None."""
+    if side.lower() not in VALID_SIDES:
+        return f"Invalid side '{side}'. Must be one of: top, bottom, left, right"
+    return None
+
+
+def _validate_axis(axis: str) -> Optional[str]:
+    """Validate axis parameter. Returns error message or None."""
+    if axis.lower() not in VALID_AXES:
+        return f"Invalid axis '{axis}'. Must be one of: x, y"
+    return None
+
+
 # Path validation constants
 # Allowed paths can be configured via environment variable
 ALLOWED_PATH_ROOTS = os.environ.get("ATOPLACE_ALLOWED_PATHS", "").split(":") if os.environ.get("ATOPLACE_ALLOWED_PATHS") else []
@@ -275,6 +295,10 @@ BLOCKED_PATH_PATTERNS = [
     "/.ssh/", "/.gnupg/", "/.aws/", "/.config/",   # Sensitive user directories
     "/credentials", "/secrets", "/private",         # Common sensitive paths
 ]
+
+# Pagination constants for discovery tools
+DEFAULT_LIMIT = 50
+MAX_LIMIT = 500
 
 
 def _validate_path(path: str, operation: str = "access") -> Optional[str]:
@@ -403,9 +427,9 @@ def undo() -> str:
     try:
         _require_board()
         if session.undo():
-            return _success_response({"message": "Undo successful"})
+            return _success_response({"action": "undone", "message": "Undo successful"})
         else:
-            return _error_response("No operations to undo", "undo_failed")
+            return _success_response({"action": "nothing_to_undo", "message": "No operations to undo"})
     except Exception as e:
         return _error_response(str(e), "undo_failed")
 
@@ -416,9 +440,9 @@ def redo() -> str:
     try:
         _require_board()
         if session.redo():
-            return _success_response({"message": "Redo successful"})
+            return _success_response({"action": "redone", "message": "Redo successful"})
         else:
-            return _error_response("No operations to redo", "redo_failed")
+            return _success_response({"action": "nothing_to_redo", "message": "No operations to redo"})
     except Exception as e:
         return _error_response(str(e), "redo_failed")
 
@@ -453,6 +477,12 @@ def move_absolute(ref: str, x: float, y: float, rotation: Optional[float] = None
     except Exception as e:
         logger.error("Move absolute error: %s", e)
         return _error_response(str(e), "action_failed")
+
+
+# Alias for backward compatibility with tests
+def move_component(ref: str, x: float, y: float, rotation: Optional[float] = None) -> str:
+    """Alias for move_absolute for backward compatibility."""
+    return move_absolute(ref, x, y, rotation)
 
 
 @mcp.tool()
@@ -518,6 +548,8 @@ def place_next_to(
             return _error_response(err, "invalid_ref")
         if err := _validate_ref(target):
             return _error_response(err, "invalid_target")
+        if err := _validate_side(side):
+            return _error_response(err, "invalid_side")
 
         session.checkpoint(f"Place {ref} next to {target}")
         actions = LayoutActions(session.board)
@@ -542,6 +574,8 @@ def align_components(refs: List[str], axis: str = "x", anchor: str = "first") ->
         _require_board()
         if err := _validate_refs(refs):
             return _error_response(err, "invalid_refs")
+        if err := _validate_axis(axis):
+            return _error_response(err, "invalid_axis")
 
         session.checkpoint(f"Align {len(refs)} components")
         actions = LayoutActions(session.board)
@@ -741,38 +775,52 @@ def get_board_summary() -> str:
 
 
 @mcp.tool()
-def check_overlaps(refs: Optional[List[str]] = None) -> str:
-    """Check for component overlaps."""
+def check_overlaps(
+    refs: Optional[List[str]] = None,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0
+) -> str:
+    """
+    Check for component overlaps.
+
+    Supports pagination for boards with many overlapping components.
+
+    Args:
+        refs: Optional list of component refs to check (default: all components)
+        limit: Maximum number of overlaps to return (default: 50, max: 500)
+        offset: Number of overlaps to skip for pagination (default: 0)
+
+    Returns:
+        JSON with overlaps, total count, and pagination info
+    """
     try:
         _require_board()
 
-        components = []
+        # Clamp limit to valid range
+        limit = max(1, min(limit, MAX_LIMIT))
+        offset = max(0, offset)
+
+        # Validate refs if provided
         if refs:
             if err := _validate_refs(refs):
                 return _error_response(err, "invalid_refs")
-            components = [session.board.components[r] for r in refs]
-        else:
-            components = list(session.board.components.values())
 
-        overlaps = []
-        for i, c1 in enumerate(components):
-            for c2 in components[i+1:]:
-                w1, h1 = c1.width, c1.height
-                w2, h2 = c2.width, c2.height
-                dx = abs(c1.x - c2.x)
-                dy = abs(c1.y - c2.y)
-                overlap_x = (w1/2 + w2/2) - dx
-                overlap_y = (h1/2 + h2/2) - dy
-                if overlap_x > 0 and overlap_y > 0:
-                    overlaps.append({
-                        "refs": [c1.reference, c2.reference],
-                        "overlap_x": round(overlap_x, 3),
-                        "overlap_y": round(overlap_y, 3),
-                    })
+        # Use shared inspection logic
+        inspector = BoardInspector(session.board)
+        overlaps = inspector.check_overlaps(refs)
+        total_count = len(overlaps)
+
+        # Apply pagination
+        paginated = overlaps[offset:offset + limit]
+        has_more = (offset + len(paginated)) < total_count
 
         return _success_response({
-            "overlap_count": len(overlaps),
-            "overlaps": overlaps[:20]
+            "total_count": total_count,
+            "count": len(paginated),
+            "offset": offset,
+            "limit": limit,
+            "has_more": has_more,
+            "overlaps": paginated
         })
     except Exception as e:
         return _error_response(str(e), "check_failed")
@@ -782,65 +830,103 @@ def check_overlaps(refs: Optional[List[str]] = None) -> str:
 # Discovery Tools
 # =============================================================================
 
+
 @mcp.tool()
-def get_unplaced_components() -> str:
+def get_unplaced_components(limit: int = DEFAULT_LIMIT, offset: int = 0) -> str:
     """Get list of components that are outside the board area.
 
-    Returns up to 50 component references. If more exist, count will indicate
-    total and truncated flag will be set.
+    Supports pagination for large boards with many unplaced components.
+
+    Args:
+        limit: Maximum number of results to return (default: 50, max: 500)
+        offset: Number of results to skip for pagination (default: 0)
+
+    Returns:
+        JSON with component refs, total count, and pagination info
     """
     try:
         _require_board()
+
+        # Clamp limit to valid range
+        limit = max(1, min(limit, MAX_LIMIT))
+        offset = max(0, offset)
+
         macro = MacroContext(session.board)
         unplaced = macro.get_unplaced_components()
-        truncated = len(unplaced) > 50
+        total_count = len(unplaced)
+
+        # Apply pagination
+        paginated = unplaced[offset:offset + limit]
+        has_more = (offset + len(paginated)) < total_count
+
         return json.dumps({
-            "count": len(unplaced),
-            "refs": unplaced[:50],
-            "truncated": truncated
+            "total_count": total_count,
+            "count": len(paginated),
+            "offset": offset,
+            "limit": limit,
+            "has_more": has_more,
+            "refs": paginated
         })
     except Exception as e:
         return _error_response(str(e), "discovery_failed")
 
 
+# Valid filter_by values for find_components
+VALID_FILTERS = {"ref", "value", "footprint"}
+
+
 @mcp.tool()
-def find_components(query: str, filter_by: str = "ref") -> str:
+def find_components(
+    query: str,
+    filter_by: str = "ref",
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0
+) -> str:
     """
     Find components matching a query.
 
-    Returns up to 50 matches. If more exist, count will indicate total
-    and truncated flag will be set.
+    Supports pagination for large result sets.
 
     Args:
         query: Search string
         filter_by: Field to search ("ref", "value", "footprint")
+        limit: Maximum number of results to return (default: 50, max: 500)
+        offset: Number of results to skip for pagination (default: 0)
+
+    Returns:
+        JSON with matched components, total count, and pagination info
     """
     try:
         _require_board()
-        matches = []
-        for ref, comp in session.board.components.items():
-            search_value = ""
-            if filter_by == "ref":
-                search_value = ref
-            elif filter_by == "value":
-                search_value = comp.value
-            elif filter_by == "footprint":
-                search_value = comp.footprint
+        if filter_by.lower() not in VALID_FILTERS:
+            return _error_response(
+                f"Invalid filter '{filter_by}'. Must be one of: ref, value, footprint",
+                "invalid_filter"
+            )
 
-            if query.lower() in search_value.lower():
-                matches.append({
-                    "ref": ref,
-                    "value": comp.value,
-                    "footprint": comp.footprint,
-                    "x": comp.x,
-                    "y": comp.y
-                })
+        # Clamp limit to valid range
+        limit = max(1, min(limit, MAX_LIMIT))
+        offset = max(0, offset)
 
-        truncated = len(matches) > 50
+        # Use shared inspection logic
+        inspector = BoardInspector(session.board)
+        try:
+            matches = inspector.find_components(query, filter_by)
+            total_count = len(matches)
+        except ValueError as e:
+            return _error_response(str(e), "invalid_filter")
+
+        # Apply pagination
+        paginated = matches[offset:offset + limit]
+        has_more = (offset + len(paginated)) < total_count
+
         return json.dumps({
-            "count": len(matches),
-            "matches": matches[:50],
-            "truncated": truncated
+            "total_count": total_count,
+            "count": len(paginated),
+            "offset": offset,
+            "limit": limit,
+            "has_more": has_more,
+            "matches": paginated
         })
     except Exception as e:
         return _error_response(str(e), "search_failed")
@@ -854,23 +940,33 @@ def find_components(query: str, filter_by: str = "ref") -> str:
 def run_drc(
     use_kicad: bool = True,
     dfm_profile: str = "jlcpcb_standard",
-    severity_filter: str = "all"
+    severity_filter: str = "all",
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0
 ) -> str:
     """
     Run Design Rule Check on the loaded board.
 
-    Returns up to 50 violations. If more exist, violation_count will indicate
-    total and truncated flag will be set.
+    Supports pagination for boards with many DRC violations.
 
     Args:
         use_kicad: Whether to use KiCad's native DRC (if available)
         dfm_profile: DFM profile ("jlcpcb_standard", "jlcpcb_advanced", etc.)
         severity_filter: Filter by severity ("all", "errors", "warnings")
+        limit: Maximum number of violations to return (default: 50, max: 500)
+        offset: Number of violations to skip for pagination (default: 0)
+
+    Returns:
+        JSON with violations, total count, and pagination info
     """
     try:
         _require_board()
         from ..validation.drc import DRCChecker
         from ..dfm.profiles import get_profile
+
+        # Clamp limit to valid range
+        limit = max(1, min(limit, MAX_LIMIT))
+        offset = max(0, offset)
 
         dfm = get_profile(dfm_profile)
         checker = DRCChecker(session.board, dfm)
@@ -880,17 +976,26 @@ def run_drc(
         if severity_filter != "all":
             violations = [v for v in violations if v.severity == severity_filter]
 
-        truncated = len(violations) > 50
+        total_count = len(violations)
+
+        # Apply pagination
+        paginated = violations[offset:offset + limit]
+        has_more = (offset + len(paginated)) < total_count
+
         return json.dumps({
-            "violation_count": len(violations),
+            "passed": passed,
+            "total_count": total_count,
+            "count": len(paginated),
+            "offset": offset,
+            "limit": limit,
+            "has_more": has_more,
             "violations": [{
                 "rule": v.rule,
                 "severity": v.severity,
                 "message": v.message,
                 "items": v.items,
                 "location": {"x": v.location[0], "y": v.location[1]}
-            } for v in violations[:50]],
-            "truncated": truncated
+            } for v in paginated]
         })
     except Exception as e:
         logger.error("DRC failed: %s", e)
@@ -898,14 +1003,36 @@ def run_drc(
 
 
 @mcp.tool()
-def validate_placement() -> str:
-    """Run placement validation and get confidence report."""
+def validate_placement(limit: int = DEFAULT_LIMIT, offset: int = 0) -> str:
+    """
+    Run placement validation and get confidence report.
+
+    Supports pagination for the flags list.
+
+    Args:
+        limit: Maximum number of flags to return (default: 50, max: 500)
+        offset: Number of flags to skip for pagination (default: 0)
+
+    Returns:
+        JSON with validation scores and paginated flags
+    """
     try:
         _require_board()
         from ..validation.confidence import ConfidenceScorer
 
+        # Clamp limit to valid range
+        limit = max(1, min(limit, MAX_LIMIT))
+        offset = max(0, offset)
+
         scorer = ConfidenceScorer()  # Uses default DFM profile
         report = scorer.assess(session.board)
+
+        all_flags = report.flags
+        total_flags = len(all_flags)
+
+        # Apply pagination to flags
+        paginated_flags = all_flags[offset:offset + limit]
+        has_more = (offset + len(paginated_flags)) < total_flags
 
         return json.dumps({
             "overall_score": report.overall_score,
@@ -913,7 +1040,12 @@ def validate_placement() -> str:
             "routing_score": report.routing_score,
             "dfm_score": report.dfm_score,
             "electrical_score": report.electrical_score,
-            "flags": [{"category": f.category.value, "severity": f.severity.value, "message": f.message} for f in report.flags[:20]],
+            "flags_total_count": total_flags,
+            "flags_count": len(paginated_flags),
+            "flags_offset": offset,
+            "flags_limit": limit,
+            "flags_has_more": has_more,
+            "flags": [{"category": f.category.value, "severity": f.severity.value, "message": f.message} for f in paginated_flags],
             "component_count": report.component_count,
             "net_count": report.net_count
         })
@@ -1534,7 +1666,9 @@ def get_fanout_preview(ref: str) -> str:
 def route_board(
     visualize: bool = False,
     diff_pairs: Optional[List[str]] = None,
-    critical_nets: Optional[List[str]] = None
+    critical_nets: Optional[List[str]] = None,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0
 ) -> str:
     """
     Route all nets on the board using the multi-phase routing pipeline.
@@ -1544,18 +1678,26 @@ def route_board(
     2. Critical Nets: Differential pairs (if specified)
     3. General Routing: A* with greedy multiplier for all remaining nets
 
+    Supports pagination for the per-net results list.
+
     Args:
         visualize: Generate HTML visualization of routing process
         diff_pairs: List of diff pair definitions in format "NAME:POS_NET:NEG_NET"
                    e.g., ["USB:USB_D+:USB_D-", "HDMI0:HDMI_TX0_P:HDMI_TX0_N"]
         critical_nets: List of net names to route with high priority
+        limit: Maximum number of net results to return (default: 50, max: 500)
+        offset: Number of net results to skip for pagination (default: 0)
 
     Returns:
-        JSON with routing statistics and per-net results
+        JSON with routing statistics and per-net results (paginated)
     """
     try:
         _require_board()
         from ..routing import RoutingManager, RoutingManagerConfig
+
+        # Clamp limit to valid range
+        limit = max(1, min(limit, MAX_LIMIT))
+        offset = max(0, offset)
 
         config = RoutingManagerConfig(visualize=visualize)
         manager = RoutingManager(session.board, config=config)
@@ -1588,6 +1730,12 @@ def route_board(
                 "failure_reason": net_result.failure_reason if not net_result.success else None
             })
 
+        total_nets_in_results = len(net_summaries)
+
+        # Apply pagination to net summaries
+        paginated = net_summaries[offset:offset + limit]
+        has_more = (offset + len(paginated)) < total_nets_in_results
+
         return json.dumps({
             "success": result.success,
             "completion_rate": round(result.completion_rate, 1),
@@ -1597,8 +1745,12 @@ def route_board(
             "total_length_mm": round(result.total_length, 1),
             "total_vias": result.total_vias,
             "phases_completed": [p.value for p in result.phases_completed],
-            "nets": net_summaries[:50],  # Limit to 50 for response size
-            "truncated": len(net_summaries) > 50,
+            "nets_total_count": total_nets_in_results,
+            "nets_count": len(paginated),
+            "nets_offset": offset,
+            "nets_limit": limit,
+            "nets_has_more": has_more,
+            "nets": paginated,
             "errors": result.errors,
             "warnings": result.warnings
         }, indent=2)
@@ -1791,15 +1943,23 @@ def get_routing_preview() -> str:
 # =============================================================================
 
 @mcp.tool()
-def analyze_pin_swaps(ref: Optional[str] = None) -> str:
+def analyze_pin_swaps(
+    ref: Optional[str] = None,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0
+) -> str:
     """
     Analyze potential pin swaps for routing optimization.
 
     Detects swappable pin groups on FPGAs, MCUs, and connectors. Reports
     potential improvement from optimizing pin assignments.
 
+    Supports pagination when analyzing all components.
+
     Args:
         ref: Specific component reference (e.g., "U1"). If None, analyzes all.
+        limit: Maximum number of component analyses to return (default: 50, max: 500)
+        offset: Number of component analyses to skip for pagination (default: 0)
 
     Returns:
         JSON with detected swap groups and improvement potential
@@ -1808,11 +1968,15 @@ def analyze_pin_swaps(ref: Optional[str] = None) -> str:
         _require_board()
         from ..routing.pinswapper import PinSwapper, SwapConfig
 
+        # Clamp limit to valid range
+        limit = max(1, min(limit, MAX_LIMIT))
+        offset = max(0, offset)
+
         config = SwapConfig()
         swapper = PinSwapper(session.board, config)
 
         if ref:
-            # Analyze single component
+            # Analyze single component - no pagination needed
             analysis = swapper.analyze_component(ref)
             if "error" in analysis:
                 return _error_response(analysis["error"], "analysis_failed")
@@ -1836,15 +2000,25 @@ def analyze_pin_swaps(ref: Optional[str] = None) -> str:
                         "groups": analysis.get("groups", [])
                     })
 
+            total_count = len(analyses)
+
+            # Apply pagination
+            paginated = analyses[offset:offset + limit]
+            has_more = (offset + len(paginated)) < total_count
+
             # Get global crossing stats
             crossing_result = swapper.get_crossing_analysis()
 
             return json.dumps({
-                "components_with_swaps": len(analyses),
+                "components_with_swaps": total_count,
                 "total_crossings": crossing_result.total_crossings,
                 "crossing_density": round(crossing_result.crossing_density, 2),
-                "analyses": analyses[:20],  # Limit response size
-                "truncated": len(analyses) > 20
+                "analyses_total_count": total_count,
+                "analyses_count": len(paginated),
+                "analyses_offset": offset,
+                "analyses_limit": limit,
+                "analyses_has_more": has_more,
+                "analyses": paginated
             }, indent=2)
 
     except Exception as e:
