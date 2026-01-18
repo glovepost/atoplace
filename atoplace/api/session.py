@@ -69,14 +69,39 @@ class Session:
         """
         Load a board from file.
 
+        Automatically detects atopile projects and applies module hierarchy
+        information to components for better placement grouping.
+
         Args:
-            path: Path to KiCad PCB file
+            path: Path to KiCad PCB file or atopile project directory
 
         Returns:
             Self for chaining
         """
-        self.board = Board.from_kicad(path)
-        self.source_path = path
+        from ..board.atopile_adapter import (
+            AtopileProjectLoader,
+            load_board_auto,
+        )
+
+        path = Path(path)
+
+        # Try to detect atopile project and load with module info
+        project_root = AtopileProjectLoader.find_project_root(path)
+        if project_root:
+            try:
+                loader = AtopileProjectLoader(project_root)
+                self.board = loader.load_board()
+                # Store the actual kicad_pcb path
+                self.source_path = loader.get_board_path()
+            except Exception:
+                # Fall back to direct loading if atopile loading fails
+                self.board = Board.from_kicad(path)
+                self.source_path = path
+        else:
+            # Direct KiCad loading
+            self.board = Board.from_kicad(path)
+            self.source_path = path
+
         self._undo_stack.clear()
         self._redo_stack.clear()
         self._dirty = False

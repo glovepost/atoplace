@@ -356,6 +356,254 @@ def _validate_path(path: str, operation: str = "access") -> Optional[str]:
 
 
 # =============================================================================
+# Module Detection Helpers
+# =============================================================================
+
+def _get_modules_from_board(board, use_heuristics_fallback: bool = True) -> tuple:
+    """
+    Get module groupings from board, preferring atopile source over heuristics.
+
+    This function:
+    1. First checks if the board has atopile module info already attached
+    2. If not, tries to detect an atopile project and load module hierarchy
+    3. Only falls back to heuristics if no atopile project is found
+
+    Args:
+        board: The Board instance to analyze
+        use_heuristics_fallback: If True, fall back to heuristics when no
+                                 atopile modules found (default: True)
+
+    Returns:
+        Tuple of (modules_dict, source, module_list) where:
+        - modules_dict: Dict[str, str] mapping ref to module type
+        - source: "atopile" or "heuristics"
+        - module_list: List of module info dicts for detailed reporting
+    """
+    from ..placement.module_detector import ModuleDetector
+    from ..board.atopile_adapter import AtopileProjectLoader, AtopileModuleParser
+
+    # First, check for atopile module info already on components
+    atopile_modules = {}  # ref -> module_path
+    module_components = {}  # module_path -> list of refs
+    module_types = {}  # module_path -> type
+
+    for ref, comp in board.components.items():
+        if "ato_module" in comp.properties:
+            module_path = comp.properties["ato_module"]
+            module_type = comp.properties.get("ato_module_type", "unknown")
+
+            atopile_modules[ref] = module_path
+            if module_path not in module_components:
+                module_components[module_path] = []
+                module_types[module_path] = module_type
+            module_components[module_path].append(ref)
+
+    # If we found atopile modules on components, use them
+    if atopile_modules:
+        return _build_atopile_module_response(atopile_modules, module_components, module_types)
+
+    # Try to detect atopile project and load module hierarchy
+    if session.source_path:
+        project_root = AtopileProjectLoader.find_project_root(session.source_path)
+        if project_root:
+            try:
+                loader = AtopileProjectLoader(project_root)
+                ato_source = loader.get_ato_source_path()
+
+                if ato_source and ato_source.exists():
+                    # Parse module hierarchy
+                    parser = AtopileModuleParser()
+                    hierarchy = parser.parse_file(ato_source)
+
+                    if hierarchy:
+                        # Try to apply module info to components
+                        result = _apply_atopile_modules_to_board(
+                            board, hierarchy, loader
+                        )
+                        if result:
+                            return result
+            except Exception as e:
+                logger.debug("Could not load atopile modules: %s", e)
+
+    # Fall back to heuristic detection if enabled
+    if use_heuristics_fallback:
+        detector = ModuleDetector(board)
+        detected_modules = detector.detect()
+        modules_dict = {
+            ref: mod.module_type.value
+            for mod in detected_modules
+            for ref in mod.components
+        }
+
+        # Build module list for detailed reporting
+        module_list = []
+        for mod in detected_modules:
+            module_list.append({
+                "name": mod.name,
+                "type": mod.module_type.value,
+                "components": list(mod.components),
+                "primary_component": mod.primary_component,
+                "priority": mod.priority,
+                "placement_hints": mod.placement_hints,
+                "source": "heuristics"
+            })
+
+        logger.info(
+            "Using heuristic modules: %d modules with %d components",
+            len(detected_modules), len(modules_dict)
+        )
+        return modules_dict, "heuristics", module_list
+
+    # No modules found and heuristics disabled
+    return {}, "none", []
+
+
+def _build_atopile_module_response(atopile_modules, module_components, module_types):
+    """Build the response tuple for atopile modules."""
+    # Build modules dict mapping ref -> module_type (for ForceDirectedRefiner)
+    modules_dict = {}
+    for ref, module_path in atopile_modules.items():
+        # Use the module path as the module "type" for grouping
+        # This preserves hierarchy like "power.regulator", "accel"
+        modules_dict[ref] = module_path
+
+    # Build module list for detailed reporting
+    module_list = []
+    for module_path, refs in module_components.items():
+        module_list.append({
+            "name": module_path,
+            "type": module_types.get(module_path, "unknown"),
+            "components": refs,
+            "primary_component": refs[0] if refs else None,
+            "priority": _get_module_priority(module_types.get(module_path, "unknown")),
+            "placement_hints": {},
+            "source": "atopile"
+        })
+
+    logger.info(
+        "Using atopile modules: %d modules with %d components",
+        len(module_components), len(atopile_modules)
+    )
+    return modules_dict, "atopile", module_list
+
+
+def _apply_atopile_modules_to_board(board, hierarchy, loader):
+    """
+    Apply atopile module info to board components and build response.
+
+    Maps atopile instance names to KiCad refs using multiple strategies:
+    1. atopile_address property on KiCad footprints
+    2. instance_to_ref_map from ato-lock.yaml
+    3. Case-insensitive matching
+
+    Returns the module response tuple if successful, None otherwise.
+    """
+    # Build mapping from atopile address to KiCad ref
+    address_to_ref = {}
+    components_with_address = 0
+    for ref, comp in board.components.items():
+        if 'atopile_address' in comp.properties:
+            address = comp.properties['atopile_address']
+            address_to_ref[address] = ref
+            components_with_address += 1
+            # Also map leaf name
+            if '.' in address:
+                leaf = address.split('.')[-1]
+                if leaf not in address_to_ref:
+                    address_to_ref[leaf] = ref
+
+    logger.debug(
+        "Atopile mapping: %d/%d components have atopile_address property",
+        components_with_address, len(board.components)
+    )
+
+    # Get instance-to-ref mapping from lock file
+    lock_ref_map = loader.instance_to_ref_map
+
+    # Collect module assignments
+    atopile_modules = {}  # ref -> module_path
+    module_components = {}  # module_path -> list of refs
+    module_types = {}  # module_path -> type
+
+    for module_path, module in hierarchy.items():
+        for instance_name in module.components:
+            kicad_ref = None
+
+            # Build qualified paths to try
+            qualified_path = f"{module_path}.{instance_name}"
+            simple_path = f"{module.name}.{instance_name}"
+
+            # Strategy 1: atopile_address property
+            for path in [qualified_path, simple_path, instance_name]:
+                if path in address_to_ref:
+                    kicad_ref = address_to_ref[path]
+                    break
+
+            # Strategy 2: Lock file mapping
+            if not kicad_ref:
+                for path in [qualified_path, simple_path, instance_name]:
+                    if path in lock_ref_map:
+                        kicad_ref = lock_ref_map[path]
+                        break
+                # Search for paths ending with instance name
+                if not kicad_ref:
+                    for path, ref in lock_ref_map.items():
+                        if path.endswith('.' + instance_name) or path == instance_name:
+                            kicad_ref = ref
+                            break
+
+            # Strategy 3: Case-insensitive match
+            if not kicad_ref:
+                for board_ref in board.components:
+                    if board_ref.lower() == instance_name.lower():
+                        kicad_ref = board_ref
+                        break
+
+            # If we found a mapping, record it
+            if kicad_ref and kicad_ref in board.components:
+                atopile_modules[kicad_ref] = module_path
+                if module_path not in module_components:
+                    module_components[module_path] = []
+                    module_types[module_path] = module.module_type or "unknown"
+                module_components[module_path].append(kicad_ref)
+
+                # Also set the property on the component for future use
+                comp = board.components[kicad_ref]
+                comp.properties["ato_module"] = module_path
+                comp.properties["ato_module_name"] = module.name
+                if module.module_type:
+                    comp.properties["ato_module_type"] = module.module_type
+
+    # If we mapped enough components, use atopile modules
+    if atopile_modules:
+        logger.info(
+            "Applied atopile modules: %d modules with %d/%d components mapped",
+            len(module_components), len(atopile_modules), len(board.components)
+        )
+        return _build_atopile_module_response(atopile_modules, module_components, module_types)
+
+    return None
+
+
+def _get_module_priority(module_type: str) -> int:
+    """Get placement priority for a module type."""
+    # Higher priority = place first (edge components, connectors)
+    priorities = {
+        "connector": 100,
+        "rf": 90,
+        "mcu": 80,
+        "microcontroller": 80,
+        "power": 70,
+        "sensor": 60,
+        "memory": 50,
+        "led": 40,
+        "crystal": 30,
+        "unknown": 10,
+    }
+    return priorities.get(module_type.lower(), 10)
+
+
+# =============================================================================
 # Board Management Tools
 # =============================================================================
 
@@ -1086,16 +1334,17 @@ def optimize_placement(
     try:
         _require_board()
         from ..placement.force_directed import ForceDirectedRefiner, RefinementConfig
-        from ..placement.module_detector import ModuleDetector
         from ..nlp.constraint_parser import ConstraintParser
 
-        # Detect modules if enabled
+        # Detect modules if enabled - prefer atopile modules over heuristics
         modules = None
+        module_source = "none"
+        modules_detected = 0
         if enable_modules:
-            detector = ModuleDetector(session.board)
-            detected_modules = detector.detect()
-            modules = {ref: mod.module_type.value for mod in detected_modules for ref in mod.components}
-            logger.info("Detected %d modules with %d components", len(detected_modules), len(modules))
+            modules, module_source, module_list = _get_modules_from_board(
+                session.board, use_heuristics_fallback=True
+            )
+            modules_detected = len(module_list)
 
         # Parse constraints
         parsed_constraints = []
@@ -1128,7 +1377,8 @@ def optimize_placement(
         return _success_response({
             "success": True,
             "iterations_run": iterations,
-            "modules_detected": len(set(modules.values())) if modules else 0,
+            "modules_detected": modules_detected,
+            "module_source": module_source,
             "constraints_applied": len(parsed_constraints),
             "components_optimized": len(modified_refs),
             "message": f"Optimized placement for {len(modified_refs)} components"
@@ -1141,40 +1391,32 @@ def optimize_placement(
 @mcp.tool()
 def detect_modules() -> str:
     """
-    Detect functional modules in the board using connectivity and heuristics.
+    Detect functional modules in the board.
 
-    Identifies module types like:
-    - Microcontrollers and their support circuits
-    - Power regulators and decoupling
-    - RF frontends and matching networks
-    - Sensors and signal conditioning
-    - ESD protection circuits
-    - Crystal oscillators
+    Prefers atopile module definitions from .ato source files when available.
+    Falls back to heuristic detection (connectivity and component patterns)
+    only when no atopile modules are found in the project.
+
+    Module types detected:
+    - From atopile: power, sensor, rf, mcu, connector, led, memory, etc.
+    - From heuristics: Microcontrollers, power regulators, RF frontends,
+      sensors, ESD protection, crystal oscillators
 
     Returns:
-        JSON with detected modules and their components
+        JSON with detected modules, their components, and source (atopile/heuristics)
     """
     try:
         _require_board()
-        from ..placement.module_detector import ModuleDetector
 
-        detector = ModuleDetector(session.board)
-        modules = detector.detect()
-
-        result = []
-        for module in modules:
-            result.append({
-                "name": module.name,
-                "type": module.module_type.value,
-                "components": list(module.components),
-                "primary_component": module.primary_component,
-                "priority": module.priority,
-                "placement_hints": module.placement_hints
-            })
+        # Use the unified helper that prefers atopile over heuristics
+        modules_dict, source, module_list = _get_modules_from_board(
+            session.board, use_heuristics_fallback=True
+        )
 
         return json.dumps({
-            "module_count": len(modules),
-            "modules": result
+            "module_count": len(module_list),
+            "source": source,
+            "modules": module_list
         }, indent=2)
     except Exception as e:
         logger.error("Module detection failed: %s", e, exc_info=True)
