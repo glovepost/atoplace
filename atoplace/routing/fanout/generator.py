@@ -8,33 +8,33 @@ The FanoutGenerator orchestrates the fanout process:
 5. Route escape traces to clear routing space
 """
 
-import math
 import logging
+import math
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from ...board.abstraction import Board, Component, Pad
-
-from .patterns import (
-    DogbonePattern,
-    VIPPattern,
-    ChannelPattern,
-    FanoutVia,
-    FanoutTrace,
-)
+from ...board.abstraction import Board, Component
+from .escape_router import EscapeResult, EscapeRouter
 from .layer_assigner import LayerAssigner, LayerMapping, PinRing
-from .escape_router import EscapeRouter, EscapeResult
+from .patterns import (
+    ChannelPattern,
+    DogbonePattern,
+    FanoutTrace,
+    FanoutVia,
+    VIPPattern,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class FanoutStrategy(Enum):
     """Fanout pattern strategy."""
-    AUTO = "auto"          # Auto-detect based on pitch
-    DOGBONE = "dogbone"    # Standard dogbone for pitch >= 0.65mm
-    VIP = "vip"            # Via-in-Pad for pitch <= 0.5mm
-    CHANNEL = "channel"    # Channel routing for outer rings
+
+    AUTO = "auto"  # Auto-detect based on pitch
+    DOGBONE = "dogbone"  # Standard dogbone for pitch >= 0.65mm
+    VIP = "vip"  # Via-in-Pad for pitch <= 0.5mm
+    CHANNEL = "channel"  # Channel routing for outer rings
 
 
 @dataclass
@@ -55,6 +55,7 @@ class FanoutResult:
         warnings: List of warnings during generation
         failure_reason: If failed, reason for failure
     """
+
     success: bool
     component_ref: str = ""
     strategy_used: FanoutStrategy = FanoutStrategy.AUTO
@@ -83,14 +84,21 @@ class FanoutGenerator:
     """
 
     # Pitch thresholds for strategy selection
-    VIP_THRESHOLD = 0.5      # Use VIP for pitch <= 0.5mm
+    VIP_THRESHOLD = 0.5  # Use VIP for pitch <= 0.5mm
     DOGBONE_THRESHOLD = 0.65  # Use dogbone for pitch >= 0.65mm
 
     # BGA detection parameters
-    MIN_BGA_PINS = 9         # Minimum pins to be considered a BGA
+    MIN_BGA_PINS = 9  # Minimum pins to be considered a BGA
     BGA_FOOTPRINT_PATTERNS = [
-        "bga", "lga", "qfn", "fpga", "csp",
-        "ball", "land", "grid", "array"
+        "bga",
+        "lga",
+        "qfn",
+        "fpga",
+        "csp",
+        "ball",
+        "land",
+        "grid",
+        "array",
     ]
 
     def __init__(
@@ -111,10 +119,10 @@ class FanoutGenerator:
 
         # Set DFM parameters
         if dfm_profile:
-            self.via_drill = getattr(dfm_profile, 'min_via_drill', 0.3)
-            self.via_pad = getattr(dfm_profile, 'min_via_diameter', 0.6)
-            self.trace_width = getattr(dfm_profile, 'min_trace_width', 0.2)
-            self.clearance = getattr(dfm_profile, 'min_spacing', 0.15)
+            self.via_drill = getattr(dfm_profile, "min_via_drill", 0.3)
+            self.via_pad = getattr(dfm_profile, "min_via_diameter", 0.6)
+            self.trace_width = getattr(dfm_profile, "min_trace_width", 0.2)
+            self.clearance = getattr(dfm_profile, "min_spacing", 0.15)
         else:
             self.via_drill = 0.3
             self.via_pad = 0.6
@@ -196,14 +204,18 @@ class FanoutGenerator:
 
         # Check for regular pitch in X direction
         if len(x_coords) > 1:
-            x_pitches = [x_coords[i+1] - x_coords[i] for i in range(len(x_coords)-1)]
+            x_pitches = [
+                x_coords[i + 1] - x_coords[i] for i in range(len(x_coords) - 1)
+            ]
             # Pitch should be consistent
             if max(x_pitches) - min(x_pitches) > 0.1:
                 return False
 
         # Check for regular pitch in Y direction
         if len(y_coords) > 1:
-            y_pitches = [y_coords[i+1] - y_coords[i] for i in range(len(y_coords)-1)]
+            y_pitches = [
+                y_coords[i + 1] - y_coords[i] for i in range(len(y_coords) - 1)
+            ]
             if max(y_pitches) - min(y_pitches) > 0.1:
                 return False
 
@@ -229,12 +241,16 @@ class FanoutGenerator:
         # Calculate average pitch
         x_pitch = 0.0
         if len(x_coords) > 1:
-            x_pitches = [x_coords[i+1] - x_coords[i] for i in range(len(x_coords)-1)]
+            x_pitches = [
+                x_coords[i + 1] - x_coords[i] for i in range(len(x_coords) - 1)
+            ]
             x_pitch = sum(x_pitches) / len(x_pitches)
 
         y_pitch = 0.0
         if len(y_coords) > 1:
-            y_pitches = [y_coords[i+1] - y_coords[i] for i in range(len(y_coords)-1)]
+            y_pitches = [
+                y_coords[i + 1] - y_coords[i] for i in range(len(y_coords) - 1)
+            ]
             y_pitch = sum(y_pitches) / len(y_pitches)
 
         # Use the smaller non-zero pitch
@@ -277,14 +293,14 @@ class FanoutGenerator:
             return FanoutResult(
                 success=False,
                 component_ref=ref,
-                failure_reason=f"Component {ref} not found"
+                failure_reason=f"Component {ref} not found",
             )
 
         if len(comp.pads) < 2:
             return FanoutResult(
                 success=False,
                 component_ref=ref,
-                failure_reason=f"Component {ref} has too few pads ({len(comp.pads)})"
+                failure_reason=f"Component {ref} has too few pads ({len(comp.pads)})",
             )
 
         # Measure pitch
@@ -293,7 +309,7 @@ class FanoutGenerator:
             return FanoutResult(
                 success=False,
                 component_ref=ref,
-                failure_reason="Could not determine pad pitch"
+                failure_reason="Could not determine pad pitch",
             )
 
         # Select strategy
@@ -333,7 +349,10 @@ class FanoutGenerator:
             ):
                 # Channel route - no via needed for outermost ring
                 channel_traces = self._channel.generate_escape_path(
-                    abs_x, abs_y, comp.x, comp.y,
+                    abs_x,
+                    abs_y,
+                    comp.x,
+                    comp.y,
                     escape_distance=pitch * (len(rings) + 1),
                     layer=0,  # Top layer
                     net_name=pad.net,
@@ -401,9 +420,7 @@ class FanoutGenerator:
         escape_total = len(escape_results)
         total_via_count = len(vias)
         total_trace_length = sum(
-            math.sqrt(
-                (t.end[0] - t.start[0])**2 + (t.end[1] - t.start[1])**2
-            )
+            math.sqrt((t.end[0] - t.start[0]) ** 2 + (t.end[1] - t.start[1]) ** 2)
             for t in traces
         )
 
@@ -413,8 +430,12 @@ class FanoutGenerator:
             "via_count": total_via_count,
             "trace_count": len(traces),
             "total_trace_length_mm": round(total_trace_length, 2),
-            "escape_success_rate": escape_success / escape_total if escape_total > 0 else 1.0,
-            "layers_used": sorted(layer_mapping.layer_to_pads.keys()) if layer_mapping else [],
+            "escape_success_rate": (
+                escape_success / escape_total if escape_total > 0 else 1.0
+            ),
+            "layers_used": (
+                sorted(layer_mapping.layer_to_pads.keys()) if layer_mapping else []
+            ),
         }
 
         return FanoutResult(

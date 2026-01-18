@@ -29,11 +29,11 @@ if project_root:
 print(f"Board loaded: {len(board.components)} components, {len(board.nets)} nets")
 
 # Run placement optimization with visualization
-from atoplace.placement.force_directed import ForceDirectedRefiner, RefinementConfig
-from atoplace.placement.legalizer import PlacementLegalizer, LegalizerConfig
-from atoplace.placement.visualizer import PlacementVisualizer
-from atoplace.placement.module_detector import ModuleDetector
 from atoplace.dfm.profiles import get_profile_for_layers
+from atoplace.placement.force_directed import ForceDirectedRefiner, RefinementConfig
+from atoplace.placement.legalizer import LegalizerConfig, PlacementLegalizer
+from atoplace.placement.module_detector import ModuleDetector
+from atoplace.placement.visualizer import PlacementVisualizer
 
 print("\nDetecting modules...")
 modules = {}
@@ -51,7 +51,9 @@ else:
     detector.detect()
 
     # Convert to dict format: ref -> module_type_name
-    modules = {ref: module.name for ref, module in detector._component_to_module.items()}
+    modules = {
+        ref: module.name for ref, module in detector._component_to_module.items()
+    }
     unique_modules = set(modules.values())
     print(f"Detected {len(unique_modules)} module types: {sorted(unique_modules)}")
 
@@ -79,7 +81,7 @@ refiner._viz_interval = 1
 
 result = refiner.refine()
 
-print(f"\nOptimization complete:")
+print("\nOptimization complete:")
 print(f"  Final energy: {result.total_energy:.2f}")
 print(f"  Converged: {result.converged}")
 print(f"  Iterations: {result.iteration}")
@@ -125,4 +127,5 @@ print(f"\nSVG Delta visualization exported to: {html_path}")
 print("Opening in browser...")
 
 import subprocess
+
 subprocess.run(["open", str(html_path)])

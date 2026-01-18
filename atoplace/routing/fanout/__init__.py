@@ -18,16 +18,16 @@ Usage:
     results = generator.fanout_all_bgas()
 """
 
+from .escape_router import EscapeDirection, EscapeResult, EscapeRouter
 from .generator import FanoutGenerator, FanoutResult, FanoutStrategy
+from .layer_assigner import LayerAssigner, LayerMapping, PinRing
 from .patterns import (
     DogbonePattern,
-    VIPPattern,
-    FanoutVia,
     FanoutTrace,
+    FanoutVia,
+    VIPPattern,
     calculate_optimal_dogbone_offset,
 )
-from .layer_assigner import LayerAssigner, PinRing, LayerMapping
-from .escape_router import EscapeRouter, EscapeResult, EscapeDirection
 
 __all__ = [
     # Main entry point

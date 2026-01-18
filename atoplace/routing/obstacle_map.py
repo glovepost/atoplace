@@ -7,13 +7,13 @@ This follows @seveibar's lesson #4:
 The obstacle map is built once and reused for all net routing.
 """
 
-from typing import List, Dict, Tuple, Optional, Set
-from dataclasses import dataclass
-import logging
 import hashlib
+import logging
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
 
-from .spatial_index import SpatialHashIndex, Obstacle, auto_calibrate_cell_size
 from ..board.abstraction import Layer
+from .spatial_index import Obstacle, SpatialHashIndex, auto_calibrate_cell_size
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +26,14 @@ def _deterministic_hash(s: str) -> int:
     which makes routing results non-reproducible.
     """
     # Use MD5 (fast, 128-bit) and take first 8 bytes as int64
-    digest = hashlib.md5(s.encode('utf-8')).digest()
-    return int.from_bytes(digest[:8], byteorder='little', signed=True)
+    digest = hashlib.md5(s.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], byteorder="little", signed=True)
 
 
 @dataclass
 class NetPads:
     """Pads to connect for a single net."""
+
     net_name: str
     net_id: int
     pads: List[Obstacle]  # Pad obstacles with positions
@@ -166,24 +167,31 @@ class ObstacleMapBuilder:
                 layers = [-1]  # All layers
             else:
                 # Compare against Layer enum values, not strings
-                is_top = comp.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
-                                       Layer.TOP_MASK, Layer.TOP_PASTE, Layer.TOP_COURTYARD)
+                is_top = comp.layer in (
+                    Layer.TOP_COPPER,
+                    Layer.TOP_SILK,
+                    Layer.TOP_MASK,
+                    Layer.TOP_PASTE,
+                    Layer.TOP_COURTYARD,
+                )
                 layer = 0 if is_top else 1
                 layers = [layer]
 
             for layer in layers:
-                index.add(Obstacle(
-                    min_x=bbox[0],
-                    min_y=bbox[1],
-                    max_x=bbox[2],
-                    max_y=bbox[3],
-                    layer=layer,
-                    clearance=0,  # Router handles clearance to avoid double-counting
-                    net_id=None,  # Still blocks all nets by default
-                    obstacle_type="component",
-                    ref=ref,
-                    component_nets=component_net_ids if component_net_ids else None
-                ))
+                index.add(
+                    Obstacle(
+                        min_x=bbox[0],
+                        min_y=bbox[1],
+                        max_x=bbox[2],
+                        max_y=bbox[3],
+                        layer=layer,
+                        clearance=0,  # Router handles clearance to avoid double-counting
+                        net_id=None,  # Still blocks all nets by default
+                        obstacle_type="component",
+                        ref=ref,
+                        component_nets=component_net_ids if component_net_ids else None,
+                    )
+                )
                 count += 1
 
         return count
@@ -216,30 +224,42 @@ class ObstacleMapBuilder:
                 is_through_hole = pad.drill is not None and pad.drill > 0
                 if is_through_hole:
                     layers = [-1]  # All layers
-                elif hasattr(pad, 'layer') and pad.layer is not None:
+                elif hasattr(pad, "layer") and pad.layer is not None:
                     # Compare against Layer enum values, not strings
-                    is_top = pad.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
-                                          Layer.TOP_MASK, Layer.TOP_PASTE, Layer.TOP_COURTYARD)
+                    is_top = pad.layer in (
+                        Layer.TOP_COPPER,
+                        Layer.TOP_SILK,
+                        Layer.TOP_MASK,
+                        Layer.TOP_PASTE,
+                        Layer.TOP_COURTYARD,
+                    )
                     layers = [0 if is_top else 1]
                 else:
                     # Default based on component - use Layer enum comparison
-                    is_top = comp.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
-                                           Layer.TOP_MASK, Layer.TOP_PASTE, Layer.TOP_COURTYARD)
+                    is_top = comp.layer in (
+                        Layer.TOP_COPPER,
+                        Layer.TOP_SILK,
+                        Layer.TOP_MASK,
+                        Layer.TOP_PASTE,
+                        Layer.TOP_COURTYARD,
+                    )
                     layer = 0 if is_top else 1
                     layers = [layer]
 
                 for layer in layers:
-                    index.add(Obstacle(
-                        min_x=bbox[0],
-                        min_y=bbox[1],
-                        max_x=bbox[2],
-                        max_y=bbox[3],
-                        layer=layer,
-                        clearance=0,  # Router handles clearance to avoid double-counting
-                        net_id=net_id,
-                        obstacle_type="pad",
-                        ref=f"{ref}.{pad.name}" if hasattr(pad, 'name') else ref
-                    ))
+                    index.add(
+                        Obstacle(
+                            min_x=bbox[0],
+                            min_y=bbox[1],
+                            max_x=bbox[2],
+                            max_y=bbox[3],
+                            layer=layer,
+                            clearance=0,  # Router handles clearance to avoid double-counting
+                            net_id=net_id,
+                            obstacle_type="pad",
+                            ref=f"{ref}.{pad.name}" if hasattr(pad, "name") else ref,
+                        )
+                    )
                     count += 1
 
         return count
@@ -256,10 +276,7 @@ class ObstacleMapBuilder:
             rad = math.radians(comp.rotation)
             cos_r = math.cos(rad)
             sin_r = math.sin(rad)
-            px, py = (
-                px * cos_r - py * sin_r,
-                px * sin_r + py * cos_r
-            )
+            px, py = (px * cos_r - py * sin_r, px * sin_r + py * cos_r)
 
         # Translate to board coordinates
         return (comp.x + px, comp.y + py)
@@ -284,20 +301,22 @@ class ObstacleMapBuilder:
 
         # Get outline points - BoardOutline uses 'polygon' attribute
         points = None
-        if hasattr(self.board.outline, 'polygon') and self.board.outline.polygon:
+        if hasattr(self.board.outline, "polygon") and self.board.outline.polygon:
             points = self.board.outline.polygon
-        elif hasattr(self.board.outline, 'points') and self.board.outline.points:
+        elif hasattr(self.board.outline, "points") and self.board.outline.points:
             points = self.board.outline.points
 
         if not points:
             # Fall back to bounding box as rectangle
-            if hasattr(self.board.outline, 'get_bounding_box'):
+            if hasattr(self.board.outline, "get_bounding_box"):
                 bbox = self.board.outline.get_bounding_box()
                 if bbox:
                     min_x, min_y, max_x, max_y = bbox
                     points = [
-                        (min_x, min_y), (max_x, min_y),
-                        (max_x, max_y), (min_x, max_y)
+                        (min_x, min_y),
+                        (max_x, min_y),
+                        (max_x, max_y),
+                        (min_x, max_y),
                     ]
 
         if not points:
@@ -317,7 +336,7 @@ class ObstacleMapBuilder:
             # Create thin rectangle along edge
             dx = p2[0] - p1[0]
             dy = p2[1] - p1[1]
-            length = (dx*dx + dy*dy) ** 0.5
+            length = (dx * dx + dy * dy) ** 0.5
 
             if length < 0.001:
                 continue
@@ -328,7 +347,6 @@ class ObstacleMapBuilder:
 
             # Calculate both possible normals and test which points inward
             # Normal options: (dy, -dx) or (-dy, dx)
-            import math
 
             # Test point slightly offset from edge midpoint in each direction
             mid_x = (p1[0] + p2[0]) / 2
@@ -378,21 +396,23 @@ class ObstacleMapBuilder:
             # Add as obstacle on all layers
             # Use edge_clearance in the clearance field so collision checks
             # automatically maintain the proper spacing
-            index.add(Obstacle(
-                min_x=min_x,
-                min_y=min_y,
-                max_x=max_x,
-                max_y=max_y,
-                layer=-1,  # All layers
-                clearance=edge_clearance,  # Let collision check handle spacing
-                net_id=None,
-                obstacle_type="keepout",
-                ref=f"edge_{i}"
-            ))
+            index.add(
+                Obstacle(
+                    min_x=min_x,
+                    min_y=min_y,
+                    max_x=max_x,
+                    max_y=max_y,
+                    layer=-1,  # All layers
+                    clearance=edge_clearance,  # Let collision check handle spacing
+                    net_id=None,
+                    obstacle_type="keepout",
+                    ref=f"edge_{i}",
+                )
+            )
             count += 1
 
         # Process holes (cutouts) if present
-        if hasattr(self.board.outline, 'holes') and self.board.outline.holes:
+        if hasattr(self.board.outline, "holes") and self.board.outline.holes:
             for hole_idx, hole_polygon in enumerate(self.board.outline.holes):
                 if not hole_polygon or len(hole_polygon) < 3:
                     continue  # Skip invalid holes
@@ -405,7 +425,7 @@ class ObstacleMapBuilder:
                     # Create thin rectangle along edge
                     dx = p2[0] - p1[0]
                     dy = p2[1] - p1[1]
-                    length = (dx*dx + dy*dy) ** 0.5
+                    length = (dx * dx + dy * dy) ** 0.5
 
                     if length < 0.001:
                         continue
@@ -460,17 +480,19 @@ class ObstacleMapBuilder:
                     max_y = max(y1, y2, y3, y4)
 
                     # Add as obstacle on all layers
-                    index.add(Obstacle(
-                        min_x=min_x,
-                        min_y=min_y,
-                        max_x=max_x,
-                        max_y=max_y,
-                        layer=-1,  # All layers
-                        clearance=edge_clearance,  # Same clearance as board edges
-                        net_id=None,
-                        obstacle_type="keepout",
-                        ref=f"hole_{hole_idx}_edge_{i}"
-                    ))
+                    index.add(
+                        Obstacle(
+                            min_x=min_x,
+                            min_y=min_y,
+                            max_x=max_x,
+                            max_y=max_y,
+                            layer=-1,  # All layers
+                            clearance=edge_clearance,  # Same clearance as board edges
+                            net_id=None,
+                            obstacle_type="keepout",
+                            ref=f"hole_{hole_idx}_edge_{i}",
+                        )
+                    )
                     count += 1
 
         return count
@@ -500,15 +522,25 @@ class ObstacleMapBuilder:
                 is_through_hole = pad.drill is not None and pad.drill > 0
                 if is_through_hole:
                     layer = -1  # All layers
-                elif hasattr(pad, 'layer') and pad.layer is not None:
+                elif hasattr(pad, "layer") and pad.layer is not None:
                     # Compare against Layer enum values, not strings
-                    is_top = pad.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
-                                          Layer.TOP_MASK, Layer.TOP_PASTE, Layer.TOP_COURTYARD)
+                    is_top = pad.layer in (
+                        Layer.TOP_COPPER,
+                        Layer.TOP_SILK,
+                        Layer.TOP_MASK,
+                        Layer.TOP_PASTE,
+                        Layer.TOP_COURTYARD,
+                    )
                     layer = 0 if is_top else 1
                 else:
                     # Default based on component - use Layer enum comparison
-                    is_top = comp.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
-                                           Layer.TOP_MASK, Layer.TOP_PASTE, Layer.TOP_COURTYARD)
+                    is_top = comp.layer in (
+                        Layer.TOP_COPPER,
+                        Layer.TOP_SILK,
+                        Layer.TOP_MASK,
+                        Layer.TOP_PASTE,
+                        Layer.TOP_COURTYARD,
+                    )
                     layer = 0 if is_top else 1
 
                 pad_obs = Obstacle(
@@ -520,7 +552,7 @@ class ObstacleMapBuilder:
                     clearance=0,
                     net_id=_deterministic_hash(pad.net),
                     obstacle_type="pad",
-                    ref=f"{ref}.{pad.name}" if hasattr(pad, 'name') else ref
+                    ref=f"{ref}.{pad.name}" if hasattr(pad, "name") else ref,
                 )
 
                 if pad.net not in net_pads:
@@ -538,13 +570,15 @@ class ObstacleMapBuilder:
             is_power = net_obj.is_power if net_obj else False
             is_ground = net_obj.is_ground if net_obj else False
 
-            result.append(NetPads(
-                net_name=net_name,
-                net_id=_deterministic_hash(net_name),
-                pads=pads,
-                is_power=is_power,
-                is_ground=is_ground
-            ))
+            result.append(
+                NetPads(
+                    net_name=net_name,
+                    net_id=_deterministic_hash(net_name),
+                    pads=pads,
+                    is_power=is_power,
+                    is_ground=is_ground,
+                )
+            )
 
         return result
 
@@ -562,7 +596,7 @@ class ObstacleMapBuilder:
         area = 1000  # Default
         if self.board.outline:
             # Prefer actual polygon area over bounding box area
-            if hasattr(self.board.outline, 'polygon') and self.board.outline.polygon:
+            if hasattr(self.board.outline, "polygon") and self.board.outline.polygon:
                 # Calculate polygon area using Shoelace formula
                 polygon = self.board.outline.polygon
                 n = len(polygon)
@@ -573,14 +607,18 @@ class ObstacleMapBuilder:
                         area += polygon[i][0] * polygon[j][1]
                         area -= polygon[j][0] * polygon[i][1]
                     area = abs(area) / 2.0
-            elif hasattr(self.board.outline, 'get_bounding_box'):
+            elif hasattr(self.board.outline, "get_bounding_box"):
                 # Fall back to bounding box only if no polygon
                 bbox = self.board.outline.get_bounding_box()
                 if bbox:
                     area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
 
         if area <= 0:
-            area = self.board.width * self.board.height if hasattr(self.board, 'width') else 1000
+            area = (
+                self.board.width * self.board.height
+                if hasattr(self.board, "width")
+                else 1000
+            )
 
         density = total_pads / max(area, 1)
 
@@ -591,7 +629,9 @@ class ObstacleMapBuilder:
             "ground_nets": sum(1 for n in nets if n.is_ground),
             "board_area_mm2": area,
             "pad_density": density,
-            "estimated_difficulty": "high" if density > 0.1 else "medium" if density > 0.05 else "low"
+            "estimated_difficulty": (
+                "high" if density > 0.1 else "medium" if density > 0.05 else "low"
+            ),
         }
 
 

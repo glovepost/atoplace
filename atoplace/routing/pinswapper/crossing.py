@@ -10,9 +10,12 @@ Uses efficient line segment intersection algorithms:
 """
 
 import logging
-from dataclasses import dataclass, field
-from typing import List, Tuple, Set, Dict, Optional
 from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Dict, List, Tuple
+
+if TYPE_CHECKING:
+    from atoplace.board.abstraction import Board
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +23,14 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RatsnestEdge:
     """A single ratsnest connection between two pads."""
+
     net_name: str
     start: Tuple[float, float]  # (x, y) of start pad
-    end: Tuple[float, float]    # (x, y) of end pad
-    start_ref: str              # Component reference for start
-    end_ref: str                # Component reference for end
-    start_pad: str              # Pad number for start
-    end_pad: str                # Pad number for end
+    end: Tuple[float, float]  # (x, y) of end pad
+    start_ref: str  # Component reference for start
+    end_ref: str  # Component reference for end
+    start_pad: str  # Pad number for start
+    end_pad: str  # Pad number for end
 
     def __hash__(self):
         return hash((self.net_name, self.start_pad, self.end_pad))
@@ -35,6 +39,7 @@ class RatsnestEdge:
 @dataclass
 class CrossingResult:
     """Result of crossing analysis."""
+
     total_crossings: int
     edges_analyzed: int
 
@@ -107,9 +112,7 @@ class CrossingCounter:
                 self._edges.extend(edges)
 
     def _nearest_neighbor_mst(
-        self,
-        pads: List[Tuple[str, str, float, float]],
-        net_name: str
+        self, pads: List[Tuple[str, str, float, float]], net_name: str
     ) -> List[RatsnestEdge]:
         """Build ratsnest edges using nearest neighbor MST approximation."""
         if len(pads) < 2:
@@ -123,7 +126,7 @@ class CrossingCounter:
         while remaining:
             # Find nearest unconnected pad
             best_idx = None
-            best_dist = float('inf')
+            best_dist = float("inf")
 
             cx, cy = pads[current][2], pads[current][3]
 
@@ -147,7 +150,7 @@ class CrossingCounter:
                     start_ref=c_ref,
                     end_ref=n_ref,
                     start_pad=c_pad,
-                    end_pad=n_pad
+                    end_pad=n_pad,
                 )
                 edges.append(edge)
 
@@ -191,11 +194,9 @@ class CrossingCounter:
                     crossings_by_component[e2.end_ref] += 1
 
         # Sort nets by crossing count
-        worst_nets = sorted(
-            crossings_by_net.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:20]  # Top 20 worst nets
+        worst_nets = sorted(crossings_by_net.items(), key=lambda x: x[1], reverse=True)[
+            :20
+        ]  # Top 20 worst nets
 
         logger.info(f"Counted {total_crossings} crossings in {n} edges")
 
@@ -204,7 +205,7 @@ class CrossingCounter:
             edges_analyzed=n,
             crossings_by_component=dict(crossings_by_component),
             worst_nets=worst_nets,
-            crossing_pairs=crossing_pairs[:100]  # Limit stored pairs
+            crossing_pairs=crossing_pairs[:100],  # Limit stored pairs
         )
 
     def count_for_component(self, ref: str) -> int:
@@ -219,8 +220,7 @@ class CrossingCounter:
         """
         crossings = 0
         component_edges = [
-            e for e in self._edges
-            if e.start_ref == ref or e.end_ref == ref
+            e for e in self._edges if e.start_ref == ref or e.end_ref == ref
         ]
 
         for e1 in component_edges:
@@ -233,11 +233,7 @@ class CrossingCounter:
 
         return crossings
 
-    def count_for_swap(
-        self,
-        ref: str,
-        pin_swaps: Dict[str, str]
-    ) -> int:
+    def count_for_swap(self, ref: str, pin_swaps: Dict[str, str]) -> int:
         """
         Count crossings if specific pins were swapped.
 
@@ -273,7 +269,7 @@ class CrossingCounter:
                         start_ref=edge.start_ref,
                         end_ref=edge.end_ref,
                         start_pad=pin_swaps[edge.start_pad],
-                        end_pad=edge.end_pad
+                        end_pad=edge.end_pad,
                     )
 
             elif edge.end_ref == ref and edge.end_pad in pin_swaps:
@@ -287,7 +283,7 @@ class CrossingCounter:
                         start_ref=edge.start_ref,
                         end_ref=edge.end_ref,
                         start_pad=edge.start_pad,
-                        end_pad=pin_swaps[edge.end_pad]
+                        end_pad=pin_swaps[edge.end_pad],
                     )
 
             modified_edges.append(new_edge)
@@ -312,7 +308,7 @@ class CrossingCounter:
         p1: Tuple[float, float],
         p2: Tuple[float, float],
         p3: Tuple[float, float],
-        p4: Tuple[float, float]
+        p4: Tuple[float, float],
     ) -> bool:
         """
         Check if two line segments intersect.
@@ -326,6 +322,7 @@ class CrossingCounter:
         Returns:
             True if segments intersect (excluding endpoints)
         """
+
         def cross(o, a, b):
             """2D cross product of OA and OB vectors."""
             return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
@@ -336,8 +333,9 @@ class CrossingCounter:
         d4 = cross(p1, p2, p4)
 
         # Check for proper intersection (segments cross each other)
-        if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
-           ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
+        if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and (
+            (d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)
+        ):
             return True
 
         # Skip collinear and endpoint cases for crossing count

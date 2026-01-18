@@ -18,8 +18,8 @@ Based on REQ-P-03 from PRODUCT_REQUIREMENTS.md:
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional, Set
 from enum import Enum
+from typing import Dict, List, Optional, Set, Tuple
 
 from ..board.abstraction import Board, Component
 
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 class PassiveSize(Enum):
     """Standard passive component sizes (imperial)."""
+
     SIZE_0201 = "0201"
     SIZE_0402 = "0402"
     SIZE_0603 = "0603"
@@ -41,6 +42,7 @@ class PassiveSize(Enum):
 
 class ComponentPriority(Enum):
     """Priority for overlap resolution (higher = less likely to move)."""
+
     LOCKED = 100
     LARGE_IC = 80
     CONNECTOR = 60
@@ -80,6 +82,7 @@ METRIC_TO_IMPERIAL = {
 @dataclass
 class LegalizerConfig:
     """Configuration for the legalization pass."""
+
     # Grid snapping (Phase 1: Quantizer)
     primary_grid: float = 0.5  # mm - standard component placement grid
     secondary_grid: float = 0.1  # mm - fine-pitch components (0201, 0402)
@@ -93,12 +96,20 @@ class LegalizerConfig:
     row_spacing: float = 1.0  # mm - spacing between aligned components
 
     # Overlap removal (Phase 3: Shove) - STRICT SETTINGS
-    min_clearance: float = 0.35  # mm - minimum spacing between components (stricter than DFM)
+    min_clearance: float = (
+        0.35  # mm - minimum spacing between components (stricter than DFM)
+    )
     edge_clearance: float = 0.4  # mm - clearance from board edge
-    max_displacement_iterations: int = 1000  # max iterations per pass for overlap removal
+    max_displacement_iterations: int = (
+        1000  # max iterations per pass for overlap removal
+    )
     manhattan_shove: bool = True  # constrain displacement to X/Y axes only
-    overlap_retry_passes: int = 50  # number of retry passes with escalating displacement
-    escalation_factor: float = 1.3  # multiply displacement by this factor on retry (gentler escalation)
+    overlap_retry_passes: int = (
+        50  # number of retry passes with escalating displacement
+    )
+    escalation_factor: float = (
+        1.3  # multiply displacement by this factor on retry (gentler escalation)
+    )
     guarantee_zero_overlaps: bool = True  # keep iterating until all overlaps resolved
 
     # Dense board handling
@@ -106,29 +117,38 @@ class LegalizerConfig:
     expansion_factor: float = 1.08  # expand positions by 8% from centroid
     max_expansion_passes: int = 5  # max times to try expansion
     simultaneous_resolution: bool = True  # resolve all overlaps at once vs one-by-one
-    stuck_pair_diagonal_move: bool = True  # use diagonal moves for persistently stuck pairs
+    stuck_pair_diagonal_move: bool = (
+        True  # use diagonal moves for persistently stuck pairs
+    )
 
     # Component filtering
     align_passives_only: bool = True  # only align R/C/L components
     skip_locked: bool = True  # don't move locked components
 
     # Board outline compaction
-    compact_outline: bool = False  # only compact when explicitly enabled or no outline exists
+    compact_outline: bool = (
+        False  # only compact when explicitly enabled or no outline exists
+    )
     outline_margin: float = 2.0  # mm - margin around components for new outline
 
 
 @dataclass
 class LegalizationResult:
     """Result of legalization pass."""
+
     grid_snapped: int = 0  # components snapped to grid
     rows_formed: int = 0  # alignment rows created
     components_aligned: int = 0  # components aligned into rows
     overlaps_resolved: int = 0  # overlap violations fixed
     iterations_used: int = 0  # iterations for overlap removal
     final_overlaps: int = 0  # remaining overlaps (if any)
-    locked_conflicts: List[Tuple[str, str]] = field(default_factory=list)  # unresolvable overlaps with locked components
+    locked_conflicts: List[Tuple[str, str]] = field(
+        default_factory=list
+    )  # unresolvable overlaps with locked components
     outline_compacted: bool = False  # whether board outline was compacted
-    new_outline_size: Optional[Tuple[float, float]] = None  # (width, height) after compaction
+    new_outline_size: Optional[Tuple[float, float]] = (
+        None  # (width, height) after compaction
+    )
 
 
 class PlacementLegalizer:
@@ -145,8 +165,12 @@ class PlacementLegalizer:
     - ProximityConstraints: Moves that would violate proximity are avoided
     """
 
-    def __init__(self, board: Board, config: Optional[LegalizerConfig] = None,
-                 constraints: Optional[List] = None):
+    def __init__(
+        self,
+        board: Board,
+        config: Optional[LegalizerConfig] = None,
+        constraints: Optional[List] = None,
+    ):
         """
         Initialize the legalizer.
 
@@ -174,9 +198,13 @@ class PlacementLegalizer:
         for constraint in self.constraints:
             # Check if it's a FixedConstraint by looking for component_ref attribute
             # and constraint_type (avoid import cycles by using duck typing)
-            if hasattr(constraint, 'constraint_type') and hasattr(constraint, 'component_ref'):
-                constraint_type = getattr(constraint.constraint_type, 'value', str(constraint.constraint_type))
-                if constraint_type == 'fixed':
+            if hasattr(constraint, "constraint_type") and hasattr(
+                constraint, "component_ref"
+            ):
+                constraint_type = getattr(
+                    constraint.constraint_type, "value", str(constraint.constraint_type)
+                )
+                if constraint_type == "fixed":
                     ref = constraint.component_ref
                     if ref:
                         fixed_refs.add(ref)
@@ -328,7 +356,9 @@ class PlacementLegalizer:
                     )
 
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Grid snapping complete: snapped=%d skipped=%d", snapped, skipped)
+            logger.debug(
+                "Grid snapping complete: snapped=%d skipped=%d", snapped, skipped
+            )
 
         return snapped
 
@@ -389,7 +419,9 @@ class PlacementLegalizer:
                 skipped_reasons[reason] = skipped_reasons.get(reason, 0) + len(refs)
                 continue
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("Row alignment: size=%s candidates=%d", size.value, len(refs))
+                logger.debug(
+                    "Row alignment: size=%s candidates=%d", size.value, len(refs)
+                )
 
             # Determine grid for this passive size
             use_fine_grid = size in FINE_PITCH_SIZES
@@ -403,7 +435,8 @@ class PlacementLegalizer:
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "  No clusters found for %s (radius=%.1fmm). Components too spread out.",
-                        size.value, self.config.cluster_radius
+                        size.value,
+                        self.config.cluster_radius,
                     )
                 continue
 
@@ -427,25 +460,27 @@ class PlacementLegalizer:
                 if clusters_too_small > 0:
                     logger.debug(
                         "  Skipped %d clusters with < %d components",
-                        clusters_too_small, self.config.min_row_components
+                        clusters_too_small,
+                        self.config.min_row_components,
                     )
                 if clusters_too_scattered > 0:
                     logger.debug(
                         "  Skipped %d clusters too scattered (tolerance=%.1fmm)",
-                        clusters_too_scattered, self.config.alignment_tolerance
+                        clusters_too_scattered,
+                        self.config.alignment_tolerance,
                     )
 
         # Log summary if no rows formed
         if rows_formed == 0 and logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Row alignment: 0 rows formed. Reasons: %s",
-                skipped_reasons if skipped_reasons else "no passive candidates"
+                skipped_reasons if skipped_reasons else "no passive candidates",
             )
             logger.debug(
                 "  Thresholds: cluster_radius=%.1fmm, alignment_tolerance=%.1fmm, min_components=%d",
                 self.config.cluster_radius,
                 self.config.alignment_tolerance,
-                self.config.min_row_components
+                self.config.min_row_components,
             )
 
         return (rows_formed, components_aligned)
@@ -486,7 +521,7 @@ class PlacementLegalizer:
                     # Check distance
                     dx = current.x - other.x
                     dy = current.y - other.y
-                    distance = math.sqrt(dx*dx + dy*dy)
+                    distance = math.sqrt(dx * dx + dy * dy)
 
                     if distance <= self.config.cluster_radius:
                         cluster.append(other_ref)
@@ -520,8 +555,9 @@ class PlacementLegalizer:
             return 0
 
         # Get positions
-        positions = [(self.board.components[ref].x,
-                      self.board.components[ref].y) for ref in refs]
+        positions = [
+            (self.board.components[ref].x, self.board.components[ref].y) for ref in refs
+        ]
         xs = [p[0] for p in positions]
         ys = [p[1] for p in positions]
 
@@ -559,7 +595,8 @@ class PlacementLegalizer:
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "    Cluster skipped: y-spread=%.2fmm > tolerance=%.2fmm (horizontal row)",
-                        y_spread, tolerance
+                        y_spread,
+                        tolerance,
                     )
                 return 0
         else:
@@ -570,7 +607,8 @@ class PlacementLegalizer:
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "    Cluster skipped: x-spread=%.2fmm > tolerance=%.2fmm (vertical column)",
-                        x_spread, tolerance
+                        x_spread,
+                        tolerance,
                     )
                 return 0
 
@@ -600,7 +638,7 @@ class PlacementLegalizer:
                     aligned += 1
 
             # Re-distribute along X with proper spacing
-            self._distribute_evenly(refs, axis='x', use_fine_grid=use_fine_grid)
+            self._distribute_evenly(refs, axis="x", use_fine_grid=use_fine_grid)
         else:
             # Vertical column - snap X to MEDIAN
             sorted_xs = sorted(xs)
@@ -622,11 +660,13 @@ class PlacementLegalizer:
                     aligned += 1
 
             # Re-distribute along Y with proper spacing
-            self._distribute_evenly(refs, axis='y', use_fine_grid=use_fine_grid)
+            self._distribute_evenly(refs, axis="y", use_fine_grid=use_fine_grid)
 
         return aligned
 
-    def _distribute_evenly(self, refs: List[str], axis: str, use_fine_grid: bool = False):
+    def _distribute_evenly(
+        self, refs: List[str], axis: str, use_fine_grid: bool = False
+    ):
         """
         Distribute components evenly along an axis.
 
@@ -642,7 +682,7 @@ class PlacementLegalizer:
             return
 
         # Sort by position along axis
-        if axis == 'x':
+        if axis == "x":
             refs_sorted = sorted(refs, key=lambda r: self.board.components[r].x)
         else:
             refs_sorted = sorted(refs, key=lambda r: self.board.components[r].y)
@@ -657,18 +697,18 @@ class PlacementLegalizer:
 
         # Adjust positions to ensure minimum spacing
         for i in range(1, len(refs_sorted)):
-            prev_ref = refs_sorted[i-1]
+            prev_ref = refs_sorted[i - 1]
             curr_ref = refs_sorted[i]
 
             prev_comp = self.board.components[prev_ref]
             curr_comp = self.board.components[curr_ref]
 
-            prev_size = sizes[i-1]
+            prev_size = sizes[i - 1]
             curr_size = sizes[i]
 
-            if axis == 'x':
+            if axis == "x":
                 # Required separation
-                required_sep = prev_size[0]/2 + curr_size[0]/2 + min_spacing
+                required_sep = prev_size[0] / 2 + curr_size[0] / 2 + min_spacing
                 actual_sep = curr_comp.x - prev_comp.x
 
                 if actual_sep < required_sep:
@@ -678,7 +718,7 @@ class PlacementLegalizer:
                     curr_comp.x = round(curr_comp.x / grid) * grid
             else:
                 # Required separation
-                required_sep = prev_size[1]/2 + curr_size[1]/2 + min_spacing
+                required_sep = prev_size[1] / 2 + curr_size[1] / 2 + min_spacing
                 actual_sep = curr_comp.y - prev_comp.y
 
                 if actual_sep < required_sep:
@@ -707,17 +747,23 @@ class PlacementLegalizer:
         locked_conflicts: List[Tuple[str, str]] = []
 
         # Compute priorities once
-        priorities = {ref: self._get_component_priority(ref)
-                      for ref in self.board.components}
+        priorities = {
+            ref: self._get_component_priority(ref) for ref in self.board.components
+        }
 
         # Track stuck pairs across iterations (pairs that fail to resolve)
-        stuck_pairs: Dict[Tuple[str, str], int] = {}  # pair -> consecutive failure count
+        stuck_pairs: Dict[Tuple[str, str], int] = (
+            {}
+        )  # pair -> consecutive failure count
 
         # Check initial overlap density and apply expansion if needed
         initial_overlaps = self._find_overlaps()
         overlap_density = len(initial_overlaps) / max(len(self.board.components), 1)
 
-        if overlap_density >= self.config.expansion_threshold and len(initial_overlaps) > 3:
+        if (
+            overlap_density >= self.config.expansion_threshold
+            and len(initial_overlaps) > 3
+        ):
             # Dense board - try expansion first
             for expansion_pass in range(self.config.max_expansion_passes):
                 expansion_applied = self._apply_centroid_expansion()
@@ -726,7 +772,9 @@ class PlacementLegalizer:
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
                             "Expansion pass %d: overlaps %d -> %d",
-                            expansion_pass + 1, len(initial_overlaps), len(new_overlaps)
+                            expansion_pass + 1,
+                            len(initial_overlaps),
+                            len(new_overlaps),
                         )
                     if len(new_overlaps) == 0:
                         break
@@ -769,19 +817,28 @@ class PlacementLegalizer:
                     )
 
                 # Sort overlaps by combined priority (resolve high-priority first)
-                overlaps.sort(key=lambda o: -(priorities[o[0]].value + priorities[o[1]].value))
+                overlaps.sort(
+                    key=lambda o: -(priorities[o[0]].value + priorities[o[1]].value)
+                )
 
                 if self.config.simultaneous_resolution:
                     # SIMULTANEOUS RESOLUTION: Calculate all moves first, then apply
                     moves = self._calculate_all_moves(
-                        overlaps, priorities, escalation_multiplier,
-                        use_manhattan, stuck_pairs
+                        overlaps,
+                        priorities,
+                        escalation_multiplier,
+                        use_manhattan,
+                        stuck_pairs,
                     )
 
                     # Apply all moves at once
-                    made_progress = self._apply_moves_simultaneously(moves, locked_conflicts)
+                    made_progress = self._apply_moves_simultaneously(
+                        moves, locked_conflicts
+                    )
                     if made_progress:
-                        overlaps_resolved += len([m for m in moves.values() if m != (0, 0)])
+                        overlaps_resolved += len(
+                            [m for m in moves.values() if m != (0, 0)]
+                        )
                         pass_resolved += len([m for m in moves.values() if m != (0, 0)])
 
                     # Update stuck pair tracking
@@ -812,14 +869,18 @@ class PlacementLegalizer:
 
                         pair_key = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
                         use_diagonal = (
-                            self.config.stuck_pair_diagonal_move and
-                            stuck_pairs.get(pair_key, 0) >= 2
+                            self.config.stuck_pair_diagonal_move
+                            and stuck_pairs.get(pair_key, 0) >= 2
                         )
 
                         resolved = self._resolve_overlap_priority(
-                            ref1, ref2, scaled_overlap_x, scaled_overlap_y,
-                            priorities[ref1], priorities[ref2],
-                            use_manhattan=not use_diagonal and use_manhattan
+                            ref1,
+                            ref2,
+                            scaled_overlap_x,
+                            scaled_overlap_y,
+                            priorities[ref1],
+                            priorities[ref2],
+                            use_manhattan=not use_diagonal and use_manhattan,
                         )
                         if resolved and not self._check_overlap(ref1, ref2):
                             overlaps_resolved += 1
@@ -828,8 +889,10 @@ class PlacementLegalizer:
                             stuck_pairs.pop(pair_key, None)
                         elif resolved:
                             stuck_pairs[pair_key] = stuck_pairs.get(pair_key, 0) + 1
-                        elif (priorities[ref1] == ComponentPriority.LOCKED and
-                              priorities[ref2] == ComponentPriority.LOCKED):
+                        elif (
+                            priorities[ref1] == ComponentPriority.LOCKED
+                            and priorities[ref2] == ComponentPriority.LOCKED
+                        ):
                             conflict = pair_key
                             if conflict not in locked_conflicts:
                                 locked_conflicts.append(conflict)
@@ -856,11 +919,18 @@ class PlacementLegalizer:
 
         # Also check using board.find_overlaps() to catch any geometry mismatches
         # Use check_layers=True to ignore cross-layer overlaps (TOP vs BOTTOM)
-        board_overlaps = self.board.find_overlaps(self.config.min_clearance, check_layers=True)
+        board_overlaps = self.board.find_overlaps(
+            self.config.min_clearance, check_layers=True
+        )
         board_overlaps = [
-            (r1, r2, d) for r1, r2, d in board_overlaps
-            if not (self.board.components.get(r1, None) and self.board.components[r1].dnp)
-            and not (self.board.components.get(r2, None) and self.board.components[r2].dnp)
+            (r1, r2, d)
+            for r1, r2, d in board_overlaps
+            if not (
+                self.board.components.get(r1, None) and self.board.components[r1].dnp
+            )
+            and not (
+                self.board.components.get(r2, None) and self.board.components[r2].dnp
+            )
         ]
 
         if logger.isEnabledFor(logging.DEBUG):
@@ -923,7 +993,10 @@ class PlacementLegalizer:
                     p2 = priorities[ref2]
 
                     # Skip locked-locked conflicts
-                    if p1 == ComponentPriority.LOCKED and p2 == ComponentPriority.LOCKED:
+                    if (
+                        p1 == ComponentPriority.LOCKED
+                        and p2 == ComponentPriority.LOCKED
+                    ):
                         conflict = (ref1, ref2) if ref1 < ref2 else (ref2, ref1)
                         if conflict not in locked_conflicts:
                             locked_conflicts.append(conflict)
@@ -931,8 +1004,7 @@ class PlacementLegalizer:
 
                     # Force resolution: move the lower priority component completely away
                     self._force_separate_components(
-                        ref1, ref2, scaled_overlap_x, scaled_overlap_y,
-                        p1, p2
+                        ref1, ref2, scaled_overlap_x, scaled_overlap_y, p1, p2
                     )
 
                     if not self._check_overlap(ref1, ref2):
@@ -951,7 +1023,8 @@ class PlacementLegalizer:
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
                             "Aggressive pass %d: %d overlaps remaining",
-                            aggressive_pass + 1, remaining
+                            aggressive_pass + 1,
+                            remaining,
                         )
 
             # Final check - must recount overlaps after loop
@@ -962,7 +1035,7 @@ class PlacementLegalizer:
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "Still %d overlaps after aggressive passes, trying finer resolution",
-                        final_overlaps
+                        final_overlaps,
                     )
 
                 # Use very fine grid for final resolution
@@ -978,7 +1051,10 @@ class PlacementLegalizer:
                         p1 = priorities[ref1]
                         p2 = priorities[ref2]
 
-                        if p1 == ComponentPriority.LOCKED and p2 == ComponentPriority.LOCKED:
+                        if (
+                            p1 == ComponentPriority.LOCKED
+                            and p2 == ComponentPriority.LOCKED
+                        ):
                             continue
 
                         # Direct displacement with fine grid
@@ -1032,15 +1108,18 @@ class PlacementLegalizer:
         """
         # Calculate centroid of all movable components
         movable_refs = [
-            ref for ref in self.board.components
-            if not self._is_component_fixed(ref)
+            ref for ref in self.board.components if not self._is_component_fixed(ref)
         ]
 
         if len(movable_refs) < 2:
             return False
 
-        centroid_x = sum(self.board.components[r].x for r in movable_refs) / len(movable_refs)
-        centroid_y = sum(self.board.components[r].y for r in movable_refs) / len(movable_refs)
+        centroid_x = sum(self.board.components[r].x for r in movable_refs) / len(
+            movable_refs
+        )
+        centroid_y = sum(self.board.components[r].y for r in movable_refs) / len(
+            movable_refs
+        )
 
         factor = self.config.expansion_factor
         grid = self.config.secondary_grid  # Use fine grid for precise expansion
@@ -1075,7 +1154,7 @@ class PlacementLegalizer:
         priorities: Dict[str, ComponentPriority],
         escalation: float,
         use_manhattan: bool,
-        stuck_pairs: Dict[Tuple[str, str], int]
+        stuck_pairs: Dict[Tuple[str, str], int],
     ) -> Dict[str, Tuple[float, float]]:
         """
         Calculate displacement for all overlapping components simultaneously.
@@ -1138,7 +1217,7 @@ class PlacementLegalizer:
                     mtv_x = 0.0
                     mtv_y = overlap_y + 0.01
             else:
-                dist = math.sqrt(dx*dx + dy*dy) if (dx != 0 or dy != 0) else 1.0
+                dist = math.sqrt(dx * dx + dy * dy) if (dx != 0 or dy != 0) else 1.0
                 mtv_mag = min(overlap_x, overlap_y) + 0.01
                 mtv_x = mtv_mag * dx / dist if dist > 0 else mtv_mag
                 mtv_y = mtv_mag * dy / dist if dist > 0 else 0
@@ -1186,8 +1265,8 @@ class PlacementLegalizer:
                         move2_x, move2_y = mtv_x, mtv_y
                 else:
                     # Split displacement
-                    move1_x, move1_y = -mtv_x/2, -mtv_y/2
-                    move2_x, move2_y = mtv_x/2, mtv_y/2
+                    move1_x, move1_y = -mtv_x / 2, -mtv_y / 2
+                    move2_x, move2_y = mtv_x / 2, mtv_y / 2
 
             # Accumulate moves
             if ref1 not in moves:
@@ -1203,7 +1282,7 @@ class PlacementLegalizer:
     def _apply_moves_simultaneously(
         self,
         moves: Dict[str, Tuple[float, float]],
-        locked_conflicts: List[Tuple[str, str]]
+        locked_conflicts: List[Tuple[str, str]],
     ) -> bool:
         """
         Apply all calculated moves at once.
@@ -1229,7 +1308,11 @@ class PlacementLegalizer:
             comp.y += dy
 
             # Snap to appropriate grid
-            grid = self.config.secondary_grid if self._is_passive(ref) else self.config.primary_grid
+            grid = (
+                self.config.secondary_grid
+                if self._is_passive(ref)
+                else self.config.primary_grid
+            )
             if self._is_passive(ref):
                 size = self._detect_passive_size(comp)
                 if size not in FINE_PITCH_SIZES:
@@ -1255,23 +1338,23 @@ class PlacementLegalizer:
             return ComponentPriority.LOCKED
 
         # Check component type from reference designator
-        first_char = ref[0].upper() if ref else ''
+        first_char = ref[0].upper() if ref else ""
         prefix = ref.upper()
 
-        if prefix.startswith('SW') or first_char in ('J', 'P', 'H'):
+        if prefix.startswith("SW") or first_char in ("J", "P", "H"):
             return ComponentPriority.CONNECTOR
 
-        if first_char == 'B':
+        if first_char == "B":
             return ComponentPriority.LARGE_IC
 
-        if first_char == 'U':
+        if first_char == "U":
             # Distinguish large ICs from small ICs by size
             area = comp.width * comp.height
             if area > 50:  # > 50mm² is a large IC
                 return ComponentPriority.LARGE_IC
             return ComponentPriority.SMALL_IC
 
-        if first_char in ('R', 'C', 'L'):
+        if first_char in ("R", "C", "L"):
             return ComponentPriority.PASSIVE
 
         return ComponentPriority.OTHER
@@ -1285,7 +1368,9 @@ class PlacementLegalizer:
         """
         return self._get_overlap_values(ref1, ref2) is not None
 
-    def _get_overlap_values(self, ref1: str, ref2: str) -> Optional[Tuple[float, float]]:
+    def _get_overlap_values(
+        self, ref1: str, ref2: str
+    ) -> Optional[Tuple[float, float]]:
         """
         Get current overlap values for two specific components.
 
@@ -1380,10 +1465,18 @@ class PlacementLegalizer:
 
             # Calculate the grid cells this component occupies
             # Use math.floor() instead of int() for correct handling of negative coordinates
-            min_cell_x = math.floor((comp.x - half_w - self.config.min_clearance) / self._grid_cell_size)
-            max_cell_x = math.floor((comp.x + half_w + self.config.min_clearance) / self._grid_cell_size)
-            min_cell_y = math.floor((comp.y - half_h - self.config.min_clearance) / self._grid_cell_size)
-            max_cell_y = math.floor((comp.y + half_h + self.config.min_clearance) / self._grid_cell_size)
+            min_cell_x = math.floor(
+                (comp.x - half_w - self.config.min_clearance) / self._grid_cell_size
+            )
+            max_cell_x = math.floor(
+                (comp.x + half_w + self.config.min_clearance) / self._grid_cell_size
+            )
+            min_cell_y = math.floor(
+                (comp.y - half_h - self.config.min_clearance) / self._grid_cell_size
+            )
+            max_cell_y = math.floor(
+                (comp.y + half_h + self.config.min_clearance) / self._grid_cell_size
+            )
 
             # Add component to all cells it touches
             for cx in range(min_cell_x, max_cell_x + 1):
@@ -1429,7 +1522,7 @@ class PlacementLegalizer:
                 # Import Layer enum for checks
                 from ..board.abstraction import Layer
 
-                for ref2 in cell_refs[i+1:]:
+                for ref2 in cell_refs[i + 1 :]:
                     comp2 = self.board.components[ref2]
                     # Skip DNP (Do Not Populate) components
                     if comp2.dnp:
@@ -1483,30 +1576,36 @@ class PlacementLegalizer:
         comp = self.board.components.get(ref)
         if not comp:
             return True
-            
+
         outline = self.board.outline
         if not outline.has_outline:
             return True
-            
-        half_w, half_h = self._component_sizes.get(ref, (comp.width / 2, comp.height / 2))
+
+        half_w, half_h = self._component_sizes.get(
+            ref, (comp.width / 2, comp.height / 2)
+        )
         margin = self.config.edge_clearance
-        
+
         min_x = outline.origin_x + half_w + margin
         max_x = outline.origin_x + outline.width - half_w - margin
         min_y = outline.origin_y + half_h + margin
         max_y = outline.origin_y + outline.height - half_h - margin
-        
+
         # Board too small?
         if max_x < min_x or max_y < min_y:
-            return True # Can't satisfy, assume valid to avoid lockup
-            
+            return True  # Can't satisfy, assume valid to avoid lockup
+
         return (min_x <= x <= max_x) and (min_y <= y <= max_y)
 
     def _resolve_overlap_priority(
-        self, ref1: str, ref2: str,
-        overlap_x: float, overlap_y: float,
-        priority1: ComponentPriority, priority2: ComponentPriority,
-        use_manhattan: Optional[bool] = None
+        self,
+        ref1: str,
+        ref2: str,
+        overlap_x: float,
+        overlap_y: float,
+        priority1: ComponentPriority,
+        priority2: ComponentPriority,
+        use_manhattan: Optional[bool] = None,
     ) -> bool:
         """
         Resolve overlap using priority-based displacement.
@@ -1515,7 +1614,10 @@ class PlacementLegalizer:
         comp2 = self.board.components[ref2]
 
         # Both locked = cannot resolve
-        if priority1 == ComponentPriority.LOCKED and priority2 == ComponentPriority.LOCKED:
+        if (
+            priority1 == ComponentPriority.LOCKED
+            and priority2 == ComponentPriority.LOCKED
+        ):
             return False
 
         # Determine direction from comp1 to comp2
@@ -1523,7 +1625,9 @@ class PlacementLegalizer:
         dy = comp2.y - comp1.y
 
         # Use provided manhattan setting or fall back to config
-        manhattan = use_manhattan if use_manhattan is not None else self.config.manhattan_shove
+        manhattan = (
+            use_manhattan if use_manhattan is not None else self.config.manhattan_shove
+        )
 
         # Calculate MTV (Minimum Translation Vector)
         # Choose axis with smaller overlap for minimum displacement
@@ -1538,7 +1642,7 @@ class PlacementLegalizer:
                 mtv_y = overlap_y + 0.01
         else:
             # Non-Manhattan: MTV along center-to-center direction
-            dist = math.sqrt(dx*dx + dy*dy) if (dx != 0 or dy != 0) else 1.0
+            dist = math.sqrt(dx * dx + dy * dy) if (dx != 0 or dy != 0) else 1.0
             mtv_mag = min(overlap_x, overlap_y) + 0.01
             mtv_x = mtv_mag * dx / dist if dist > 0 else mtv_mag
             mtv_y = mtv_mag * dy / dist if dist > 0 else 0
@@ -1579,12 +1683,12 @@ class PlacementLegalizer:
         # Determine moves based on priority and boundaries
         move1_x, move1_y = 0.0, 0.0
         move2_x, move2_y = 0.0, 0.0
-        
+
         # Candidate moves
         c1_away = (-mtv_x, -mtv_y)
         c2_away = (mtv_x, mtv_y)
-        c1_half = (-mtv_x/2, -mtv_y/2)
-        c2_half = (mtv_x/2, mtv_y/2)
+        c1_half = (-mtv_x / 2, -mtv_y / 2)
+        c2_half = (mtv_x / 2, mtv_y / 2)
 
         if priority1.value > priority2.value:
             # Prefer moving comp2
@@ -1599,25 +1703,25 @@ class PlacementLegalizer:
 
         # Boundary Check: If a preferred move pushes out of bounds, try pushing the other component instead
         # unless the other component is locked or higher priority.
-        
+
         # Proposed positions
         prop_x1 = comp1.x + move1_x
         prop_y1 = comp1.y + move1_y
         prop_x2 = comp2.x + move2_x
         prop_y2 = comp2.y + move2_y
-        
+
         valid1 = self._is_within_bounds(ref1, prop_x1, prop_y1)
         valid2 = self._is_within_bounds(ref2, prop_x2, prop_y2)
-        
+
         # Logic to swap moves if boundary violated
         if not valid2 and valid1 and priority1.value <= priority2.value:
-             # Comp2 hits wall, but Comp1 has room and isn't higher priority -> Push Comp1 instead
-             move1_x, move1_y = c1_away
-             move2_x, move2_y = 0.0, 0.0
+            # Comp2 hits wall, but Comp1 has room and isn't higher priority -> Push Comp1 instead
+            move1_x, move1_y = c1_away
+            move2_x, move2_y = 0.0, 0.0
         elif not valid1 and valid2 and priority2.value <= priority1.value:
-             # Comp1 hits wall -> Push Comp2 instead
-             move1_x, move1_y = 0.0, 0.0
-             move2_x, move2_y = c2_away
+            # Comp1 hits wall -> Push Comp2 instead
+            move1_x, move1_y = 0.0, 0.0
+            move2_x, move2_y = c2_away
 
         # Apply moves
         if move1_x != 0 or move1_y != 0:
@@ -1625,7 +1729,7 @@ class PlacementLegalizer:
             comp1.y += move1_y
             comp1.x = round(comp1.x / grid1) * grid1
             comp1.y = round(comp1.y / grid1) * grid1
-            
+
         if move2_x != 0 or move2_y != 0:
             comp2.x += move2_x
             comp2.y += move2_y
@@ -1639,9 +1743,13 @@ class PlacementLegalizer:
         return True
 
     def _force_separate_components(
-        self, ref1: str, ref2: str,
-        overlap_x: float, overlap_y: float,
-        priority1: ComponentPriority, priority2: ComponentPriority
+        self,
+        ref1: str,
+        ref2: str,
+        overlap_x: float,
+        overlap_y: float,
+        priority1: ComponentPriority,
+        priority2: ComponentPriority,
     ) -> bool:
         """
         Force separate overlapping components with aggressive displacement.
@@ -1666,7 +1774,10 @@ class PlacementLegalizer:
             return False
 
         # Cannot move locked components
-        if priority1 == ComponentPriority.LOCKED and priority2 == ComponentPriority.LOCKED:
+        if (
+            priority1 == ComponentPriority.LOCKED
+            and priority2 == ComponentPriority.LOCKED
+        ):
             return False
 
         # Calculate separation direction (from comp1 to comp2)
@@ -1693,8 +1804,16 @@ class PlacementLegalizer:
         displacement = max(overlap_x, overlap_y) + self.config.min_clearance + 0.5
 
         # Determine who moves
-        grid1 = self.config.secondary_grid if self._is_passive(ref1) else self.config.primary_grid
-        grid2 = self.config.secondary_grid if self._is_passive(ref2) else self.config.primary_grid
+        grid1 = (
+            self.config.secondary_grid
+            if self._is_passive(ref1)
+            else self.config.primary_grid
+        )
+        grid2 = (
+            self.config.secondary_grid
+            if self._is_passive(ref2)
+            else self.config.primary_grid
+        )
 
         if priority1 == ComponentPriority.LOCKED:
             # Move only comp2 away from comp1
@@ -1740,10 +1859,10 @@ class PlacementLegalizer:
             return (False, None)
 
         # Calculate bounding box of all components including their pads
-        min_x = float('inf')
-        max_x = float('-inf')
-        min_y = float('inf')
-        max_y = float('-inf')
+        min_x = float("inf")
+        max_x = float("-inf")
+        min_y = float("inf")
+        max_y = float("-inf")
 
         for ref, comp in self.board.components.items():
             # Skip DNP components
@@ -1759,7 +1878,7 @@ class PlacementLegalizer:
             max_y = max(max_y, bbox[3])
 
         # No valid components found
-        if min_x == float('inf'):
+        if min_x == float("inf"):
             return (False, None)
 
         # Add margin around the component bounding box
@@ -1784,17 +1903,24 @@ class PlacementLegalizer:
         logger.info(
             "Compacting board outline to fit placement: "
             "%.1fx%.1f mm -> %.1fx%.1f mm (margin=%.1f mm)",
-            old_outline.width, old_outline.height,
-            new_width, new_height,
-            margin
+            old_outline.width,
+            old_outline.height,
+            new_width,
+            new_height,
+            margin,
         )
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Board compaction details: (%.1f, %.1f, %.1fx%.1f) -> (%.1f, %.1f, %.1fx%.1f)",
-                old_outline.origin_x, old_outline.origin_y,
-                old_outline.width, old_outline.height,
-                new_origin_x, new_origin_y, new_width, new_height
+                old_outline.origin_x,
+                old_outline.origin_y,
+                old_outline.width,
+                old_outline.height,
+                new_origin_x,
+                new_origin_y,
+                new_width,
+                new_height,
             )
 
         # Update the board outline directly
@@ -1857,7 +1983,9 @@ class PlacementLegalizer:
         if not outline.has_outline:
             return
 
-        half_w, half_h = self._component_sizes.get(ref, (comp.width / 2, comp.height / 2))
+        half_w, half_h = self._component_sizes.get(
+            ref, (comp.width / 2, comp.height / 2)
+        )
         # Use edge_clearance to match validator's min_trace_to_edge check
         margin = self.config.edge_clearance
 
@@ -1941,7 +2069,7 @@ class PlacementLegalizer:
         if not ref:
             return False
         first_char = ref[0].upper()
-        return first_char in ('R', 'C', 'L')
+        return first_char in ("R", "C", "L")
 
     def _detect_passive_size(self, comp: Component) -> PassiveSize:
         """
@@ -2007,7 +2135,7 @@ def legalize_placement(
     board: Board,
     primary_grid: float = 0.5,
     align_passives: bool = True,
-    snap_rotation: bool = True
+    snap_rotation: bool = True,
 ) -> LegalizationResult:
     """
     Convenience function to legalize a board placement.

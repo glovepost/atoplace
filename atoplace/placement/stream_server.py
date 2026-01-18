@@ -22,9 +22,8 @@ Usage:
 import asyncio
 import json
 import logging
-from typing import Dict, Set, Optional, Any
-from dataclasses import asdict
 import time
+from typing import Any, Dict, Set
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +103,7 @@ class StreamServer:
         # Close all client connections
         if self.clients:
             await asyncio.gather(
-                *[client.close() for client in self.clients],
-                return_exceptions=True
+                *[client.close() for client in self.clients], return_exceptions=True
             )
             self.clients.clear()
 
@@ -121,11 +119,15 @@ class StreamServer:
 
         try:
             # Send welcome message with server info
-            await websocket.send(json.dumps({
-                "type": "welcome",
-                "fps": self.max_fps,
-                "paused": self.paused,
-            }))
+            await websocket.send(
+                json.dumps(
+                    {
+                        "type": "welcome",
+                        "fps": self.max_fps,
+                        "paused": self.paused,
+                    }
+                )
+            )
 
             # Handle client messages
             async for message in websocket:
@@ -144,7 +146,9 @@ class StreamServer:
         finally:
             self.clients.discard(websocket)
 
-    async def _handle_client_message(self, websocket: WebSocketServerProtocol, data: Dict):
+    async def _handle_client_message(
+        self, websocket: WebSocketServerProtocol, data: Dict
+    ):
         """Handle a message from a client.
 
         Supported commands:
@@ -182,11 +186,13 @@ class StreamServer:
 
     async def _broadcast_control_state(self):
         """Broadcast current control state to all clients."""
-        message = json.dumps({
-            "type": "control_state",
-            "paused": self.paused,
-            "stop_requested": self.stop_requested,
-        })
+        message = json.dumps(
+            {
+                "type": "control_state",
+                "paused": self.paused,
+                "stop_requested": self.stop_requested,
+            }
+        )
         await self._broadcast(message)
 
     async def broadcast_frame(self, frame_data: Dict[str, Any]):
@@ -209,11 +215,13 @@ class StreamServer:
         self.last_frame_time = current_time
 
         # Prepare frame message
-        message = json.dumps({
-            "type": "frame",
-            "data": frame_data,
-            "timestamp": current_time,
-        })
+        message = json.dumps(
+            {
+                "type": "frame",
+                "data": frame_data,
+                "timestamp": current_time,
+            }
+        )
 
         # Broadcast to all clients
         await self._broadcast(message)
@@ -228,10 +236,12 @@ class StreamServer:
         Args:
             stats: Statistics dictionary (energy, wire length, etc.)
         """
-        message = json.dumps({
-            "type": "stats",
-            "data": stats,
-        })
+        message = json.dumps(
+            {
+                "type": "stats",
+                "data": stats,
+            }
+        )
         await self._broadcast(message)
 
     async def broadcast_status(self, status: str, message: str = ""):
@@ -241,11 +251,13 @@ class StreamServer:
             status: Status type ("info", "warning", "error", "complete")
             message: Status message text
         """
-        msg = json.dumps({
-            "type": "status",
-            "status": status,
-            "message": message,
-        })
+        msg = json.dumps(
+            {
+                "type": "status",
+                "status": status,
+                "message": message,
+            }
+        )
         await self._broadcast(msg)
 
     async def _broadcast(self, message: str):
@@ -321,7 +333,9 @@ class StreamManager:
                     break
     """
 
-    def __init__(self, host: str = "localhost", port: int = 8765, max_fps: float = 10.0):
+    def __init__(
+        self, host: str = "localhost", port: int = 8765, max_fps: float = 10.0
+    ):
         """Initialize stream manager.
 
         Args:

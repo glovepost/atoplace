@@ -9,9 +9,9 @@ Tests cover:
 - Constraint application
 """
 
-import pytest
 import math
-from typing import Dict, List, Tuple
+
+import pytest
 
 from atoplace.board.abstraction import (
     Board,
@@ -19,26 +19,22 @@ from atoplace.board.abstraction import (
     Component,
     Net,
     Pad,
-    Layer,
+)
+from atoplace.placement.constraints import (
+    EdgeConstraint,
+    ProximityConstraint,
+    ZoneConstraint,
 )
 from atoplace.placement.force_directed import (
     ForceDirectedRefiner,
-    RefinementConfig,
-    PlacementState,
-    Force,
     ForceType,
+    RefinementConfig,
 )
-from atoplace.placement.constraints import (
-    PlacementConstraint,
-    ProximityConstraint,
-    EdgeConstraint,
-    ZoneConstraint,
-)
-
 
 # =============================================================================
 # Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def simple_board() -> Board:
@@ -202,6 +198,7 @@ def default_config() -> RefinementConfig:
 # State Initialization Tests
 # =============================================================================
 
+
 class TestStateInitialization:
     """Tests for state initialization."""
 
@@ -239,6 +236,7 @@ class TestStateInitialization:
 # Force Calculation Tests
 # =============================================================================
 
+
 class TestForceCalculation:
     """Tests for force calculation."""
 
@@ -275,7 +273,9 @@ class TestForceCalculation:
         x_opposite = c1_fx * c2_fx < 0 if (c1_fx != 0 or c2_fx != 0) else False
         y_opposite = c1_fy * c2_fy < 0 if (c1_fy != 0 or c2_fy != 0) else False
 
-        assert x_opposite or y_opposite, "Repulsion forces should be opposite on at least one axis"
+        assert (
+            x_opposite or y_opposite
+        ), "Repulsion forces should be opposite on at least one axis"
 
     def test_no_repulsion_when_separated(self, simple_board, default_config):
         """Test that well-separated components don't repel strongly."""
@@ -290,12 +290,17 @@ class TestForceCalculation:
 
         # C1 and R1 should not have repulsion forces from each other
         # (they may have repulsion from U1)
-        c1_repulsion = sum(f.magnitude for f in forces["C1"]
-                          if f.force_type == ForceType.REPULSION and "R1" in f.source)
+        c1_repulsion = sum(
+            f.magnitude
+            for f in forces["C1"]
+            if f.force_type == ForceType.REPULSION and "R1" in f.source
+        )
 
         assert c1_repulsion == 0, "Distant components should not repel"
 
-    def test_attraction_force_on_connected_components(self, simple_board, default_config):
+    def test_attraction_force_on_connected_components(
+        self, simple_board, default_config
+    ):
         """Test that connected components experience attraction."""
         # Move capacitor far from IC
         simple_board.components["C1"].x = 10.0
@@ -307,7 +312,9 @@ class TestForceCalculation:
         forces = refiner._calculate_all_forces(state)
 
         # C1 is connected to VCC net with U1, should have attraction
-        c1_attraction = [f for f in forces["C1"] if f.force_type == ForceType.ATTRACTION]
+        c1_attraction = [
+            f for f in forces["C1"] if f.force_type == ForceType.ATTRACTION
+        ]
 
         assert len(c1_attraction) > 0, "Connected components should attract"
 
@@ -325,7 +332,9 @@ class TestForceCalculation:
         forces = refiner._calculate_all_forces(state)
 
         # U1 is outside left edge, should have positive x force (push right)
-        boundary_forces = [f for f in forces["U1"] if f.force_type == ForceType.BOUNDARY]
+        boundary_forces = [
+            f for f in forces["U1"] if f.force_type == ForceType.BOUNDARY
+        ]
 
         assert len(boundary_forces) > 0, "Boundary force should exist"
 
@@ -341,14 +350,19 @@ class TestForceCalculation:
         forces = refiner._calculate_all_forces(state)
 
         for ref in forces:
-            boundary_forces = [f for f in forces[ref] if f.force_type == ForceType.BOUNDARY]
+            boundary_forces = [
+                f for f in forces[ref] if f.force_type == ForceType.BOUNDARY
+            ]
             total_boundary = sum(f.magnitude for f in boundary_forces)
-            assert total_boundary < 0.1, f"{ref} inside board shouldn't have boundary force"
+            assert (
+                total_boundary < 0.1
+            ), f"{ref} inside board shouldn't have boundary force"
 
 
 # =============================================================================
 # Convergence Tests
 # =============================================================================
+
 
 class TestConvergence:
     """Tests for convergence behavior."""
@@ -386,7 +400,9 @@ class TestConvergence:
             (c1_final[0] - c2_final[0]) ** 2 + (c1_final[1] - c2_final[1]) ** 2
         )
 
-        assert final_distance > initial_distance, "Overlapping components should separate"
+        assert (
+            final_distance > initial_distance
+        ), "Overlapping components should separate"
 
     def test_boundary_violation_corrected(self, boundary_board, default_config):
         """Test that components outside boundary are pushed inside."""
@@ -404,6 +420,7 @@ class TestConvergence:
 # =============================================================================
 # Adaptive Damping Tests
 # =============================================================================
+
 
 class TestAdaptiveDamping:
     """Tests for adaptive damping behavior."""
@@ -438,6 +455,7 @@ class TestAdaptiveDamping:
 # Constraint Tests
 # =============================================================================
 
+
 class TestConstraints:
     """Tests for constraint application."""
 
@@ -461,7 +479,9 @@ class TestConstraints:
         forces = refiner._calculate_all_forces(state)
 
         # C1 should have constraint force toward U1
-        constraint_forces = [f for f in forces["C1"] if f.force_type == ForceType.CONSTRAINT]
+        constraint_forces = [
+            f for f in forces["C1"] if f.force_type == ForceType.CONSTRAINT
+        ]
 
         assert len(constraint_forces) > 0, "Proximity constraint should create force"
 
@@ -481,7 +501,9 @@ class TestConstraints:
         forces = refiner._calculate_all_forces(state)
 
         # R1 should have constraint force toward right edge
-        constraint_forces = [f for f in forces["R1"] if f.force_type == ForceType.CONSTRAINT]
+        constraint_forces = [
+            f for f in forces["R1"] if f.force_type == ForceType.CONSTRAINT
+        ]
 
         assert len(constraint_forces) > 0, "Edge constraint should create force"
 
@@ -510,7 +532,9 @@ class TestConstraints:
         forces = refiner._calculate_all_forces(state)
 
         # R1 should have force pushing it back into zone
-        constraint_forces = [f for f in forces["R1"] if f.force_type == ForceType.CONSTRAINT]
+        constraint_forces = [
+            f for f in forces["R1"] if f.force_type == ForceType.CONSTRAINT
+        ]
 
         assert len(constraint_forces) > 0, "Zone constraint should create force"
 
@@ -518,6 +542,7 @@ class TestConstraints:
 # =============================================================================
 # Anchor and Center Tests
 # =============================================================================
+
 
 class TestAnchorBehavior:
     """Tests for anchor component behavior."""
@@ -565,14 +590,18 @@ class TestAnchorBehavior:
 # Energy Calculation Tests
 # =============================================================================
 
+
 class TestEnergyCalculation:
     """Tests for energy calculation."""
 
-    def test_energy_decreases_during_refinement(self, overlapping_board, default_config):
+    def test_energy_decreases_during_refinement(
+        self, overlapping_board, default_config
+    ):
         """Test that system energy generally decreases."""
         refiner = ForceDirectedRefiner(overlapping_board, default_config)
 
         energies = []
+
         def callback(state):
             energies.append(state.total_energy)
 
@@ -588,6 +617,7 @@ class TestEnergyCalculation:
 # =============================================================================
 # Component Size Tests
 # =============================================================================
+
 
 class TestComponentSizes:
     """Tests for component size calculations."""
@@ -623,13 +653,16 @@ class TestComponentSizes:
         new_size = refiner._component_sizes["C1"]
 
         # The half-dimensions should have swapped (approximately)
-        assert abs(original_size[0] - new_size[1]) < 0.5 or \
-               abs(original_size[1] - new_size[0]) < 0.5
+        assert (
+            abs(original_size[0] - new_size[1]) < 0.5
+            or abs(original_size[1] - new_size[0]) < 0.5
+        )
 
 
 # =============================================================================
 # DNP Component Tests
 # =============================================================================
+
 
 class TestDNPComponents:
     """Tests for Do Not Populate component handling."""
@@ -661,6 +694,7 @@ class TestDNPComponents:
 # =============================================================================
 # Locked Component Tests
 # =============================================================================
+
 
 class TestLockedComponents:
     """Tests for locked component behavior."""

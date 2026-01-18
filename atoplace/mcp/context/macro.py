@@ -7,16 +7,17 @@ Provides high-level board context for LLM understanding:
 - Module Map: Hierarchical functional block tree
 """
 
-from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Optional, Tuple, Set
-from enum import Enum
 import json
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from typing import Dict, List, Set, Tuple
 
 from ...board.abstraction import Board, Component
 
 
 class Zone(Enum):
     """3x3 semantic zones for board regions."""
+
     TOP_LEFT = "top-left"
     TOP_CENTER = "top-center"
     TOP_RIGHT = "top-right"
@@ -31,6 +32,7 @@ class Zone(Enum):
 @dataclass
 class NetStats:
     """Statistics for a single net."""
+
     name: str
     pad_count: int
     components: List[str]
@@ -41,6 +43,7 @@ class NetStats:
 @dataclass
 class BoardSummary:
     """Executive summary of board state."""
+
     component_count: int
     net_count: int
     layer_count: int
@@ -60,6 +63,7 @@ class BoardSummary:
 @dataclass
 class SemanticGrid:
     """3x3 zone mapping of components."""
+
     zones: Dict[str, List[str]]  # zone name -> component refs
     zone_counts: Dict[str, int]
     dense_zones: List[str]  # Zones with highest density
@@ -71,6 +75,7 @@ class SemanticGrid:
 @dataclass
 class ModuleNode:
     """Node in module hierarchy tree."""
+
     name: str
     type: str  # power, mcu, rf, sensor, etc.
     components: List[str]
@@ -80,6 +85,7 @@ class ModuleNode:
 @dataclass
 class ModuleMap:
     """Hierarchical module structure."""
+
     root: ModuleNode
     flat_modules: Dict[str, List[str]]  # module_name -> components
 
@@ -89,12 +95,13 @@ class ModuleMap:
                 "name": node.name,
                 "type": node.type,
                 "components": node.components,
-                "children": [node_to_dict(c) for c in node.children]
+                "children": [node_to_dict(c) for c in node.children],
             }
-        return json.dumps({
-            "root": node_to_dict(self.root),
-            "flat_modules": self.flat_modules
-        }, indent=2)
+
+        return json.dumps(
+            {"root": node_to_dict(self.root), "flat_modules": self.flat_modules},
+            indent=2,
+        )
 
 
 class MacroContext:
@@ -137,11 +144,15 @@ class MacroContext:
 
         for net_name, net in self.board.nets.items():
             pad_count = len(net.connections)
-            components = list(set(comp_ref for comp_ref, _ in net.connections if comp_ref))
+            components = list(
+                set(comp_ref for comp_ref, _ in net.connections if comp_ref)
+            )
 
             name_lower = net_name.lower()
-            is_power = any(p in name_lower for p in ['vcc', 'vdd', '3v3', '5v', '12v', 'vin'])
-            is_ground = any(g in name_lower for g in ['gnd', 'vss', 'ground'])
+            is_power = any(
+                p in name_lower for p in ["vcc", "vdd", "3v3", "5v", "12v", "vin"]
+            )
+            is_ground = any(g in name_lower for g in ["gnd", "vss", "ground"])
 
             if is_power:
                 power_nets.append(net_name)
@@ -150,13 +161,15 @@ class MacroContext:
 
             # High fanout = more than 10 connections
             if pad_count > 10:
-                high_fanout.append(NetStats(
-                    name=net_name,
-                    pad_count=pad_count,
-                    components=components[:10],  # Limit for readability
-                    is_power=is_power,
-                    is_ground=is_ground
-                ))
+                high_fanout.append(
+                    NetStats(
+                        name=net_name,
+                        pad_count=pad_count,
+                        components=components[:10],  # Limit for readability
+                        is_power=is_power,
+                        is_ground=is_ground,
+                    )
+                )
 
         # Sort high fanout by pad count
         high_fanout.sort(key=lambda n: n.pad_count, reverse=True)
@@ -181,7 +194,7 @@ class MacroContext:
             power_nets=power_nets[:5],  # Limit
             ground_nets=ground_nets[:5],
             high_fanout_nets=high_fanout[:5],
-            critical_issues=issues
+            critical_issues=issues,
         )
 
     def get_unplaced_components(self) -> List[str]:
@@ -230,9 +243,7 @@ class MacroContext:
         dense_zones = [z for z, c in zone_counts.items() if c > avg_count * 1.5]
 
         return SemanticGrid(
-            zones=zones,
-            zone_counts=zone_counts,
-            dense_zones=dense_zones
+            zones=zones, zone_counts=zone_counts, dense_zones=dense_zones
         )
 
     def get_module_map(self) -> ModuleMap:
@@ -245,7 +256,7 @@ class MacroContext:
         flat_modules: Dict[str, List[str]] = {}
 
         # Try to use atopile module data if available
-        if hasattr(self.board, '_atopile_modules') and self.board._atopile_modules:
+        if hasattr(self.board, "_atopile_modules") and self.board._atopile_modules:
             for module_name, refs in self.board._atopile_modules.items():
                 flat_modules[module_name] = list(refs)
         else:
@@ -253,20 +264,11 @@ class MacroContext:
             flat_modules = self._detect_modules()
 
         # Build hierarchical tree
-        root = ModuleNode(
-            name="Board",
-            type="root",
-            components=[],
-            children=[]
-        )
+        root = ModuleNode(name="Board", type="root", components=[], children=[])
 
         for module_name, refs in flat_modules.items():
             module_type = self._infer_module_type(module_name, refs)
-            node = ModuleNode(
-                name=module_name,
-                type=module_type,
-                components=refs
-            )
+            node = ModuleNode(name=module_name, type=module_type, components=refs)
             root.children.append(node)
 
         # Add uncategorized components
@@ -274,13 +276,13 @@ class MacroContext:
         for refs in flat_modules.values():
             all_in_modules.update(refs)
 
-        uncategorized = [r for r in self.board.components.keys() if r not in all_in_modules]
+        uncategorized = [
+            r for r in self.board.components.keys() if r not in all_in_modules
+        ]
         if uncategorized:
-            root.children.append(ModuleNode(
-                name="Uncategorized",
-                type="misc",
-                components=uncategorized
-            ))
+            root.children.append(
+                ModuleNode(name="Uncategorized", type="misc", components=uncategorized)
+            )
 
         return ModuleMap(root=root, flat_modules=flat_modules)
 
@@ -295,10 +297,10 @@ class MacroContext:
         if not self.board.components:
             return 0, 0, 100, 100
 
-        min_x = min(c.x - c.width/2 for c in self.board.components.values())
-        max_x = max(c.x + c.width/2 for c in self.board.components.values())
-        min_y = min(c.y - c.height/2 for c in self.board.components.values())
-        max_y = max(c.y + c.height/2 for c in self.board.components.values())
+        min_x = min(c.x - c.width / 2 for c in self.board.components.values())
+        max_x = max(c.x + c.width / 2 for c in self.board.components.values())
+        min_y = min(c.y - c.height / 2 for c in self.board.components.values())
+        max_y = max(c.y + c.height / 2 for c in self.board.components.values())
 
         return min_x, min_y, max_x, max_y
 
@@ -307,9 +309,15 @@ class MacroContext:
         min_x, min_y, max_x, max_y = self._bounds
         return min_x <= comp.x <= max_x and min_y <= comp.y <= max_y
 
-    def _get_zone(self, x: float, y: float,
-                  x_low: float, x_high: float,
-                  y_low: float, y_high: float) -> Zone:
+    def _get_zone(
+        self,
+        x: float,
+        y: float,
+        x_low: float,
+        x_high: float,
+        y_low: float,
+        y_high: float,
+    ) -> Zone:
         """Determine which zone a point falls in."""
         # X position: left, center, right
         if x < x_low:
@@ -401,27 +409,29 @@ class MacroContext:
         name_lower = module_name.lower()
 
         # Check name patterns
-        if any(p in name_lower for p in ['power', 'pwr', 'supply', 'reg', 'buck', 'boost']):
+        if any(
+            p in name_lower for p in ["power", "pwr", "supply", "reg", "buck", "boost"]
+        ):
             return "power"
-        if any(p in name_lower for p in ['rf', 'radio', 'antenna', 'match']):
+        if any(p in name_lower for p in ["rf", "radio", "antenna", "match"]):
             return "rf"
-        if any(p in name_lower for p in ['mcu', 'cpu', 'proc', 'micro']):
+        if any(p in name_lower for p in ["mcu", "cpu", "proc", "micro"]):
             return "mcu"
-        if any(p in name_lower for p in ['sensor', 'accel', 'gyro', 'temp', 'humid']):
+        if any(p in name_lower for p in ["sensor", "accel", "gyro", "temp", "humid"]):
             return "sensor"
-        if any(p in name_lower for p in ['led', 'display', 'status']):
+        if any(p in name_lower for p in ["led", "display", "status"]):
             return "indicator"
-        if any(p in name_lower for p in ['conn', 'usb', 'swd', 'debug', 'jtag']):
+        if any(p in name_lower for p in ["conn", "usb", "swd", "debug", "jtag"]):
             return "connector"
-        if any(p in name_lower for p in ['eeprom', 'flash', 'memory', 'ram']):
+        if any(p in name_lower for p in ["eeprom", "flash", "memory", "ram"]):
             return "memory"
-        if any(p in name_lower for p in ['i2c', 'spi', 'uart', 'bus']):
+        if any(p in name_lower for p in ["i2c", "spi", "uart", "bus"]):
             return "interface"
 
         # Check component types in the module
-        has_ic = any(r.startswith('U') or r.startswith('IC') for r in refs)
-        has_inductor = any(r.startswith('L') for r in refs)
-        has_crystal = any(r.startswith('Y') or r.startswith('X') for r in refs)
+        has_ic = any(r.startswith("U") or r.startswith("IC") for r in refs)
+        has_inductor = any(r.startswith("L") for r in refs)
+        has_crystal = any(r.startswith("Y") or r.startswith("X") for r in refs)
 
         if has_inductor and has_ic:
             return "power"

@@ -13,16 +13,14 @@ the optimization in real-time.
 
 import asyncio
 import logging
-import random
 import math
-from pathlib import Path
+import random
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from pathlib import Path
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -30,6 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MockComponent:
     """Mock component for testing."""
+
     reference: str
     x: float
     y: float
@@ -44,13 +43,14 @@ class MockBoard:
     def __init__(self, num_components=20):
         """Create mock board with random components."""
         self.components = {}
-        self.outline = type('obj', (object,), {
-            'min_x': 0.0, 'min_y': 0.0,
-            'max_x': 100.0, 'max_y': 80.0
-        })()
+        self.outline = type(
+            "obj",
+            (object,),
+            {"min_x": 0.0, "min_y": 0.0, "max_x": 100.0, "max_y": 80.0},
+        )()
 
         # Create mock components scattered randomly
-        component_types = ['C', 'R', 'U', 'L', 'D']
+        component_types = ["C", "R", "U", "L", "D"]
         for i in range(num_components):
             comp_type = random.choice(component_types)
             ref = f"{comp_type}{i+1}"
@@ -77,9 +77,9 @@ class MockPlacementVisualizer:
         # Mock static properties
         for ref, comp in board.components.items():
             self.static_props[ref] = {
-                'width': comp.width,
-                'height': comp.height,
-                'pads': []  # Empty for simplicity
+                "width": comp.width,
+                "height": comp.height,
+                "pads": [],  # Empty for simplicity
             }
 
         # Board bounds for viewer
@@ -88,28 +88,34 @@ class MockPlacementVisualizer:
         self.max_x = board.outline.max_x
         self.max_y = board.outline.max_y
 
-    def capture_from_board(self, label, iteration, phase, modules, forces, energy, max_move):
+    def capture_from_board(
+        self, label, iteration, phase, modules, forces, energy, max_move
+    ):
         """Capture current board state."""
         # Store frame data
-        frame = type('obj', (object,), {
-            'index': len(self.frames),
-            'label': label,
-            'iteration': iteration,
-            'phase': phase,
-            'components': {
-                ref: (comp.x, comp.y, comp.rotation)
-                for ref, comp in self.board.components.items()
+        frame = type(
+            "obj",
+            (object,),
+            {
+                "index": len(self.frames),
+                "label": label,
+                "iteration": iteration,
+                "phase": phase,
+                "components": {
+                    ref: (comp.x, comp.y, comp.rotation)
+                    for ref, comp in self.board.components.items()
+                },
+                "modules": modules or {},
+                "forces": forces or {},
+                "overlaps": [],
+                "movement": {},
+                "connections": [],
+                "energy": energy,
+                "max_move": max_move,
+                "overlap_count": 0,
+                "total_wire_length": 0.0,
             },
-            'modules': modules or {},
-            'forces': forces or {},
-            'overlaps': [],
-            'movement': {},
-            'connections': [],
-            'energy': energy,
-            'max_move': max_move,
-            'overlap_count': 0,
-            'total_wire_length': 0.0,
-        })()
+        )()
         self.frames.append(frame)
 
     def export_canvas_html(self, filename, output_dir="placement_debug"):
@@ -134,7 +140,7 @@ async def test_streaming_mock():
     viz = MockPlacementVisualizer(board)
 
     # Create streaming server
-    host = 'localhost'
+    host = "localhost"
     port = 8765
     server = StreamServer(host, port, max_fps=10.0)
 
@@ -185,28 +191,28 @@ async def test_streaming_mock():
                 # Calculate direction toward center
                 dx = board_center_x - comp.x
                 dy = board_center_y - comp.y
-                dist = math.sqrt(dx*dx + dy*dy)
+                dist = math.sqrt(dx * dx + dy * dy)
 
                 if dist > 0.1:
                     # Move toward center with decreasing step size
                     step_size = 0.5 * (1.0 - iteration / num_iterations)
-                    comp.x += (dx/dist) * step_size + random.gauss(0, 0.1)
-                    comp.y += (dy/dist) * step_size + random.gauss(0, 0.1)
+                    comp.x += (dx / dist) * step_size + random.gauss(0, 0.1)
+                    comp.y += (dy / dist) * step_size + random.gauss(0, 0.1)
                     comp.rotation += random.gauss(0, 1.0)
 
             # Simulate module assignments
             modules = {}
             for comp in components:
-                if 'C' in comp.reference:
-                    modules[comp.reference] = 'power_supply'
-                elif 'R' in comp.reference:
-                    modules[comp.reference] = 'analog'
-                elif 'U' in comp.reference:
-                    modules[comp.reference] = 'microcontroller'
-                elif 'L' in comp.reference:
-                    modules[comp.reference] = 'power_supply'
+                if "C" in comp.reference:
+                    modules[comp.reference] = "power_supply"
+                elif "R" in comp.reference:
+                    modules[comp.reference] = "analog"
+                elif "U" in comp.reference:
+                    modules[comp.reference] = "microcontroller"
+                elif "L" in comp.reference:
+                    modules[comp.reference] = "power_supply"
                 else:
-                    modules[comp.reference] = 'digital'
+                    modules[comp.reference] = "digital"
 
             # Simulate force vectors (every 5 iterations)
             forces = {}
@@ -214,11 +220,9 @@ async def test_streaming_mock():
                 for comp in components:
                     dx = board_center_x - comp.x
                     dy = board_center_y - comp.y
-                    magnitude = math.sqrt(dx*dx + dy*dy)
+                    magnitude = math.sqrt(dx * dx + dy * dy)
                     if magnitude > 0.1:
-                        forces[comp.reference] = [
-                            (dx/10, dy/10, "attraction")
-                        ]
+                        forces[comp.reference] = [(dx / 10, dy / 10, "attraction")]
 
             # Simulate energy and movement decay
             energy = 1000.0 * (1.0 - iteration / num_iterations)
@@ -263,7 +267,9 @@ async def test_streaming_mock():
 
             # Log progress
             if iteration % 10 == 0:
-                logger.info(f"Iteration {iteration}/{num_iterations} - Energy: {energy:.1f}, Clients: {len(server.clients)}")
+                logger.info(
+                    f"Iteration {iteration}/{num_iterations} - Energy: {energy:.1f}, Clients: {len(server.clients)}"
+                )
 
             # Check for user interaction
             if server.is_paused():
@@ -276,7 +282,9 @@ async def test_streaming_mock():
 
             if server.is_stop_requested():
                 logger.warning("⏹ Optimization STOPPED by user")
-                await server.broadcast_status("warning", f"Optimization stopped at iteration {iteration}")
+                await server.broadcast_status(
+                    "warning", f"Optimization stopped at iteration {iteration}"
+                )
                 break
 
             # Small delay to simulate computation
@@ -284,7 +292,9 @@ async def test_streaming_mock():
 
         # Optimization complete
         logger.info("✓ Optimization complete!")
-        await server.broadcast_status("complete", f"Optimization finished after {iteration+1} iterations")
+        await server.broadcast_status(
+            "complete", f"Optimization finished after {iteration+1} iterations"
+        )
 
         # Show statistics
         stats = server.get_stats()

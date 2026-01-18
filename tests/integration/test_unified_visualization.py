@@ -17,13 +17,15 @@ KICAD_PYTHON = "/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framewo
 
 def main():
     from atoplace.board.abstraction import Board
-    from atoplace.placement.force_directed import ForceDirectedRefiner
-    from atoplace.placement.visualizer import PlacementVisualizer
-    from atoplace.placement.module_detector import ModuleDetector
-    from atoplace.routing.visualizer import RouteVisualizer, RouteSegment, Via, create_visualizer_from_board
-    from atoplace.routing.manager import RoutingManager, RoutingManagerConfig
     from atoplace.dfm.profiles import get_profile
-    from atoplace.visualization import UnifiedVisualizer, create_unified_visualizer
+    from atoplace.placement.force_directed import ForceDirectedRefiner
+    from atoplace.placement.module_detector import ModuleDetector
+    from atoplace.placement.visualizer import PlacementVisualizer
+    from atoplace.routing.manager import RoutingManager, RoutingManagerConfig
+    from atoplace.routing.visualizer import (
+        create_visualizer_from_board,
+    )
+    from atoplace.visualization import create_unified_visualizer
 
     # Find a test board
     board_path = Path("examples/dogtracker/layouts/default/default.kicad_pcb")
@@ -91,12 +93,13 @@ def main():
 
     # Create refiner with visualizer and modules attached - frames captured automatically
     from atoplace.placement.force_directed import RefinementConfig
+
     config = RefinementConfig(max_iterations=50)  # Limit iterations for quick test
     refiner = ForceDirectedRefiner(
         board,
         config=config,
         visualizer=placement_viz,
-        modules=module_map  # Pass module assignments for visualization
+        modules=module_map,  # Pass module assignments for visualization
     )
 
     # Run refinement (visualizer captures frames automatically)
@@ -108,7 +111,7 @@ def main():
 
     # Run legalization phase
     print("\n=== Running Legalization Phase ===")
-    from atoplace.placement.legalizer import PlacementLegalizer, LegalizerConfig
+    from atoplace.placement.legalizer import LegalizerConfig, PlacementLegalizer
 
     legalize_config = LegalizerConfig(
         primary_grid=0.5,
@@ -189,12 +192,11 @@ def main():
 
     # Export unified HTML
     output_path = unified_viz.export_html(
-        filename="unified_test.html",
-        output_dir="placement_debug"
+        filename="unified_test.html", output_dir="placement_debug"
     )
 
     if output_path:
-        print(f"\n=== SUCCESS ===")
+        print("\n=== SUCCESS ===")
         print(f"Unified visualization exported to: {output_path}")
         print(f"Open in browser: file://{output_path.absolute()}")
     else:

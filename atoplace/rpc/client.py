@@ -5,14 +5,13 @@ Connects to the KiCad worker process.
 """
 
 import subprocess
-import json
-import uuid
 import threading
+import uuid
 from pathlib import Path
-from typing import Any, Dict
-import os
+from typing import Any
 
 from .protocol import RpcRequest, RpcResponse
+
 
 class RpcClient:
     def __init__(self, kicad_python_path: str = "python3"):
@@ -23,7 +22,7 @@ class RpcClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1  # Line buffered
+            bufsize=1,  # Line buffered
         )
         # Thread lock to prevent concurrent calls from interleaving
         self._lock = threading.Lock()

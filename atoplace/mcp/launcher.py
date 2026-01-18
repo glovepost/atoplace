@@ -19,19 +19,20 @@ Backend Selection:
 - Default: KIPY with automatic fallback
 """
 
-import os
-import sys
-import subprocess
-import signal
-import time
 import atexit
 import logging
+import os
+import signal
+import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
 # Socket path - consistent location
 SOCKET_PATH = "/tmp/atoplace-bridge.sock"
+
 
 # Configure logging to file (keeps STDIO clean for MCP protocol)
 def _get_default_log_path() -> str:
@@ -51,6 +52,7 @@ def _get_default_log_path() -> str:
         except Exception:
             username = "unknown"
         return f"/tmp/atoplace-launcher-{username}.log"
+
 
 # Configure logging to file (keeps STDIO clean for MCP protocol)
 LOG_FILE = os.environ.get("ATOPLACE_LOG", _get_default_log_path())
@@ -140,19 +142,24 @@ class MCPLauncher:
 
             # Find all bridge processes
             orphaned = []
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
                 try:
-                    cmdline = proc.info.get('cmdline', [])
-                    if cmdline and 'atoplace.mcp.bridge' in ' '.join(cmdline):
+                    cmdline = proc.info.get("cmdline", [])
+                    if cmdline and "atoplace.mcp.bridge" in " ".join(cmdline):
                         orphaned.append(proc)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 
             if orphaned:
-                logger.warning("Found %d orphaned bridge process(es), cleaning up...", len(orphaned))
+                logger.warning(
+                    "Found %d orphaned bridge process(es), cleaning up...",
+                    len(orphaned),
+                )
                 for proc in orphaned:
                     try:
-                        logger.debug("Killing orphaned bridge process (PID: %d)", proc.pid)
+                        logger.debug(
+                            "Killing orphaned bridge process (PID: %d)", proc.pid
+                        )
                         proc.kill()
                         proc.wait(timeout=2)
                     except (psutil.NoSuchProcess, psutil.TimeoutExpired):
@@ -166,12 +173,13 @@ class MCPLauncher:
             logger.debug("psutil not available, using fallback cleanup method")
             try:
                 import platform
-                if platform.system() in ('Darwin', 'Linux'):
+
+                if platform.system() in ("Darwin", "Linux"):
                     # Use pkill on Unix-like systems
                     result = subprocess.run(
-                        ['pkill', '-f', 'atoplace.mcp.bridge'],
+                        ["pkill", "-f", "atoplace.mcp.bridge"],
                         capture_output=True,
-                        timeout=5
+                        timeout=5,
                     )
                     if result.returncode == 0:
                         logger.info("Cleaned up orphaned bridge processes (via pkill)")

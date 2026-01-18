@@ -13,28 +13,33 @@ Detection uses heuristics based on:
 4. Explicit annotations in component properties
 """
 
-import re
 import logging
+import re
 from dataclasses import dataclass, field
-from typing import List, Dict, Set, Optional, Tuple
 from enum import Enum
+from typing import TYPE_CHECKING, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from atoplace.board.abstraction import Board, Component
 
 logger = logging.getLogger(__name__)
 
 
 class SwapGroupType(Enum):
     """Types of pin swap groups."""
-    FPGA_BANK = "fpga_bank"       # FPGA I/O bank
-    MCU_GPIO = "mcu_gpio"         # MCU GPIO port
-    MEMORY_DATA = "memory_data"   # Memory data bus
-    MEMORY_ADDR = "memory_addr"   # Memory address bus
-    CONNECTOR = "connector"       # Generic connector pins
-    MANUAL = "manual"             # Manually specified group
+
+    FPGA_BANK = "fpga_bank"  # FPGA I/O bank
+    MCU_GPIO = "mcu_gpio"  # MCU GPIO port
+    MEMORY_DATA = "memory_data"  # Memory data bus
+    MEMORY_ADDR = "memory_addr"  # Memory address bus
+    CONNECTOR = "connector"  # Generic connector pins
+    MANUAL = "manual"  # Manually specified group
 
 
 @dataclass
 class SwappablePin:
     """A pin that can potentially be swapped."""
+
     pad_number: str
     net_name: Optional[str]
     x: float  # Absolute pad position
@@ -50,6 +55,7 @@ class SwapGroup:
     All pins in a group are interchangeable from a functionality standpoint.
     Swapping pins within a group only affects routing complexity, not circuit behavior.
     """
+
     name: str
     group_type: SwapGroupType
     component_ref: str
@@ -57,7 +63,7 @@ class SwapGroup:
 
     # Constraints on the group
     preserve_differential: bool = True  # Don't break diff pairs
-    preserve_bus_order: bool = False    # Whether relative order matters
+    preserve_bus_order: bool = False  # Whether relative order matters
 
     # Metadata
     confidence: float = 1.0  # Detection confidence (0-1)
@@ -87,45 +93,45 @@ class SwapGroupDetector:
     # Patterns for MCU GPIO detection
     GPIO_PATTERNS = [
         # STM32 style: PA0, PA1, PB0, etc.
-        (r'^P([A-K])(\d+)$', 'stm32'),
+        (r"^P([A-K])(\d+)$", "stm32"),
         # Generic GPIO: GPIO0, GPIO_0, GPIO[0], etc.
-        (r'^GPIO[_\[]?(\d+)\]?$', 'generic'),
+        (r"^GPIO[_\[]?(\d+)\]?$", "generic"),
         # Arduino style: D0, D1, A0, A1
-        (r'^([DA])(\d+)$', 'arduino'),
+        (r"^([DA])(\d+)$", "arduino"),
         # Raspberry Pi: GPIO_XX
-        (r'^GPIO_?(\d{1,2})$', 'rpi'),
+        (r"^GPIO_?(\d{1,2})$", "rpi"),
         # ESP32: IOxx
-        (r'^IO(\d+)$', 'esp32'),
+        (r"^IO(\d+)$", "esp32"),
     ]
 
     # Patterns for FPGA I/O detection
     FPGA_PATTERNS = [
         # Xilinx: IOB_XX_YY, IOL_XX, IOR_XX
-        (r'^IO[BLRT]_(\d+)(?:_.*)?$', 'xilinx'),
+        (r"^IO[BLRT]_(\d+)(?:_.*)?$", "xilinx"),
         # Intel/Altera: PIN_XX, IOx[y]
-        (r'^PIN_([A-Z]+\d+)$', 'intel'),
+        (r"^PIN_([A-Z]+\d+)$", "intel"),
         # Lattice: PIOX
-        (r'^PIO([A-Z]?\d+)$', 'lattice'),
+        (r"^PIO([A-Z]?\d+)$", "lattice"),
         # Generic bank: BANK_X_IOY
-        (r'^BANK_?(\d+)_IO(\d+)$', 'generic_bank'),
+        (r"^BANK_?(\d+)_IO(\d+)$", "generic_bank"),
     ]
 
     # Memory interface patterns
     MEMORY_PATTERNS = [
         # Data bus: D0-D31, DQ0-DQ63
-        (r'^D(?:Q)?(\d+)$', 'data'),
+        (r"^D(?:Q)?(\d+)$", "data"),
         # Address bus: A0-A31, ADDR0-ADDR31
-        (r'^A(?:DDR)?(\d+)$', 'address'),
+        (r"^A(?:DDR)?(\d+)$", "address"),
         # DDR specific: DQS, DM
-        (r'^DQ(?:S|M)(\d+)(?:[PN])?$', 'ddr_strobe'),
+        (r"^DQ(?:S|M)(\d+)(?:[PN])?$", "ddr_strobe"),
     ]
 
     # Connector patterns
     CONNECTOR_PATTERNS = [
         # Numbered pins: 1, 2, 3 or P1, P2
-        (r'^P?(\d+)$', 'numbered'),
+        (r"^P?(\d+)$", "numbered"),
         # Signal naming: SIG_XX
-        (r'^SIG(?:NAL)?_?(\d+)$', 'signal'),
+        (r"^SIG(?:NAL)?_?(\d+)$", "signal"),
     ]
 
     def __init__(self, board: "Board"):
@@ -184,18 +190,22 @@ class SwapGroupDetector:
                 self._detected_groups[ref] = groups
 
         total_groups = sum(len(g) for g in self._detected_groups.values())
-        logger.info(f"Detected {total_groups} total swap groups across {len(self._detected_groups)} components")
+        logger.info(
+            f"Detected {total_groups} total swap groups across {len(self._detected_groups)} components"
+        )
 
         return self._detected_groups
 
     def _is_fpga_mcu(self, comp: "Component") -> bool:
         """Check if component is an FPGA or MCU."""
         # Check reference prefix
-        if comp.reference.startswith(('U', 'IC')):
+        if comp.reference.startswith(("U", "IC")):
             # Check footprint for BGA/QFP patterns typical of FPGAs/MCUs
             fp_lower = comp.footprint.lower()
-            if any(pattern in fp_lower for pattern in
-                   ['bga', 'qfp', 'lqfp', 'tqfp', 'qfn', 'lga']):
+            if any(
+                pattern in fp_lower
+                for pattern in ["bga", "qfp", "lqfp", "tqfp", "qfn", "lga"]
+            ):
                 return True
 
             # Check pad count (FPGAs/MCUs typically have many pins)
@@ -206,30 +216,33 @@ class SwapGroupDetector:
 
     def _is_connector(self, comp: "Component") -> bool:
         """Check if component is a connector."""
-        ref_prefix = ''.join(c for c in comp.reference if c.isalpha())
-        if ref_prefix in ('J', 'P', 'CN', 'CON', 'X'):
+        ref_prefix = "".join(c for c in comp.reference if c.isalpha())
+        if ref_prefix in ("J", "P", "CN", "CON", "X"):
             return True
 
         fp_lower = comp.footprint.lower()
-        if any(pattern in fp_lower for pattern in
-               ['header', 'connector', 'pin', 'socket', 'usb', 'hdmi']):
+        if any(
+            pattern in fp_lower
+            for pattern in ["header", "connector", "pin", "socket", "usb", "hdmi"]
+        ):
             return True
 
         return False
 
     def _is_memory(self, comp: "Component") -> bool:
         """Check if component is a memory chip."""
-        ref_prefix = ''.join(c for c in comp.reference if c.isalpha())
-        if ref_prefix in ('U', 'IC'):
+        ref_prefix = "".join(c for c in comp.reference if c.isalpha())
+        if ref_prefix in ("U", "IC"):
             fp_lower = comp.footprint.lower()
-            if any(pattern in fp_lower for pattern in
-                   ['ddr', 'sdram', 'sram', 'flash', 'eeprom', 'bga']):
+            if any(
+                pattern in fp_lower
+                for pattern in ["ddr", "sdram", "sram", "flash", "eeprom", "bga"]
+            ):
                 return True
 
             # Check for memory-like net patterns
             memory_nets = sum(
-                1 for pad in comp.pads
-                if pad.net and re.match(r'^D(?:Q)?\d+$', pad.net)
+                1 for pad in comp.pads if pad.net and re.match(r"^D(?:Q)?\d+$", pad.net)
             )
             if memory_nets >= 8:
                 return True
@@ -249,7 +262,7 @@ class SwapGroupDetector:
                     group_type=SwapGroupType.MCU_GPIO,
                     component_ref=comp.reference,
                     pins=pins,
-                    confidence=0.9
+                    confidence=0.9,
                 )
                 groups.append(group)
 
@@ -263,7 +276,7 @@ class SwapGroupDetector:
                     component_ref=comp.reference,
                     pins=pins,
                     bank_id=bank_id,
-                    confidence=0.85
+                    confidence=0.85,
                 )
                 groups.append(group)
 
@@ -290,13 +303,15 @@ class SwapGroupDetector:
                 continue
 
             abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
-            signal_pins.append(SwappablePin(
-                pad_number=pad.number,
-                net_name=pad.net,
-                x=abs_x,
-                y=abs_y,
-                function="signal"
-            ))
+            signal_pins.append(
+                SwappablePin(
+                    pad_number=pad.number,
+                    net_name=pad.net,
+                    x=abs_x,
+                    y=abs_y,
+                    function="signal",
+                )
+            )
 
         if len(signal_pins) >= 2:
             group = SwapGroup(
@@ -305,7 +320,7 @@ class SwapGroupDetector:
                 component_ref=comp.reference,
                 pins=signal_pins,
                 preserve_differential=True,
-                confidence=0.7  # Lower confidence for connectors
+                confidence=0.7,  # Lower confidence for connectors
             )
             groups.append(group)
 
@@ -326,23 +341,27 @@ class SwapGroupDetector:
             abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
 
             # Check for data pin
-            if re.match(r'^D(?:Q)?\d+$', pad.net):
-                data_pins.append(SwappablePin(
-                    pad_number=pad.number,
-                    net_name=pad.net,
-                    x=abs_x,
-                    y=abs_y,
-                    function="data"
-                ))
+            if re.match(r"^D(?:Q)?\d+$", pad.net):
+                data_pins.append(
+                    SwappablePin(
+                        pad_number=pad.number,
+                        net_name=pad.net,
+                        x=abs_x,
+                        y=abs_y,
+                        function="data",
+                    )
+                )
             # Check for address pin
-            elif re.match(r'^A(?:DDR)?\d+$', pad.net):
-                addr_pins.append(SwappablePin(
-                    pad_number=pad.number,
-                    net_name=pad.net,
-                    x=abs_x,
-                    y=abs_y,
-                    function="address"
-                ))
+            elif re.match(r"^A(?:DDR)?\d+$", pad.net):
+                addr_pins.append(
+                    SwappablePin(
+                        pad_number=pad.number,
+                        net_name=pad.net,
+                        x=abs_x,
+                        y=abs_y,
+                        function="address",
+                    )
+                )
 
         if len(data_pins) >= 4:  # At least 4-bit bus
             group = SwapGroup(
@@ -351,7 +370,7 @@ class SwapGroupDetector:
                 component_ref=comp.reference,
                 pins=data_pins,
                 preserve_bus_order=False,  # Data bits can be swapped
-                confidence=0.95
+                confidence=0.95,
             )
             groups.append(group)
 
@@ -362,7 +381,7 @@ class SwapGroupDetector:
                 component_ref=comp.reference,
                 pins=addr_pins,
                 preserve_bus_order=False,  # With software update
-                confidence=0.95
+                confidence=0.95,
             )
             groups.append(group)
 
@@ -380,13 +399,13 @@ class SwapGroupDetector:
             for pattern, style in self.GPIO_PATTERNS:
                 match = re.match(pattern, pad.net, re.IGNORECASE)
                 if match:
-                    if style == 'stm32':
+                    if style == "stm32":
                         port = f"PORT_{match.group(1)}"
-                    elif style in ('generic', 'rpi', 'esp32'):
+                    elif style in ("generic", "rpi", "esp32"):
                         # Group in blocks of 8 or 16
                         pin_num = int(match.group(1))
                         port = f"GPIO_{(pin_num // 8) * 8}-{(pin_num // 8) * 8 + 7}"
-                    elif style == 'arduino':
+                    elif style == "arduino":
                         port = f"PORT_{match.group(1)}"
                     else:
                         port = "GPIO"
@@ -395,13 +414,15 @@ class SwapGroupDetector:
                         port_groups[port] = []
 
                     abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
-                    port_groups[port].append(SwappablePin(
-                        pad_number=pad.number,
-                        net_name=pad.net,
-                        x=abs_x,
-                        y=abs_y,
-                        function="gpio"
-                    ))
+                    port_groups[port].append(
+                        SwappablePin(
+                            pad_number=pad.number,
+                            net_name=pad.net,
+                            x=abs_x,
+                            y=abs_y,
+                            function="gpio",
+                        )
+                    )
                     break
 
         return port_groups
@@ -418,13 +439,13 @@ class SwapGroupDetector:
             for pattern, style in self.FPGA_PATTERNS:
                 match = re.match(pattern, pad.net, re.IGNORECASE)
                 if match:
-                    if style == 'generic_bank':
+                    if style == "generic_bank":
                         bank_id = match.group(1)
                     else:
                         # Extract bank from pin position or use generic grouping
                         # For now, group by first digit
                         try:
-                            num = int(re.search(r'\d+', match.group(1)).group())
+                            num = int(re.search(r"\d+", match.group(1)).group())
                             bank_id = str(num // 16)  # Group in banks of 16
                         except (AttributeError, ValueError):
                             bank_id = "0"
@@ -433,14 +454,16 @@ class SwapGroupDetector:
                         bank_groups[bank_id] = []
 
                     abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
-                    bank_groups[bank_id].append(SwappablePin(
-                        pad_number=pad.number,
-                        net_name=pad.net,
-                        x=abs_x,
-                        y=abs_y,
-                        bank_id=bank_id,
-                        function="io"
-                    ))
+                    bank_groups[bank_id].append(
+                        SwappablePin(
+                            pad_number=pad.number,
+                            net_name=pad.net,
+                            x=abs_x,
+                            y=abs_y,
+                            bank_id=bank_id,
+                            function="io",
+                        )
+                    )
                     break
 
         return bank_groups
@@ -460,18 +483,22 @@ class SwapGroupDetector:
 
             # Skip obvious non-swappable pins
             net_upper = pad.net.upper()
-            if any(skip in net_upper for skip in
-                   ['VCC', 'VDD', 'GND', 'VSS', 'CLK', 'RESET', 'BOOT', 'JTAG']):
+            if any(
+                skip in net_upper
+                for skip in ["VCC", "VDD", "GND", "VSS", "CLK", "RESET", "BOOT", "JTAG"]
+            ):
                 continue
 
             abs_x, abs_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
-            io_pins.append(SwappablePin(
-                pad_number=pad.number,
-                net_name=pad.net,
-                x=abs_x,
-                y=abs_y,
-                function="io"
-            ))
+            io_pins.append(
+                SwappablePin(
+                    pad_number=pad.number,
+                    net_name=pad.net,
+                    x=abs_x,
+                    y=abs_y,
+                    function="io",
+                )
+            )
 
         if len(io_pins) >= 4:
             return SwapGroup(
@@ -479,7 +506,7 @@ class SwapGroupDetector:
                 group_type=SwapGroupType.MCU_GPIO,
                 component_ref=comp.reference,
                 pins=io_pins,
-                confidence=0.5  # Lower confidence for generic detection
+                confidence=0.5,  # Lower confidence for generic detection
             )
 
         return None

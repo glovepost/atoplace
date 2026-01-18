@@ -6,13 +6,14 @@ discovery, topology, context generation, and validation.
 """
 
 import json
-import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+
+import pytest
+
+from atoplace.api.session import Session
 
 # Import server components
 from atoplace.mcp import server
-from atoplace.api.session import Session
 
 
 class TestResponseHelpers:
@@ -238,7 +239,7 @@ class TestContextTools:
         assert "center" in viewport
         assert "size" in viewport
         assert len(viewport["center"]) == 2  # (x, y) tuple
-        assert len(viewport["size"]) == 2   # (width, height) tuple
+        assert len(viewport["size"]) == 2  # (width, height) tuple
 
         # Verify viewport encompasses both components
         center_x, center_y = viewport["center"]

@@ -11,15 +11,16 @@ This adapter works with atopile's output files rather than embedding
 into the compiler, providing version-resilient integration.
 """
 
+import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
-import re
-import logging
+from typing import Any, Dict, List, Optional, Tuple
 
 # Use yaml if available, fall back to basic parsing
 try:
     import yaml
+
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
@@ -27,11 +28,11 @@ except ImportError:
 from .abstraction import Board, Component
 from .lock_file import (
     AtoplaceLock,
+    apply_lock_to_board,
+    create_lock_from_board,
     get_lock_file_path,
     parse_lock_file,
     write_lock_file,
-    apply_lock_to_board,
-    create_lock_from_board,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AtopileProject:
     """Represents an atopile project configuration."""
+
     root: Path
     ato_version: Optional[str] = None
     builds: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -49,6 +51,7 @@ class AtopileProject:
 @dataclass
 class ComponentMetadata:
     """Component metadata extracted from ato-lock.yaml."""
+
     reference: str
     mpn: Optional[str] = None
     value: Optional[str] = None
@@ -60,10 +63,11 @@ class ComponentMetadata:
 @dataclass
 class ModuleHierarchy:
     """Module hierarchy extracted from .ato files."""
+
     name: str
     module_type: Optional[str] = None  # e.g., "power_supply", "sensor"
     components: List[str] = field(default_factory=list)
-    submodules: List['ModuleHierarchy'] = field(default_factory=list)
+    submodules: List["ModuleHierarchy"] = field(default_factory=list)
     parent: Optional[str] = None
 
 
@@ -97,8 +101,7 @@ class AtopileProjectLoader:
         # Validate project
         if not self.is_atopile_project(self.root):
             raise ValueError(
-                f"Not an atopile project: {self.root}\n"
-                f"Missing ato.yaml file"
+                f"Not an atopile project: {self.root}\n" f"Missing ato.yaml file"
             )
 
     @staticmethod
@@ -159,7 +162,10 @@ class AtopileProjectLoader:
         This prevents mis-association when different modules reuse the same instance
         name (e.g., multiple 'c_bulk' instances).
         """
-        if not hasattr(self, '_instance_to_ref_map') or self._instance_to_ref_map is None:
+        if (
+            not hasattr(self, "_instance_to_ref_map")
+            or self._instance_to_ref_map is None
+        ):
             self._instance_to_ref_map = {}
             # Track (short_name -> [kicad_ref, ...]) to detect collisions
             short_name_candidates: Dict[str, List[str]] = {}
@@ -167,31 +173,39 @@ class AtopileProjectLoader:
             # First pass: Collect all mappings and identify short name collisions
             # Format 1: Root-level entries with 'designator' field
             for key, data in self.lock_data.items():
-                if key == 'components':
+                if key == "components":
                     continue  # Handle separately below
-                if isinstance(data, dict) and 'designator' in data:
+                if isinstance(data, dict) and "designator" in data:
                     instance_path = key
-                    kicad_ref = data['designator']
+                    kicad_ref = data["designator"]
                     self._instance_to_ref_map[instance_path] = kicad_ref
                     # Track short name candidate
-                    short_name = instance_path.split('.')[-1] if '.' in instance_path else instance_path
+                    short_name = (
+                        instance_path.split(".")[-1]
+                        if "." in instance_path
+                        else instance_path
+                    )
                     if short_name not in short_name_candidates:
                         short_name_candidates[short_name] = []
                     short_name_candidates[short_name].append(kicad_ref)
 
             # Format 2 & 3: Entries under 'components' key
-            components_data = self.lock_data.get('components', {})
+            components_data = self.lock_data.get("components", {})
             if isinstance(components_data, dict):
                 for kicad_ref, comp_data in components_data.items():
                     if not isinstance(comp_data, dict):
                         continue
 
                     # If there's an 'address' field, use it as the instance path
-                    if 'address' in comp_data:
-                        instance_path = comp_data['address']
+                    if "address" in comp_data:
+                        instance_path = comp_data["address"]
                         self._instance_to_ref_map[instance_path] = kicad_ref
                         # Track short name candidate
-                        short_name = instance_path.split('.')[-1] if '.' in instance_path else instance_path
+                        short_name = (
+                            instance_path.split(".")[-1]
+                            if "." in instance_path
+                            else instance_path
+                        )
                         if short_name not in short_name_candidates:
                             short_name_candidates[short_name] = []
                         short_name_candidates[short_name].append(kicad_ref)
@@ -214,7 +228,8 @@ class AtopileProjectLoader:
                     # Log collision for debugging
                     logger.debug(
                         "Short name '%s' is ambiguous (maps to %s) - not adding alias",
-                        short_name, refs
+                        short_name,
+                        refs,
                     )
 
         return self._instance_to_ref_map
@@ -265,9 +280,9 @@ class AtopileProjectLoader:
         """
         result = {}
         # Stack of (indent, container, type) where container is dict or list
-        stack = [(0, result, 'dict')]
+        stack = [(0, result, "dict")]
 
-        lines = content.split('\n')
+        lines = content.split("\n")
         i = 0
 
         while i < len(lines):
@@ -275,7 +290,7 @@ class AtopileProjectLoader:
             stripped = line.strip()
 
             # Skip empty lines and comments
-            if not stripped or stripped.startswith('#'):
+            if not stripped or stripped.startswith("#"):
                 i += 1
                 continue
 
@@ -290,18 +305,18 @@ class AtopileProjectLoader:
             container_type = stack[-1][2]
 
             # Handle list items (lines starting with -)
-            if stripped.startswith('- '):
+            if stripped.startswith("- "):
                 list_value = stripped[2:].strip()
 
                 # If current container is not a list, this shouldn't happen in valid YAML
                 # but we'll handle it gracefully
-                if container_type != 'list':
+                if container_type != "list":
                     i += 1
                     continue
 
                 # Check if list item has nested content (key: value)
-                if ':' in list_value:
-                    key, _, value = list_value.partition(':')
+                if ":" in list_value:
+                    key, _, value = list_value.partition(":")
                     key = key.strip()
                     value = value.strip()
 
@@ -313,29 +328,31 @@ class AtopileProjectLoader:
                         # Nested dict item, need to parse following lines
                         item_dict = {}
                         current_container.append(item_dict)
-                        stack.append((indent, item_dict, 'dict'))
+                        stack.append((indent, item_dict, "dict"))
                 else:
                     # Simple list item
                     current_container.append(self._clean_yaml_value(list_value))
 
             # Handle key-value pairs
-            elif ':' in stripped:
-                key, _, value = stripped.partition(':')
+            elif ":" in stripped:
+                key, _, value = stripped.partition(":")
                 key = key.strip()
                 value = value.strip()
 
                 # Only process if we're in a dict context
-                if container_type != 'dict':
+                if container_type != "dict":
                     i += 1
                     continue
 
                 if value:
                     # Check for inline list syntax [item1, item2, ...]
-                    if value.startswith('[') and value.endswith(']'):
+                    if value.startswith("[") and value.endswith("]"):
                         list_content = value[1:-1].strip()
                         if list_content:
-                            items = [self._clean_yaml_value(item.strip())
-                                    for item in list_content.split(',')]
+                            items = [
+                                self._clean_yaml_value(item.strip())
+                                for item in list_content.split(",")
+                            ]
                             current_container[key] = items
                         else:
                             current_container[key] = []
@@ -355,20 +372,20 @@ class AtopileProjectLoader:
                         next_indent = len(next_line) - len(next_line.lstrip())
 
                         # If next line is indented more and starts with -, it's a list
-                        if next_indent > indent and next_stripped.startswith('- '):
+                        if next_indent > indent and next_stripped.startswith("- "):
                             new_list = []
                             current_container[key] = new_list
-                            stack.append((indent, new_list, 'list'))
+                            stack.append((indent, new_list, "list"))
                         else:
                             # It's a nested dict
                             new_dict = {}
                             current_container[key] = new_dict
-                            stack.append((indent, new_dict, 'dict'))
+                            stack.append((indent, new_dict, "dict"))
                     else:
                         # No next line, create empty dict
                         new_dict = {}
                         current_container[key] = new_dict
-                        stack.append((indent, new_dict, 'dict'))
+                        stack.append((indent, new_dict, "dict"))
 
             i += 1
 
@@ -379,8 +396,9 @@ class AtopileProjectLoader:
         if not value:
             return value
         # Remove quotes if present
-        if (value.startswith('"') and value.endswith('"')) or \
-           (value.startswith("'") and value.endswith("'")):
+        if (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
             return value[1:-1]
         return value
 
@@ -400,9 +418,7 @@ class AtopileProjectLoader:
         """
         if build_name not in self.project.builds:
             available = ", ".join(self.project.builds.keys()) or "(none)"
-            raise ValueError(
-                f"Build '{build_name}' not found. Available: {available}"
-            )
+            raise ValueError(f"Build '{build_name}' not found. Available: {available}")
 
         build = self.project.builds[build_name]
         return build.get("entry")
@@ -425,7 +441,7 @@ class AtopileProjectLoader:
 
         # Parse entry: "elec/src/project.ato:MainModule"
         # -> "elec/layout/<build>/project.kicad_pcb"
-        file_part, _, module_name = entry.partition(':')
+        file_part, _, module_name = entry.partition(":")
 
         # Extract base name from the .ato file path
         ato_path = Path(file_part)
@@ -433,12 +449,16 @@ class AtopileProjectLoader:
 
         # Construct board path
         # Standard atopile layout: elec/layout/<build_name>/<base_name>.kicad_pcb
-        board_path = self.root / "elec" / "layout" / build_name / f"{base_name}.kicad_pcb"
+        board_path = (
+            self.root / "elec" / "layout" / build_name / f"{base_name}.kicad_pcb"
+        )
 
         # Also check for legacy layout structure
         if not board_path.exists():
             # Try: elec/layout/default/<base_name>.kicad_pcb
-            alt_path = self.root / "elec" / "layout" / "default" / f"{base_name}.kicad_pcb"
+            alt_path = (
+                self.root / "elec" / "layout" / "default" / f"{base_name}.kicad_pcb"
+            )
             if alt_path.exists():
                 return alt_path
 
@@ -450,7 +470,7 @@ class AtopileProjectLoader:
         if not entry:
             return None
 
-        file_part, _, _ = entry.partition(':')
+        file_part, _, _ = entry.partition(":")
         return self.root / file_part
 
     def load_board(
@@ -683,7 +703,10 @@ class AtopileProjectLoader:
                     # Also search for paths containing this instance name
                     if not kicad_ref:
                         for path, ref in lock_ref_map.items():
-                            if path.endswith('.' + instance_name) or path == instance_name:
+                            if (
+                                path.endswith("." + instance_name)
+                                or path == instance_name
+                            ):
                                 kicad_ref = ref
                                 break
 
@@ -706,7 +729,9 @@ class AtopileProjectLoader:
                         comp.properties["ato_parent_module"] = module.parent
                     mapped_count += 1
 
-        logger.debug(f"Mapped {mapped_count}/{total_count} components to atopile modules")
+        logger.debug(
+            f"Mapped {mapped_count}/{total_count} components to atopile modules"
+        )
 
     def _build_address_map(self, board: Board) -> Dict[str, str]:
         """
@@ -721,13 +746,13 @@ class AtopileProjectLoader:
         address_map = {}
 
         for ref, comp in board.components.items():
-            if 'atopile_address' in comp.properties:
-                address = comp.properties['atopile_address']
+            if "atopile_address" in comp.properties:
+                address = comp.properties["atopile_address"]
                 address_map[address] = ref
 
                 # Also map the leaf name for simpler lookups
-                if '.' in address:
-                    leaf_name = address.split('.')[-1]
+                if "." in address:
+                    leaf_name = address.split(".")[-1]
                     # Don't override if leaf name already mapped (could be ambiguous)
                     if leaf_name not in address_map:
                         address_map[leaf_name] = ref
@@ -772,30 +797,34 @@ class AtopileProjectLoader:
 
         # Look for decoupling capacitors
         for ref, comp in board.components.items():
-            if ref.startswith('C'):
+            if ref.startswith("C"):
                 value = comp.value.lower() if comp.value else ""
                 # Common decoupling values
-                if any(v in value for v in ['100n', '0.1u', '10u', '1u', '4.7u']):
+                if any(v in value for v in ["100n", "0.1u", "10u", "1u", "4.7u"]):
                     # Find nearest IC
                     nearest_ic = self._find_nearest_ic(board, comp)
                     if nearest_ic:
-                        constraints.append((
-                            "proximity",
-                            f"Keep {ref} close to {nearest_ic} (decoupling)",
-                            0.9
-                        ))
+                        constraints.append(
+                            (
+                                "proximity",
+                                f"Keep {ref} close to {nearest_ic} (decoupling)",
+                                0.9,
+                            )
+                        )
 
         # Look for crystals
         for ref, comp in board.components.items():
-            if ref.startswith('Y') or ref.startswith('X'):
+            if ref.startswith("Y") or ref.startswith("X"):
                 # Find MCU/oscillator
                 nearest_ic = self._find_nearest_ic(board, comp)
                 if nearest_ic:
-                    constraints.append((
-                        "proximity",
-                        f"Keep {ref} close to {nearest_ic} (crystal)",
-                        0.95
-                    ))
+                    constraints.append(
+                        (
+                            "proximity",
+                            f"Keep {ref} close to {nearest_ic} (crystal)",
+                            0.95,
+                        )
+                    )
 
         return constraints
 
@@ -814,7 +843,7 @@ class AtopileProjectLoader:
                 if ref == comp.reference:
                     continue
                 other = board.get_component(ref)
-                if other and ref.startswith('U'):
+                if other and ref.startswith("U"):
                     return ref
 
         return None
@@ -830,21 +859,31 @@ class AtopileModuleParser:
     """
 
     # Regex patterns for parsing .ato files
-    MODULE_PATTERN = re.compile(r'^(module|component)\s+(\w+):', re.MULTILINE)
-    COMPONENT_PATTERN = re.compile(r'(\w+)\s*=\s*new\s+(\w+)')
+    MODULE_PATTERN = re.compile(r"^(module|component)\s+(\w+):", re.MULTILINE)
+    COMPONENT_PATTERN = re.compile(r"(\w+)\s*=\s*new\s+(\w+)")
     IMPORT_PATTERN = re.compile(r'from\s+"([^"]+)"\s+import\s+(.+)')
-    SIMPLE_IMPORT_PATTERN = re.compile(r'^import\s+(.+)', re.MULTILINE)
+    SIMPLE_IMPORT_PATTERN = re.compile(r"^import\s+(.+)", re.MULTILINE)
 
     # Module type inference from names
     TYPE_KEYWORDS = {
-        'power': ['power', 'supply', 'regulator', 'dcdc', 'ldo', 'buck', 'boost'],
-        'sensor': ['sensor', 'accel', 'gyro', 'temp', 'humidity', 'pressure', 'lis3dh', 'qmi', 'hdc'],
-        'rf': ['rf', 'antenna', 'bluetooth', 'wifi', 'radio', 'lora', 'matching'],
-        'mcu': ['mcu', 'micro', 'processor', 'esp32', 'stm32', 'rp2040', 'rak'],
-        'connector': ['connector', 'usb', 'uart', 'i2c', 'spi', 'jtag', 'swd', 'debug'],
-        'led': ['led', 'indicator', 'status'],
-        'crystal': ['crystal', 'oscillator', 'xtal', 'clock'],
-        'memory': ['eeprom', 'flash', 'memory', 'storage'],
+        "power": ["power", "supply", "regulator", "dcdc", "ldo", "buck", "boost"],
+        "sensor": [
+            "sensor",
+            "accel",
+            "gyro",
+            "temp",
+            "humidity",
+            "pressure",
+            "lis3dh",
+            "qmi",
+            "hdc",
+        ],
+        "rf": ["rf", "antenna", "bluetooth", "wifi", "radio", "lora", "matching"],
+        "mcu": ["mcu", "micro", "processor", "esp32", "stm32", "rp2040", "rak"],
+        "connector": ["connector", "usb", "uart", "i2c", "spi", "jtag", "swd", "debug"],
+        "led": ["led", "indicator", "status"],
+        "crystal": ["crystal", "oscillator", "xtal", "clock"],
+        "memory": ["eeprom", "flash", "memory", "storage"],
     }
 
     def __init__(self):
@@ -868,7 +907,9 @@ class AtopileModuleParser:
 
         return self._parse_file_recursive(ato_path.resolve())
 
-    def _parse_file_recursive(self, ato_path: Path, depth: int = 0) -> Dict[str, ModuleHierarchy]:
+    def _parse_file_recursive(
+        self, ato_path: Path, depth: int = 0
+    ) -> Dict[str, ModuleHierarchy]:
         """Recursively parse an .ato file, following imports."""
         if not ato_path.exists():
             logger.debug(f"File not found: {ato_path}")
@@ -901,7 +942,9 @@ class AtopileModuleParser:
                         logger.debug(f"Imported module {name} from {import_path}")
 
         # Now parse this file's content
-        modules = self._parse_content_with_imports(content, ato_path.stem, ato_path.parent)
+        modules = self._parse_content_with_imports(
+            content, ato_path.stem, ato_path.parent
+        )
 
         # Cache the result
         self._parsed_files[ato_path] = modules
@@ -912,24 +955,26 @@ class AtopileModuleParser:
         """Extract import statements from content."""
         imports = []
 
-        for line in content.split('\n'):
+        for line in content.split("\n"):
             stripped = line.strip()
-            if stripped.startswith('#') or not stripped:
+            if stripped.startswith("#") or not stripped:
                 continue
 
             # Match: from "path/file.ato" import ModuleName, AnotherModule
             match = self.IMPORT_PATTERN.match(stripped)
             if match:
                 path, names = match.groups()
-                name_list = [n.strip() for n in names.split(',')]
+                name_list = [n.strip() for n in names.split(",")]
                 imports.append((path, name_list))
 
         return imports
 
-    def _resolve_import_path(self, current_file: Path, import_path: str) -> Optional[Path]:
+    def _resolve_import_path(
+        self, current_file: Path, import_path: str
+    ) -> Optional[Path]:
         """Resolve an import path relative to the current file."""
         # Handle relative paths
-        if import_path.startswith('./') or import_path.startswith('../'):
+        if import_path.startswith("./") or import_path.startswith("../"):
             return (current_file.parent / import_path).resolve()
 
         # Handle paths relative to project root
@@ -949,10 +994,14 @@ class AtopileModuleParser:
                 break
             search_dir = search_dir.parent
 
-        logger.debug(f"Could not resolve import path: {import_path} from {current_file}")
+        logger.debug(
+            f"Could not resolve import path: {import_path} from {current_file}"
+        )
         return None
 
-    def _parse_content_with_imports(self, content: str, root_name: str, base_dir: Path) -> Dict[str, ModuleHierarchy]:
+    def _parse_content_with_imports(
+        self, content: str, root_name: str, base_dir: Path
+    ) -> Dict[str, ModuleHierarchy]:
         """Parse .ato content string, resolving imported module types."""
         modules = {}
         current_module: Optional[ModuleHierarchy] = None
@@ -960,34 +1009,42 @@ class AtopileModuleParser:
         # Track instances and their types for later resolution
         instance_types: Dict[str, str] = {}  # instance_name -> type_name
 
-        lines = content.split('\n')
+        lines = content.split("\n")
 
         for line in lines:
             # Skip empty lines and comments
             stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
+            if not stripped or stripped.startswith("#"):
                 continue
 
             # Skip pragma and docstrings
-            if stripped.startswith('#pragma') or stripped.startswith('"""') or stripped.startswith("'''"):
+            if (
+                stripped.startswith("#pragma")
+                or stripped.startswith('"""')
+                or stripped.startswith("'''")
+            ):
                 continue
 
             indent = len(line) - len(line.lstrip())
 
             # Helper to build full qualified path from indent stack
-            def get_full_path(stack: List[Tuple[int, ModuleHierarchy]], name: str) -> str:
+            def get_full_path(
+                stack: List[Tuple[int, ModuleHierarchy]], name: str
+            ) -> str:
                 """Build full qualified path from parent chain."""
                 if not stack:
                     return name
                 parent_names = [m.name for _, m in stack]
-                return '.'.join(parent_names + [name])
+                return ".".join(parent_names + [name])
 
-            def get_parent_path(stack: List[Tuple[int, ModuleHierarchy]]) -> Optional[str]:
+            def get_parent_path(
+                stack: List[Tuple[int, ModuleHierarchy]],
+            ) -> Optional[str]:
                 """Get full path of the parent module."""
                 if not stack:
                     return None
                 parent_names = [m.name for _, m in stack]
-                return '.'.join(parent_names)
+                return ".".join(parent_names)
 
             # Check for module definition
             module_match = self.MODULE_PATTERN.match(stripped)
@@ -1027,12 +1084,17 @@ class AtopileModuleParser:
                         # This is a module instantiation - create a submodule entry
                         imported_module = self._imported_modules[comp_type]
                         # Get full parent path for this submodule
-                        parent_path = get_full_path(indent_stack, "")[:-1] if indent_stack else None  # strip trailing dot
+                        parent_path = (
+                            get_full_path(indent_stack, "")[:-1]
+                            if indent_stack
+                            else None
+                        )  # strip trailing dot
                         if not parent_path and current_module:
                             parent_path = current_module.name
                         submodule = ModuleHierarchy(
                             name=instance_name,  # Use instance name, not type name
-                            module_type=imported_module.module_type or self._infer_module_type(comp_type),
+                            module_type=imported_module.module_type
+                            or self._infer_module_type(comp_type),
                             parent=parent_path,
                             # Copy component list from imported module definition
                             components=list(imported_module.components),
@@ -1042,7 +1104,9 @@ class AtopileModuleParser:
                         full_instance_path = get_full_path(indent_stack, instance_name)
                         modules[full_instance_path] = submodule
                         instance_types[instance_name] = comp_type
-                        logger.debug(f"Found module instance: {full_instance_path} of type {comp_type} with {len(imported_module.components)} components")
+                        logger.debug(
+                            f"Found module instance: {full_instance_path} of type {comp_type} with {len(imported_module.components)} components"
+                        )
                     else:
                         # Regular component instantiation - store instance name
                         current_module.components.append(instance_name)
@@ -1050,11 +1114,13 @@ class AtopileModuleParser:
 
         return modules
 
-    def parse_content(self, content: str, root_name: str = "root") -> Dict[str, ModuleHierarchy]:
+    def parse_content(
+        self, content: str, root_name: str = "root"
+    ) -> Dict[str, ModuleHierarchy]:
         """Parse .ato content string (legacy method without import resolution)."""
         # Create a temporary parser instance for backward compatibility
         self._imported_modules = {}
-        return self._parse_content_with_imports(content, root_name, Path('.'))
+        return self._parse_content_with_imports(content, root_name, Path("."))
 
     def _infer_module_type(self, name: str) -> Optional[str]:
         """Infer module type from its name."""
@@ -1067,7 +1133,9 @@ class AtopileModuleParser:
         return None
 
 
-def detect_board_source(path: Path, build_name: Optional[str] = None) -> Tuple[str, Path]:
+def detect_board_source(
+    path: Path, build_name: Optional[str] = None
+) -> Tuple[str, Path]:
     """
     Detect whether a path is a KiCad board or atopile project.
 

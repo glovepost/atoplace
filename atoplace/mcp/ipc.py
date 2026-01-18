@@ -6,13 +6,13 @@ Designed to work with Python 3.9 (KiCad) and Python 3.10+ (MCP).
 """
 
 import json
-import socket
-import os
-import uuid
-import time
 import logging
-from dataclasses import dataclass, asdict
-from typing import Optional, Dict, Any, List, Callable
+import os
+import socket
+import time
+import uuid
+from dataclasses import asdict, dataclass
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +171,9 @@ class IPCClient:
                 if not self.connect():
                     break
 
-        raise IPCError("connection_failed", f"Bridge communication failed: {last_error}")
+        raise IPCError(
+            "connection_failed", f"Bridge communication failed: {last_error}"
+        )
 
     def _do_call(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a single RPC call."""
@@ -329,13 +331,18 @@ class IPCServer:
         try:
             request = IPCRequest.from_json(data)
         except json.JSONDecodeError as e:
-            return IPCResponse(id="unknown", error={"code": "parse_error", "message": str(e)})
+            return IPCResponse(
+                id="unknown", error={"code": "parse_error", "message": str(e)}
+            )
 
         handler = self._handlers.get(request.method)
         if not handler:
             return IPCResponse(
                 id=request.id,
-                error={"code": "method_not_found", "message": f"Unknown method: {request.method}"},
+                error={
+                    "code": "method_not_found",
+                    "message": f"Unknown method: {request.method}",
+                },
             )
 
         try:
@@ -343,7 +350,9 @@ class IPCServer:
             return IPCResponse(id=request.id, result=result)
         except Exception as e:
             logger.exception("Handler error for %s", request.method)
-            return IPCResponse(id=request.id, error={"code": "handler_error", "message": str(e)})
+            return IPCResponse(
+                id=request.id, error={"code": "handler_error", "message": str(e)}
+            )
 
     def __enter__(self):
         self.start()
@@ -364,7 +373,11 @@ def _to_serializable(value):
         return None
     # Handle enums by getting their value or name
     if hasattr(value, "value"):
-        return value.value if isinstance(value.value, (str, int, float, bool)) else str(value.value)
+        return (
+            value.value
+            if isinstance(value.value, (str, int, float, bool))
+            else str(value.value)
+        )
     if hasattr(value, "name"):
         return value.name
     return value
@@ -497,6 +510,7 @@ def deserialize_board(data: Dict[str, Any]):
     # Deserialize outline
     if data.get("outline"):
         from ..board.abstraction import BoardOutline
+
         o = data["outline"]
         board.outline = BoardOutline(
             width=o["width"],
@@ -511,7 +525,8 @@ def deserialize_board(data: Dict[str, Any]):
 
     # Deserialize components
     for ref, c in data.get("components", {}).items():
-        from ..board.abstraction import Component, Pad, RefDesText, Layer
+        from ..board.abstraction import Layer, RefDesText
+
         comp = Component(
             reference=c["reference"],
             footprint=c.get("footprint", ""),

@@ -1,13 +1,14 @@
 """Tests for placement constraints."""
 
 import pytest
+
+from atoplace.board.abstraction import Board, BoardOutline, Component
 from atoplace.placement.constraints import (
-    ProximityConstraint,
+    ConstraintSolver,
     EdgeConstraint,
     GroupingConstraint,
-    ConstraintSolver,
+    ProximityConstraint,
 )
-from atoplace.board.abstraction import Board, Component, BoardOutline
 
 
 @pytest.fixture
@@ -19,30 +20,46 @@ def simple_board():
     )
 
     # Add some components
-    board.add_component(Component(
-        reference="U1",
-        footprint="Package_QFP:LQFP-48",
-        x=50, y=50,
-        width=10, height=10,
-    ))
-    board.add_component(Component(
-        reference="C1",
-        footprint="Capacitor_SMD:C_0402",
-        x=45, y=55,
-        width=1, height=0.5,
-    ))
-    board.add_component(Component(
-        reference="C2",
-        footprint="Capacitor_SMD:C_0402",
-        x=80, y=80,
-        width=1, height=0.5,
-    ))
-    board.add_component(Component(
-        reference="J1",
-        footprint="Connector_USB:USB_C",
-        x=50, y=10,
-        width=9, height=7,
-    ))
+    board.add_component(
+        Component(
+            reference="U1",
+            footprint="Package_QFP:LQFP-48",
+            x=50,
+            y=50,
+            width=10,
+            height=10,
+        )
+    )
+    board.add_component(
+        Component(
+            reference="C1",
+            footprint="Capacitor_SMD:C_0402",
+            x=45,
+            y=55,
+            width=1,
+            height=0.5,
+        )
+    )
+    board.add_component(
+        Component(
+            reference="C2",
+            footprint="Capacitor_SMD:C_0402",
+            x=80,
+            y=80,
+            width=1,
+            height=0.5,
+        )
+    )
+    board.add_component(
+        Component(
+            reference="J1",
+            footprint="Connector_USB:USB_C",
+            x=50,
+            y=10,
+            width=9,
+            height=7,
+        )
+    )
 
     return board
 
@@ -128,16 +145,20 @@ class TestConstraintSolver:
         """Solver should evaluate all constraints."""
         solver = ConstraintSolver(simple_board)
 
-        solver.add_constraint(ProximityConstraint(
-            target_ref="C1",
-            anchor_ref="U1",
-            max_distance=10.0,
-        ))
-        solver.add_constraint(EdgeConstraint(
-            component_ref="J1",
-            edge="top",
-            offset=5.0,
-        ))
+        solver.add_constraint(
+            ProximityConstraint(
+                target_ref="C1",
+                anchor_ref="U1",
+                max_distance=10.0,
+            )
+        )
+        solver.add_constraint(
+            EdgeConstraint(
+                component_ref="J1",
+                edge="top",
+                offset=5.0,
+            )
+        )
 
         results = solver.evaluate_all()
         assert len(results) == 2
@@ -147,11 +168,13 @@ class TestConstraintSolver:
         solver = ConstraintSolver(simple_board)
 
         # Add a satisfied constraint
-        solver.add_constraint(ProximityConstraint(
-            target_ref="C1",
-            anchor_ref="U1",
-            max_distance=20.0,
-        ))
+        solver.add_constraint(
+            ProximityConstraint(
+                target_ref="C1",
+                anchor_ref="U1",
+                max_distance=20.0,
+            )
+        )
 
         score = solver.get_constraint_score()
         assert score == 1.0  # All satisfied

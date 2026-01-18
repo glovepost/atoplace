@@ -5,39 +5,39 @@ Implements "Dual-Grid" A* routing for differential pairs.
 Routes the virtual centerline with anisotropic costs to maintain coupling.
 """
 
-import math
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Tuple, Optional, Dict, Set, Union
+from typing import List, Optional, Tuple
 
-from ..board.abstraction import Board
 from ..dfm.profiles import DFMProfile
-from .spatial_index import SpatialHashIndex, Obstacle
-from .visualizer import RouteVisualizer, RouteSegment, Via
 from .astar_router import RouteNode
+from .spatial_index import SpatialHashIndex
+from .visualizer import RouteSegment, RouteVisualizer, Via
 
 logger = logging.getLogger(__name__)
 
 
 class DiffPairPattern(Enum):
     """Pattern type for detected differential pairs."""
-    USB_STYLE = "usb_style"            # D+/D- or +/- style
-    PLUS_MINUS = "plus_minus"          # _P/_N suffix style
-    SUFFIX_P_N = "suffix_p_n"          # Direct P/N suffix (DATAP/DATAN)
-    POSITIVE_NEGATIVE = "pos_neg"      # _POS/_NEG suffix style
-    CUSTOM = "custom"                  # User-defined pair
+
+    USB_STYLE = "usb_style"  # D+/D- or +/- style
+    PLUS_MINUS = "plus_minus"  # _P/_N suffix style
+    SUFFIX_P_N = "suffix_p_n"  # Direct P/N suffix (DATAP/DATAN)
+    POSITIVE_NEGATIVE = "pos_neg"  # _POS/_NEG suffix style
+    CUSTOM = "custom"  # User-defined pair
 
 
 @dataclass
 class DiffPairSpec:
     """Specification for a differential pair."""
+
     net_p: str
     net_n: str
-    gap: float = 0.15        # Gap between traces
-    width: float = 0.2       # Trace width
+    gap: float = 0.15  # Gap between traces
+    width: float = 0.2  # Trace width
     uncoupled_length_max: float = 5.0  # Max length allowed to be uncoupled
-    phase_tolerance: float = 0.5       # Max phase skew (length difference)
+    phase_tolerance: float = 0.5  # Max phase skew (length difference)
     pattern: Optional[DiffPairPattern] = None  # How the pair was detected
 
     @property
@@ -70,6 +70,7 @@ class DiffPairSpec:
 @dataclass
 class DiffPairGeometry:
     """Generated geometry for a diff pair segment."""
+
     centerline: List[RouteNode]
     segments_p: List[RouteSegment] = field(default_factory=list)
     segments_n: List[RouteSegment] = field(default_factory=list)
@@ -80,6 +81,7 @@ class DiffPairGeometry:
 @dataclass
 class DiffPairResult:
     """Result of routing a diff pair."""
+
     success: bool
     spec: DiffPairSpec
     geometry: Optional[DiffPairGeometry] = None  # Generated routing geometry
@@ -124,11 +126,11 @@ class DiffPairDetector:
 
         # Suffix patterns with their corresponding DiffPairPattern enum
         suffix_patterns = [
-            (('_P', '_N'), DiffPairPattern.PLUS_MINUS),
-            (('+', '-'), DiffPairPattern.USB_STYLE),
-            (('_DP', '_DN'), DiffPairPattern.PLUS_MINUS),
-            (('_POS', '_NEG'), DiffPairPattern.POSITIVE_NEGATIVE),
-            (('P', 'N'), DiffPairPattern.SUFFIX_P_N),  # Direct P/N suffix
+            (("_P", "_N"), DiffPairPattern.PLUS_MINUS),
+            (("+", "-"), DiffPairPattern.USB_STYLE),
+            (("_DP", "_DN"), DiffPairPattern.PLUS_MINUS),
+            (("_POS", "_NEG"), DiffPairPattern.POSITIVE_NEGATIVE),
+            (("P", "N"), DiffPairPattern.SUFFIX_P_N),  # Direct P/N suffix
         ]
 
         for net in nets:
@@ -139,7 +141,7 @@ class DiffPairDetector:
 
             for (p_suf, n_suf), pattern_type in suffix_patterns:
                 if net_upper.endswith(p_suf):
-                    base = net[:len(net)-len(p_suf)]
+                    base = net[: len(net) - len(p_suf)]
                     mate = base + n_suf
 
                     # Check if mate exists (case-insensitive search)
@@ -151,11 +153,11 @@ class DiffPairDetector:
 
                     if mate_actual:
                         # Found a pair
-                        pairs.append(DiffPairSpec(
-                            net_p=net,
-                            net_n=mate_actual,
-                            pattern=pattern_type
-                        ))
+                        pairs.append(
+                            DiffPairSpec(
+                                net_p=net, net_n=mate_actual, pattern=pattern_type
+                            )
+                        )
                         processed.add(net)
                         processed.add(mate_actual)
                         break
@@ -173,21 +175,23 @@ class DiffPairRouter:
         self,
         obstacle_index: SpatialHashIndex,
         dfm_profile: DFMProfile,
-        visualizer: Optional[RouteVisualizer] = None
+        visualizer: Optional[RouteVisualizer] = None,
     ):
         self.obstacles = obstacle_index
         self.dfm = dfm_profile
         self.viz = visualizer
 
-    def route_pair(self, spec: DiffPairSpec, start_pads: Tuple, end_pads: Tuple) -> DiffPairResult:
+    def route_pair(
+        self, spec: DiffPairSpec, start_pads: Tuple, end_pads: Tuple
+    ) -> DiffPairResult:
         """
         Route a single differential pair.
-        
+
         Args:
             spec: Diff pair specification
             start_pads: (pad_p, pad_n) tuple of start Obstacles
             end_pads: (pad_p, pad_n) tuple of end Obstacles
-            
+
         Returns:
             DiffPairResult
         """
@@ -197,21 +201,22 @@ class DiffPairRouter:
         # 3. Run A* on centerline
         # 4. Generate dual traces
         # 5. Length match
-        
-        logger.warning(f"DiffPairRouter.route_pair not fully implemented for {spec.net_p}/{spec.net_n}")
-        return DiffPairResult(success=False, spec=spec, failure_reason="Not implemented")
+
+        logger.warning(
+            f"DiffPairRouter.route_pair not fully implemented for {spec.net_p}/{spec.net_n}"
+        )
+        return DiffPairResult(
+            success=False, spec=spec, failure_reason="Not implemented"
+        )
 
 
 class LengthMatcher:
     """
     Adds meanders (accordions) to traces to match target lengths.
     """
-    
+
     def match_length(
-        self, 
-        segments: List[RouteSegment], 
-        target_length: float, 
-        tolerance: float = 0.1
+        self, segments: List[RouteSegment], target_length: float, tolerance: float = 0.1
     ) -> List[RouteSegment]:
         """
         Modify segments to increase total length to target.

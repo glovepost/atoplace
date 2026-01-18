@@ -10,25 +10,24 @@ Tests cover:
 - Greedy multiplier behavior
 """
 
-import pytest
 import math
-from typing import List, Dict
+
+import pytest
 
 from atoplace.routing.astar_router import (
     AStarRouter,
-    RouterConfig,
-    RouteNode,
-    RoutingResult,
-    RouteDirection,
     NetOrderer,
+    RouteDirection,
+    RouteNode,
+    RouterConfig,
 )
-from atoplace.routing.spatial_index import SpatialHashIndex, Obstacle
-from atoplace.routing.visualizer import RouteSegment, Via
-
+from atoplace.routing.spatial_index import Obstacle, SpatialHashIndex
+from atoplace.routing.visualizer import RouteSegment
 
 # =============================================================================
 # Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def empty_index() -> SpatialHashIndex:
@@ -41,16 +40,18 @@ def simple_obstacle_index() -> SpatialHashIndex:
     """A spatial index with a single obstacle."""
     index = SpatialHashIndex(cell_size=1.0)
     # Add a rectangular obstacle in the center
-    index.add(Obstacle(
-        min_x=45.0,
-        min_y=45.0,
-        max_x=55.0,
-        max_y=55.0,
-        layer=0,
-        clearance=0.0,
-        net_id=None,
-        obstacle_type="component"
-    ))
+    index.add(
+        Obstacle(
+            min_x=45.0,
+            min_y=45.0,
+            max_x=55.0,
+            max_y=55.0,
+            layer=0,
+            clearance=0.0,
+            net_id=None,
+            obstacle_type="component",
+        )
+    )
     return index
 
 
@@ -60,27 +61,31 @@ def blocking_wall_index() -> SpatialHashIndex:
     index = SpatialHashIndex(cell_size=1.0)
     # Add a vertical wall with a gap
     for y in range(0, 40):  # Wall from y=0 to y=40
-        index.add(Obstacle(
-            min_x=49.0,
-            min_y=float(y),
-            max_x=51.0,
-            max_y=float(y + 1),
-            layer=0,
-            clearance=0.0,
-            net_id=None,
-            obstacle_type="wall"
-        ))
+        index.add(
+            Obstacle(
+                min_x=49.0,
+                min_y=float(y),
+                max_x=51.0,
+                max_y=float(y + 1),
+                layer=0,
+                clearance=0.0,
+                net_id=None,
+                obstacle_type="wall",
+            )
+        )
     for y in range(60, 100):  # Wall from y=60 to y=100
-        index.add(Obstacle(
-            min_x=49.0,
-            min_y=float(y),
-            max_x=51.0,
-            max_y=float(y + 1),
-            layer=0,
-            clearance=0.0,
-            net_id=None,
-            obstacle_type="wall"
-        ))
+        index.add(
+            Obstacle(
+                min_x=49.0,
+                min_y=float(y),
+                max_x=51.0,
+                max_y=float(y + 1),
+                layer=0,
+                clearance=0.0,
+                net_id=None,
+                obstacle_type="wall",
+            )
+        )
     return index
 
 
@@ -89,16 +94,18 @@ def two_layer_index() -> SpatialHashIndex:
     """A spatial index for two-layer routing tests."""
     index = SpatialHashIndex(cell_size=1.0)
     # Add obstacle only on layer 0
-    index.add(Obstacle(
-        min_x=45.0,
-        min_y=45.0,
-        max_x=55.0,
-        max_y=55.0,
-        layer=0,
-        clearance=0.0,
-        net_id=None,
-        obstacle_type="component"
-    ))
+    index.add(
+        Obstacle(
+            min_x=45.0,
+            min_y=45.0,
+            max_x=55.0,
+            max_y=55.0,
+            layer=0,
+            clearance=0.0,
+            net_id=None,
+            obstacle_type="component",
+        )
+    )
     return index
 
 
@@ -145,6 +152,7 @@ def manhattan_config() -> RouterConfig:
 # =============================================================================
 # RouteNode Tests
 # =============================================================================
+
 
 class TestRouteNode:
     """Tests for RouteNode dataclass."""
@@ -198,6 +206,7 @@ class TestRouteNode:
 # =============================================================================
 # Basic Routing Tests
 # =============================================================================
+
 
 class TestBasicRouting:
     """Tests for basic A* routing functionality."""
@@ -264,6 +273,7 @@ class TestBasicRouting:
 # Multi-Layer Routing Tests
 # =============================================================================
 
+
 class TestMultiLayerRouting:
     """Tests for multi-layer routing with vias."""
 
@@ -286,10 +296,26 @@ class TestMultiLayerRouting:
 
         # Create pads that simulate needing to route between them
         pads = [
-            Obstacle(min_x=9.9, min_y=49.9, max_x=10.1, max_y=50.1,
-                     layer=0, clearance=0, net_id=1, obstacle_type="pad"),
-            Obstacle(min_x=89.9, min_y=49.9, max_x=90.1, max_y=50.1,
-                     layer=0, clearance=0, net_id=1, obstacle_type="pad"),
+            Obstacle(
+                min_x=9.9,
+                min_y=49.9,
+                max_x=10.1,
+                max_y=50.1,
+                layer=0,
+                clearance=0,
+                net_id=1,
+                obstacle_type="pad",
+            ),
+            Obstacle(
+                min_x=89.9,
+                min_y=49.9,
+                max_x=90.1,
+                max_y=50.1,
+                layer=0,
+                clearance=0,
+                net_id=1,
+                obstacle_type="pad",
+            ),
         ]
 
         result = router.route_net(pads, "test_net", 1)
@@ -301,6 +327,7 @@ class TestMultiLayerRouting:
 # =============================================================================
 # Configuration Tests
 # =============================================================================
+
 
 class TestConfiguration:
     """Tests for router configuration options."""
@@ -373,6 +400,7 @@ class TestConfiguration:
 # Goal Tolerance Tests
 # =============================================================================
 
+
 class TestGoalTolerance:
     """Tests for goal tolerance behavior."""
 
@@ -386,12 +414,15 @@ class TestGoalTolerance:
 
         result = router._route_two_points(start, goal, None, 0.2, 0.15)
 
-        assert result.success, f"Should reach goal within tolerance: {result.failure_reason}"
+        assert (
+            result.success
+        ), f"Should reach goal within tolerance: {result.failure_reason}"
 
 
 # =============================================================================
 # Same-Net Filtering Tests
 # =============================================================================
+
 
 class TestSameNetFiltering:
     """Tests for same-net obstacle filtering."""
@@ -401,16 +432,18 @@ class TestSameNetFiltering:
         index = SpatialHashIndex(cell_size=1.0)
 
         # Add obstacle with net_id=1
-        index.add(Obstacle(
-            min_x=45.0,
-            min_y=45.0,
-            max_x=55.0,
-            max_y=55.0,
-            layer=0,
-            clearance=0.0,
-            net_id=1,  # Same as our routing net
-            obstacle_type="trace"
-        ))
+        index.add(
+            Obstacle(
+                min_x=45.0,
+                min_y=45.0,
+                max_x=55.0,
+                max_y=55.0,
+                layer=0,
+                clearance=0.0,
+                net_id=1,  # Same as our routing net
+                obstacle_type="trace",
+            )
+        )
 
         config = RouterConfig(grid_size=0.5, max_iterations=10000)
         router = AStarRouter(index, config)
@@ -419,7 +452,9 @@ class TestSameNetFiltering:
         goal = RouteNode(60.0, 50.0, 0)
 
         # Should succeed because obstacle has same net_id
-        result = router._route_two_points(start, goal, net_id=1, trace_width=0.2, net_clearance=0.15)
+        result = router._route_two_points(
+            start, goal, net_id=1, trace_width=0.2, net_clearance=0.15
+        )
 
         assert result.success, "Should ignore same-net obstacles"
 
@@ -428,16 +463,18 @@ class TestSameNetFiltering:
         index = SpatialHashIndex(cell_size=1.0)
 
         # Add obstacle with net_id=2
-        index.add(Obstacle(
-            min_x=45.0,
-            min_y=45.0,
-            max_x=55.0,
-            max_y=55.0,
-            layer=0,
-            clearance=0.0,
-            net_id=2,  # Different from our routing net
-            obstacle_type="trace"
-        ))
+        index.add(
+            Obstacle(
+                min_x=45.0,
+                min_y=45.0,
+                max_x=55.0,
+                max_y=55.0,
+                layer=0,
+                clearance=0.0,
+                net_id=2,  # Different from our routing net
+                obstacle_type="trace",
+            )
+        )
 
         config = RouterConfig(grid_size=0.5, max_iterations=10000)
         router = AStarRouter(index, config)
@@ -446,7 +483,9 @@ class TestSameNetFiltering:
         goal = RouteNode(60.0, 50.0, 0)
 
         # Should route around (not through) the obstacle
-        result = router._route_two_points(start, goal, net_id=1, trace_width=0.2, net_clearance=0.15)
+        result = router._route_two_points(
+            start, goal, net_id=1, trace_width=0.2, net_clearance=0.15
+        )
 
         if result.success:
             # Path should not go straight through obstacle area
@@ -456,14 +495,19 @@ class TestSameNetFiltering:
                 # Midpoint shouldn't be inside obstacle
                 if 45.0 < mid_x < 55.0 and 45.0 < mid_y < 55.0:
                     # If segment goes through, it should be small (endpoint only)
-                    seg_len = math.sqrt((seg.end[0] - seg.start[0])**2 +
-                                       (seg.end[1] - seg.start[1])**2)
-                    assert seg_len < 1.0, "Should not route through different-net obstacle"
+                    seg_len = math.sqrt(
+                        (seg.end[0] - seg.start[0]) ** 2
+                        + (seg.end[1] - seg.start[1]) ** 2
+                    )
+                    assert (
+                        seg_len < 1.0
+                    ), "Should not route through different-net obstacle"
 
 
 # =============================================================================
 # Net Ordering Tests
 # =============================================================================
+
 
 class TestNetOrderer:
     """Tests for net ordering by difficulty."""
@@ -480,17 +524,49 @@ class TestNetOrderer:
                 self.pads = pads
 
         # Net near obstacle (congested)
-        pad1 = Obstacle(min_x=50.0, min_y=50.0, max_x=51.0, max_y=51.0,
-                        layer=0, clearance=0, net_id=1, obstacle_type="pad")
-        pad2 = Obstacle(min_x=60.0, min_y=50.0, max_x=61.0, max_y=51.0,
-                        layer=0, clearance=0, net_id=1, obstacle_type="pad")
+        pad1 = Obstacle(
+            min_x=50.0,
+            min_y=50.0,
+            max_x=51.0,
+            max_y=51.0,
+            layer=0,
+            clearance=0,
+            net_id=1,
+            obstacle_type="pad",
+        )
+        pad2 = Obstacle(
+            min_x=60.0,
+            min_y=50.0,
+            max_x=61.0,
+            max_y=51.0,
+            layer=0,
+            clearance=0,
+            net_id=1,
+            obstacle_type="pad",
+        )
         congested_net = MockNet("congested", [pad1, pad2])
 
         # Net far from obstacle (easy)
-        pad3 = Obstacle(min_x=10.0, min_y=10.0, max_x=11.0, max_y=11.0,
-                        layer=0, clearance=0, net_id=2, obstacle_type="pad")
-        pad4 = Obstacle(min_x=20.0, min_y=10.0, max_x=21.0, max_y=11.0,
-                        layer=0, clearance=0, net_id=2, obstacle_type="pad")
+        pad3 = Obstacle(
+            min_x=10.0,
+            min_y=10.0,
+            max_x=11.0,
+            max_y=11.0,
+            layer=0,
+            clearance=0,
+            net_id=2,
+            obstacle_type="pad",
+        )
+        pad4 = Obstacle(
+            min_x=20.0,
+            min_y=10.0,
+            max_x=21.0,
+            max_y=11.0,
+            layer=0,
+            clearance=0,
+            net_id=2,
+            obstacle_type="pad",
+        )
         easy_net = MockNet("easy", [pad3, pad4])
 
         ordered = orderer.order_nets([easy_net, congested_net])
@@ -503,6 +579,7 @@ class TestNetOrderer:
 # Edge Cases
 # =============================================================================
 
+
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
 
@@ -510,8 +587,16 @@ class TestEdgeCases:
         """Test that single-pad net returns success (nothing to route)."""
         router = AStarRouter(empty_index, default_config)
 
-        single_pad = Obstacle(min_x=50.0, min_y=50.0, max_x=51.0, max_y=51.0,
-                              layer=0, clearance=0, net_id=1, obstacle_type="pad")
+        single_pad = Obstacle(
+            min_x=50.0,
+            min_y=50.0,
+            max_x=51.0,
+            max_y=51.0,
+            layer=0,
+            clearance=0,
+            net_id=1,
+            obstacle_type="pad",
+        )
 
         result = router.route_net([single_pad], "single_pad_net", 1)
 
@@ -556,6 +641,7 @@ class TestEdgeCases:
 # =============================================================================
 # Heuristic Tests
 # =============================================================================
+
 
 class TestHeuristic:
     """Tests for A* heuristic function."""

@@ -97,6 +97,8 @@ select = [
 ]
 ignore = [
     "E501",  # line too long (handled by black)
+    "B008",  # function call in default argument (false positive for typer.Option/Argument)
+    "E402",  # module level import not at top (often intentional for conditional/circular imports)
 ]
 
 [tool.mypy]

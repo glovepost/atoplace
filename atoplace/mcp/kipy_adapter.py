@@ -10,9 +10,9 @@ Requires: kicad-python (kipy) package for KiCad 9+ IPC API
 """
 
 import logging
-from typing import Optional, Dict, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional
 
-from ..board.abstraction import Board, Component, Net, Pad, Layer, BoardOutline
+from ..board.abstraction import Board, BoardOutline, Component, Layer, Net, Pad
 
 if TYPE_CHECKING:
     # Avoid import errors when kipy is not installed
@@ -61,6 +61,7 @@ def get_kipy_units():
     """
     try:
         from kipy.util.units import from_mm, to_mm
+
         return from_mm, to_mm
     except ImportError:
         return None
@@ -69,6 +70,7 @@ def get_kipy_units():
 # =============================================================================
 # Board Conversion: kipy -> atoplace
 # =============================================================================
+
 
 def kipy_board_to_atoplace(kipy_board) -> Board:
     """
@@ -88,7 +90,7 @@ def kipy_board_to_atoplace(kipy_board) -> Board:
     board.outline = _extract_outline(kipy_board)
 
     # Extract layer count if available
-    if hasattr(kipy_board, 'get_layer_count'):
+    if hasattr(kipy_board, "get_layer_count"):
         try:
             board.layer_count = kipy_board.get_layer_count()
         except Exception:
@@ -106,8 +108,11 @@ def kipy_board_to_atoplace(kipy_board) -> Board:
     # Build net information from pad connections
     _extract_nets(kipy_board, board)
 
-    logger.info("Converted kipy board: %d components, %d nets",
-                len(board.components), len(board.nets))
+    logger.info(
+        "Converted kipy board: %d components, %d nets",
+        len(board.components),
+        len(board.nets),
+    )
 
     return board
 
@@ -116,12 +121,14 @@ def _get_board_name(kipy_board) -> str:
     """Extract board name from kipy board."""
     try:
         # Try file_path first
-        if hasattr(kipy_board, 'file_path') and kipy_board.file_path:
+        if hasattr(kipy_board, "file_path") and kipy_board.file_path:
             from pathlib import Path
+
             return Path(kipy_board.file_path).stem
         # Try filename
-        if hasattr(kipy_board, 'filename') and kipy_board.filename:
+        if hasattr(kipy_board, "filename") and kipy_board.filename:
             from pathlib import Path
+
             return Path(kipy_board.filename).stem
     except Exception as e:
         logger.debug("Could not extract board name: %s", e)
@@ -132,19 +139,19 @@ def _extract_outline(kipy_board) -> BoardOutline:
     """Extract board outline from kipy board."""
     try:
         # kipy may expose bounding box method
-        if hasattr(kipy_board, 'get_bounding_box'):
+        if hasattr(kipy_board, "get_bounding_box"):
             bbox = kipy_board.get_bounding_box()
             # bbox may be a Box2 object with x, y, width, height
-            if hasattr(bbox, 'width') and hasattr(bbox, 'height'):
+            if hasattr(bbox, "width") and hasattr(bbox, "height"):
                 return BoardOutline(
                     width=nm_to_mm(bbox.width),
                     height=nm_to_mm(bbox.height),
-                    origin_x=nm_to_mm(bbox.x) if hasattr(bbox, 'x') else 0,
-                    origin_y=nm_to_mm(bbox.y) if hasattr(bbox, 'y') else 0,
+                    origin_x=nm_to_mm(bbox.x) if hasattr(bbox, "x") else 0,
+                    origin_y=nm_to_mm(bbox.y) if hasattr(bbox, "y") else 0,
                     has_outline=True,
                 )
             # Or it might be (min_x, min_y, max_x, max_y)
-            elif hasattr(bbox, '__iter__'):
+            elif hasattr(bbox, "__iter__"):
                 coords = list(bbox)
                 if len(coords) >= 4:
                     min_x, min_y, max_x, max_y = coords[:4]
@@ -169,16 +176,16 @@ def _kipy_footprint_to_component(fp) -> Component:
 
     # Extract position (in nanometers)
     pos = fp.position
-    x_mm = nm_to_mm(pos.x) if hasattr(pos, 'x') else 0
-    y_mm = nm_to_mm(pos.y) if hasattr(pos, 'y') else 0
+    x_mm = nm_to_mm(pos.x) if hasattr(pos, "x") else 0
+    y_mm = nm_to_mm(pos.y) if hasattr(pos, "y") else 0
 
     # Extract rotation
     rotation = 0.0
-    if hasattr(fp, 'orientation'):
+    if hasattr(fp, "orientation"):
         orient = fp.orientation
-        if hasattr(orient, 'degrees'):
+        if hasattr(orient, "degrees"):
             rotation = orient.degrees
-        elif hasattr(orient, 'as_degrees'):
+        elif hasattr(orient, "as_degrees"):
             rotation = orient.as_degrees()
         elif isinstance(orient, (int, float)):
             rotation = float(orient)
@@ -195,11 +202,11 @@ def _kipy_footprint_to_component(fp) -> Component:
         y=y_mm,
         rotation=rotation,
         layer=layer,
-        locked=getattr(fp, 'locked', False),
+        locked=getattr(fp, "locked", False),
     )
 
     # Extract pads
-    if hasattr(fp, 'pads'):
+    if hasattr(fp, "pads"):
         for kipy_pad in fp.pads:
             try:
                 pad = _kipy_pad_to_pad(kipy_pad, fp)
@@ -216,29 +223,29 @@ def _kipy_footprint_to_component(fp) -> Component:
 def _get_footprint_reference(fp) -> str:
     """Get reference designator from kipy footprint."""
     # Try reference_field.text.value (kipy pattern)
-    if hasattr(fp, 'reference_field'):
+    if hasattr(fp, "reference_field"):
         ref_field = fp.reference_field
-        if hasattr(ref_field, 'text') and hasattr(ref_field.text, 'value'):
+        if hasattr(ref_field, "text") and hasattr(ref_field.text, "value"):
             return str(ref_field.text.value)
     # Try reference property
-    if hasattr(fp, 'reference'):
+    if hasattr(fp, "reference"):
         ref = fp.reference
         if callable(ref):
             return str(ref())
         return str(ref)
     # Try GetReference (pcbnew style)
-    if hasattr(fp, 'GetReference'):
+    if hasattr(fp, "GetReference"):
         return str(fp.GetReference())
     return "??"
 
 
 def _get_footprint_name(fp) -> str:
     """Get footprint library:name from kipy footprint."""
-    if hasattr(fp, 'footprint_name'):
+    if hasattr(fp, "footprint_name"):
         return str(fp.footprint_name)
-    if hasattr(fp, 'lib_id'):
+    if hasattr(fp, "lib_id"):
         return str(fp.lib_id)
-    if hasattr(fp, 'GetFPID'):
+    if hasattr(fp, "GetFPID"):
         return str(fp.GetFPID().GetUniStringLibId())
     return ""
 
@@ -246,12 +253,12 @@ def _get_footprint_name(fp) -> str:
 def _get_footprint_value(fp) -> str:
     """Get value from kipy footprint."""
     # Try value_field.text.value
-    if hasattr(fp, 'value_field'):
+    if hasattr(fp, "value_field"):
         val_field = fp.value_field
-        if hasattr(val_field, 'text') and hasattr(val_field.text, 'value'):
+        if hasattr(val_field, "text") and hasattr(val_field.text, "value"):
             return str(val_field.text.value)
     # Try value property
-    if hasattr(fp, 'value'):
+    if hasattr(fp, "value"):
         val = fp.value
         if callable(val):
             return str(val())
@@ -263,11 +270,11 @@ def _get_component_layer(fp) -> Layer:
     """Determine component layer from kipy footprint."""
     layer = Layer.TOP_COPPER
 
-    if hasattr(fp, 'layer'):
+    if hasattr(fp, "layer"):
         layer_val = fp.layer
         layer_str = str(layer_val)
 
-        if 'B.Cu' in layer_str or 'Bottom' in layer_str or 'BL_B_Cu' in layer_str:
+        if "B.Cu" in layer_str or "Bottom" in layer_str or "BL_B_Cu" in layer_str:
             layer = Layer.BOTTOM_COPPER
 
     return layer
@@ -280,49 +287,49 @@ def _kipy_pad_to_pad(kipy_pad, fp) -> Pad:
     fp_pos = fp.position
 
     # Calculate relative position to footprint center
-    rel_x = nm_to_mm(pad_pos.x - fp_pos.x) if hasattr(pad_pos, 'x') else 0
-    rel_y = nm_to_mm(pad_pos.y - fp_pos.y) if hasattr(pad_pos, 'y') else 0
+    rel_x = nm_to_mm(pad_pos.x - fp_pos.x) if hasattr(pad_pos, "x") else 0
+    rel_y = nm_to_mm(pad_pos.y - fp_pos.y) if hasattr(pad_pos, "y") else 0
 
     # Get pad size
     width = 0.5
     height = 0.5
-    if hasattr(kipy_pad, 'size'):
+    if hasattr(kipy_pad, "size"):
         size = kipy_pad.size
-        if hasattr(size, 'x') and hasattr(size, 'y'):
+        if hasattr(size, "x") and hasattr(size, "y"):
             width = nm_to_mm(size.x)
             height = nm_to_mm(size.y)
 
     # Get net name
     net = None
-    if hasattr(kipy_pad, 'net') and kipy_pad.net:
-        if hasattr(kipy_pad.net, 'name'):
+    if hasattr(kipy_pad, "net") and kipy_pad.net:
+        if hasattr(kipy_pad.net, "name"):
             net = str(kipy_pad.net.name)
         else:
             net = str(kipy_pad.net)
 
     # Get pad number
     number = "1"
-    if hasattr(kipy_pad, 'number'):
+    if hasattr(kipy_pad, "number"):
         number = str(kipy_pad.number)
-    elif hasattr(kipy_pad, 'name'):
+    elif hasattr(kipy_pad, "name"):
         number = str(kipy_pad.name)
 
     # Get pad shape
     shape = "rect"
-    if hasattr(kipy_pad, 'shape'):
+    if hasattr(kipy_pad, "shape"):
         shape_val = str(kipy_pad.shape).lower()
-        if 'circle' in shape_val:
+        if "circle" in shape_val:
             shape = "circle"
-        elif 'oval' in shape_val:
+        elif "oval" in shape_val:
             shape = "oval"
-        elif 'roundrect' in shape_val:
+        elif "roundrect" in shape_val:
             shape = "roundrect"
 
     # Get drill size (for through-hole)
     drill = None
-    if hasattr(kipy_pad, 'drill') and kipy_pad.drill:
+    if hasattr(kipy_pad, "drill") and kipy_pad.drill:
         drill_val = kipy_pad.drill
-        if hasattr(drill_val, 'x'):
+        if hasattr(drill_val, "x"):
             drill = nm_to_mm(drill_val.x)
         elif isinstance(drill_val, (int, float)):
             drill = nm_to_mm(drill_val)
@@ -375,13 +382,26 @@ def _classify_net(net: Net):
     name_upper = net.name.upper()
 
     # Power net patterns
-    power_patterns = ['VCC', 'VDD', 'V3V3', 'V5V', '3V3', '5V', 'VBAT',
-                      'VIN', 'VBUS', '+3V3', '+5V', '+12V', 'VREF']
+    power_patterns = [
+        "VCC",
+        "VDD",
+        "V3V3",
+        "V5V",
+        "3V3",
+        "5V",
+        "VBAT",
+        "VIN",
+        "VBUS",
+        "+3V3",
+        "+5V",
+        "+12V",
+        "VREF",
+    ]
     if any(pwr in name_upper for pwr in power_patterns):
         net.is_power = True
 
     # Ground net patterns
-    ground_patterns = ['GND', 'VSS', 'GROUND', 'AGND', 'DGND', 'PGND', 'SGND']
+    ground_patterns = ["GND", "VSS", "GROUND", "AGND", "DGND", "PGND", "SGND"]
     if any(gnd in name_upper for gnd in ground_patterns):
         net.is_ground = True
 
@@ -389,6 +409,7 @@ def _classify_net(net: Net):
 # =============================================================================
 # Footprint Lookup
 # =============================================================================
+
 
 def find_kipy_footprint(kipy_board, ref: str):
     """
@@ -436,8 +457,10 @@ def find_kipy_footprints(kipy_board, refs: List[str]) -> Dict[str, any]:
 # Sync atoplace -> kipy (for updates)
 # =============================================================================
 
-def update_kipy_footprint_position(fp, x_mm: float, y_mm: float,
-                                    rotation_deg: Optional[float] = None):
+
+def update_kipy_footprint_position(
+    fp, x_mm: float, y_mm: float, rotation_deg: Optional[float] = None
+):
     """
     Update a kipy footprint's position and optionally rotation.
 
@@ -451,11 +474,12 @@ def update_kipy_footprint_position(fp, x_mm: float, y_mm: float,
         rotation_deg: New rotation in degrees (optional)
     """
     try:
-        from kipy.geometry import Vector2, Angle
+        from kipy.geometry import Angle, Vector2
         from kipy.util.units import from_mm
     except ImportError:
         # Fallback without kipy.util.units
-        from kipy.geometry import Vector2, Angle
+        from kipy.geometry import Angle, Vector2
+
         from_mm = mm_to_nm
 
     # Update position

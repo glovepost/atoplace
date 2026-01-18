@@ -16,10 +16,9 @@ Requirements:
 - kicad-python package (pip install kicad-python)
 """
 
-import os
 import logging
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from ..board.abstraction import Board
 
@@ -28,11 +27,13 @@ logger = logging.getLogger(__name__)
 
 class KiCadNotRunningError(Exception):
     """KiCad is not running or IPC API is not available."""
+
     pass
 
 
 class KiCadConnectionLostError(Exception):
     """Connection to KiCad was lost during operation."""
+
     pass
 
 
@@ -150,6 +151,7 @@ class KiPySession:
         """Get list of socket paths to try."""
         # Use centralized socket path logic from backends module
         from .backends import _get_socket_paths
+
         return _get_socket_paths()
 
     # =========================================================================
@@ -181,19 +183,21 @@ class KiPySession:
 
             # Convert to atoplace Board model
             from .kipy_adapter import kipy_board_to_atoplace
+
             self.board = kipy_board_to_atoplace(self._kipy_board)
 
             # Store source path
             if path:
                 self.source_path = Path(path)
-            elif hasattr(self._kipy_board, 'file_path') and self._kipy_board.file_path:
+            elif hasattr(self._kipy_board, "file_path") and self._kipy_board.file_path:
                 self.source_path = Path(self._kipy_board.file_path)
 
             self._dirty = False
             self._dirty_refs.clear()
 
-            logger.info("Loaded board from KiCad: %d components",
-                       len(self.board.components))
+            logger.info(
+                "Loaded board from KiCad: %d components", len(self.board.components)
+            )
             return self
 
         except Exception as e:
@@ -292,8 +296,14 @@ class KiPySession:
     # Component Updates (Real-time)
     # =========================================================================
 
-    def update_component(self, ref: str, x: float = None, y: float = None,
-                         rotation: float = None, locked: bool = None) -> bool:
+    def update_component(
+        self,
+        ref: str,
+        x: float = None,
+        y: float = None,
+        rotation: float = None,
+        locked: bool = None,
+    ) -> bool:
         """
         Update component position/rotation in KiCad with instant refresh.
 
@@ -326,10 +336,11 @@ class KiPySession:
 
         # Import kipy geometry types
         try:
-            from kipy.geometry import Vector2, Angle
+            from kipy.geometry import Angle, Vector2
             from kipy.util.units import from_mm
         except ImportError:
-            from kipy.geometry import Vector2, Angle
+            from kipy.geometry import Angle, Vector2
+
             from .kipy_adapter import mm_to_nm as from_mm
 
         # Begin commit for undo support
@@ -348,7 +359,7 @@ class KiPySession:
                 fp.orientation = Angle.from_degrees(rotation)
 
             # Update locked state if provided
-            if locked is not None and hasattr(fp, 'locked'):
+            if locked is not None and hasattr(fp, "locked"):
                 fp.locked = locked
 
             # Apply changes to KiCad (triggers UI refresh)
@@ -403,7 +414,7 @@ class KiPySession:
         from .kipy_adapter import find_kipy_footprints
 
         # Find all footprints
-        refs = [u.get('ref') for u in updates if u.get('ref')]
+        refs = [u.get("ref") for u in updates if u.get("ref")]
         if not refs:
             return {}
 
@@ -411,10 +422,11 @@ class KiPySession:
 
         # Import kipy types
         try:
-            from kipy.geometry import Vector2, Angle
+            from kipy.geometry import Angle, Vector2
             from kipy.util.units import from_mm
         except ImportError:
-            from kipy.geometry import Vector2, Angle
+            from kipy.geometry import Angle, Vector2
+
             from .kipy_adapter import mm_to_nm as from_mm
 
         results = {}
@@ -422,7 +434,7 @@ class KiPySession:
 
         # Process updates first, then commit only if we have changes
         for update in updates:
-            ref = update.get('ref')
+            ref = update.get("ref")
             if not ref:
                 continue
 
@@ -432,10 +444,10 @@ class KiPySession:
                 continue
 
             # Apply updates
-            x = update.get('x')
-            y = update.get('y')
-            rotation = update.get('rotation')
-            locked = update.get('locked')
+            x = update.get("x")
+            y = update.get("y")
+            rotation = update.get("rotation")
+            locked = update.get("locked")
 
             if x is not None or y is not None:
                 current_pos = fp.position
@@ -446,7 +458,7 @@ class KiPySession:
             if rotation is not None:
                 fp.orientation = Angle.from_degrees(rotation)
 
-            if locked is not None and hasattr(fp, 'locked'):
+            if locked is not None and hasattr(fp, "locked"):
                 fp.locked = locked
 
             modified_fps.append(fp)
@@ -484,7 +496,7 @@ class KiPySession:
             except Exception:
                 pass
             logger.error("Batch update failed: %s", e)
-            return {ref: False for ref in refs}
+            return dict.fromkeys(refs, False)
 
     def mark_modified(self, refs: List[str]):
         """
@@ -525,13 +537,15 @@ class KiPySession:
         for ref in list(self._dirty_refs):
             comp = self.board.components.get(ref)
             if comp:
-                updates.append({
-                    'ref': ref,
-                    'x': comp.x,
-                    'y': comp.y,
-                    'rotation': comp.rotation,
-                    'locked': comp.locked,
-                })
+                updates.append(
+                    {
+                        "ref": ref,
+                        "x": comp.x,
+                        "y": comp.y,
+                        "rotation": comp.rotation,
+                        "locked": comp.locked,
+                    }
+                )
 
         if updates:
             try:
@@ -550,6 +564,7 @@ class KiPySession:
         try:
             self._kipy_board = self._kicad.get_board()
             from .kipy_adapter import kipy_board_to_atoplace
+
             self.board = kipy_board_to_atoplace(self._kipy_board)
             logger.debug("Refreshed board from KiCad")
         except Exception as e:
@@ -575,5 +590,7 @@ class KiPySession:
 
     def __repr__(self) -> str:
         status = "connected" if self._connected else "disconnected"
-        board_info = f"{len(self.board.components)} components" if self.board else "no board"
+        board_info = (
+            f"{len(self.board.components)} components" if self.board else "no board"
+        )
         return f"KiPySession({status}, {board_info})"

@@ -5,9 +5,9 @@ Loads and manages classification patterns from configuration file.
 Allows users to customize component detection without modifying code.
 """
 
-import os
-from typing import List, Dict, Any, Optional
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import yaml
 
 
@@ -48,34 +48,32 @@ class ComponentPatterns:
                 f"Pattern configuration file cannot be a symlink: {self.config_path}"
             )
 
-        with open(self.config_path, 'r') as f:
+        with open(self.config_path, "r") as f:
             self._config = yaml.safe_load(f)
 
         # Validate required sections
         required_sections = [
             # Module detection patterns
-            'microcontroller_patterns',
-            'rf_patterns',
-            'power_regulator_patterns',
-            'sensor_patterns',
-            'esd_patterns',
-            'connector_patterns',
-            'crystal_patterns',
+            "microcontroller_patterns",
+            "rf_patterns",
+            "power_regulator_patterns",
+            "sensor_patterns",
+            "esd_patterns",
+            "connector_patterns",
+            "crystal_patterns",
             # Constraint parser patterns
-            'analog_components',
-            'digital_components',
-            'high_speed_ics',
-            'medium_speed_ics',
-            'high_speed_nets',
-            'differential_pair_suffixes',
-            'decoupling_distances',
+            "analog_components",
+            "digital_components",
+            "high_speed_ics",
+            "medium_speed_ics",
+            "high_speed_nets",
+            "differential_pair_suffixes",
+            "decoupling_distances",
         ]
 
         missing = [s for s in required_sections if s not in self._config]
         if missing:
-            raise ValueError(
-                f"Configuration file missing required sections: {missing}"
-            )
+            raise ValueError(f"Configuration file missing required sections: {missing}")
 
     # ==========================================================================
     # Module Detection Patterns (used by module_detector.py)
@@ -84,43 +82,43 @@ class ComponentPatterns:
     @property
     def microcontroller_patterns(self) -> List[str]:
         """Get microcontroller IC patterns."""
-        return self._config.get('microcontroller_patterns', [])
+        return self._config.get("microcontroller_patterns", [])
 
     @property
     def rf_patterns(self) -> List[str]:
         """Get RF/wireless component patterns."""
-        return self._config.get('rf_patterns', [])
+        return self._config.get("rf_patterns", [])
 
     @property
     def power_regulator_patterns(self) -> List[str]:
         """Get power regulator IC patterns."""
-        return self._config.get('power_regulator_patterns', [])
+        return self._config.get("power_regulator_patterns", [])
 
     @property
     def sensor_patterns(self) -> List[str]:
         """Get sensor IC patterns."""
-        return self._config.get('sensor_patterns', [])
+        return self._config.get("sensor_patterns", [])
 
     @property
     def esd_patterns(self) -> List[str]:
         """Get ESD protection device patterns."""
-        return self._config.get('esd_patterns', [])
+        return self._config.get("esd_patterns", [])
 
     @property
     def connector_patterns(self) -> List[str]:
         """Get connector component patterns."""
-        return self._config.get('connector_patterns', [])
+        return self._config.get("connector_patterns", [])
 
     @property
     def crystal_patterns(self) -> List[str]:
         """Get crystal/oscillator patterns."""
-        return self._config.get('crystal_patterns', [])
+        return self._config.get("crystal_patterns", [])
 
     @property
     def opamp_patterns(self) -> List[str]:
         """Get op-amp patterns (subset of analog_components)."""
         # Op-amp patterns are the first 5 entries in analog_components
-        return self._config.get('analog_components', [])[:5]
+        return self._config.get("analog_components", [])[:5]
 
     def get_module_patterns(self) -> dict:
         """
@@ -132,14 +130,14 @@ class ComponentPatterns:
                   'esd', 'opamp', 'connector', 'crystal'
         """
         return {
-            'microcontroller': self.microcontroller_patterns,
-            'rf': self.rf_patterns,
-            'power_regulator': self.power_regulator_patterns,
-            'sensor': self.sensor_patterns,
-            'esd': self.esd_patterns,
-            'opamp': self.opamp_patterns,
-            'connector': self.connector_patterns,
-            'crystal': self.crystal_patterns,
+            "microcontroller": self.microcontroller_patterns,
+            "rf": self.rf_patterns,
+            "power_regulator": self.power_regulator_patterns,
+            "sensor": self.sensor_patterns,
+            "esd": self.esd_patterns,
+            "opamp": self.opamp_patterns,
+            "connector": self.connector_patterns,
+            "crystal": self.crystal_patterns,
         }
 
     # ==========================================================================
@@ -149,32 +147,32 @@ class ComponentPatterns:
     @property
     def analog_patterns(self) -> List[str]:
         """Get analog component patterns."""
-        return self._config.get('analog_components', [])
+        return self._config.get("analog_components", [])
 
     @property
     def digital_patterns(self) -> List[str]:
         """Get digital component patterns."""
-        return self._config.get('digital_components', [])
+        return self._config.get("digital_components", [])
 
     @property
     def high_speed_ic_patterns(self) -> List[str]:
         """Get high-speed IC patterns."""
-        return self._config.get('high_speed_ics', [])
+        return self._config.get("high_speed_ics", [])
 
     @property
     def medium_speed_ic_patterns(self) -> List[str]:
         """Get medium-speed IC patterns."""
-        return self._config.get('medium_speed_ics', [])
+        return self._config.get("medium_speed_ics", [])
 
     @property
     def high_speed_net_patterns(self) -> List[str]:
         """Get high-speed net patterns."""
-        return self._config.get('high_speed_nets', [])
+        return self._config.get("high_speed_nets", [])
 
     @property
     def differential_pair_suffixes(self) -> List[str]:
         """Get differential pair suffixes."""
-        return self._config.get('differential_pair_suffixes', [])
+        return self._config.get("differential_pair_suffixes", [])
 
     def get_decoupling_distances(self, speed_class: str) -> Dict[str, float]:
         """
@@ -189,7 +187,7 @@ class ComponentPatterns:
         Raises:
             ValueError: If speed_class is not recognized
         """
-        distances = self._config.get('decoupling_distances', {})
+        distances = self._config.get("decoupling_distances", {})
 
         if speed_class not in distances:
             raise ValueError(

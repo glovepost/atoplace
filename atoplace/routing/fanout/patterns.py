@@ -5,9 +5,9 @@ Implements the geometric patterns for BGA escape routing:
 - Via-in-Pad (VIP): Standard for pitch <= 0.5mm. Via directly in pad center.
 """
 
-import math
 import logging
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Tuple
 
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class Quadrant(Enum):
     """BGA quadrant for determining via offset direction."""
+
     NE = "northeast"  # Upper-right
     NW = "northwest"  # Upper-left
     SE = "southeast"  # Lower-right
@@ -36,6 +37,7 @@ class FanoutVia:
         net_name: Net name this via belongs to
         pad_number: Source pad number this via connects to
     """
+
     x: float
     y: float
     drill_diameter: float = 0.3
@@ -57,6 +59,7 @@ class FanoutTrace:
         layer: Routing layer index
         net_name: Net name this trace belongs to
     """
+
     start: Tuple[float, float]
     end: Tuple[float, float]
     width: float = 0.2
@@ -88,9 +91,7 @@ def calculate_optimal_dogbone_offset(
     """
     # The via must clear adjacent pads
     # Minimum offset = half pad size + clearance + half via pad
-    min_offset_for_pad_clearance = (
-        pad_size / 2 + clearance + via_pad_diameter / 2
-    )
+    min_offset_for_pad_clearance = pad_size / 2 + clearance + via_pad_diameter / 2
 
     # The via should fit in the diagonal gap between pads
     # In a grid, the diagonal gap center is at pitch * sqrt(2) / 2 from pad
@@ -131,7 +132,9 @@ def get_quadrant(
         return Quadrant.SW
 
 
-def get_quadrant_offset(quadrant: Quadrant, offset_distance: float) -> Tuple[float, float]:
+def get_quadrant_offset(
+    quadrant: Quadrant, offset_distance: float
+) -> Tuple[float, float]:
     """Get (dx, dy) offset for via placement based on quadrant.
 
     Returns the offset vector pointing diagonally outward from component center.
@@ -140,10 +143,10 @@ def get_quadrant_offset(quadrant: Quadrant, offset_distance: float) -> Tuple[flo
     diag = offset_distance / math.sqrt(2)
 
     offsets = {
-        Quadrant.NE: (diag, -diag),   # Right and up (negative Y is up)
+        Quadrant.NE: (diag, -diag),  # Right and up (negative Y is up)
         Quadrant.NW: (-diag, -diag),  # Left and up
-        Quadrant.SE: (diag, diag),    # Right and down
-        Quadrant.SW: (-diag, diag),   # Left and down
+        Quadrant.SE: (diag, diag),  # Right and down
+        Quadrant.SW: (-diag, diag),  # Left and down
     }
     return offsets[quadrant]
 
@@ -158,6 +161,7 @@ class DogbonePattern:
     Standard for pitch >= 0.65mm where there's enough space for
     the via between pads.
     """
+
     # DFM parameters
     via_drill: float = 0.3
     via_pad: float = 0.6
@@ -241,9 +245,10 @@ class VIPPattern:
     Standard for fine-pitch BGAs (pitch <= 0.5mm) where there's
     no space between pads for dogbone vias.
     """
+
     # DFM parameters (typically smaller for fine pitch)
     via_drill: float = 0.2  # Microvia typical
-    via_pad: float = 0.35   # Smaller annular ring
+    via_pad: float = 0.35  # Smaller annular ring
 
     def generate(
         self,
@@ -289,6 +294,7 @@ class ChannelPattern:
     This is the most efficient pattern when possible, as it
     avoids using vias and inner layers.
     """
+
     trace_width: float = 0.2
     clearance: float = 0.15
 
@@ -359,12 +365,14 @@ class ChannelPattern:
             escape_x = pad_x
             escape_y = pad_y + math.copysign(escape_distance, dy)
 
-        traces.append(FanoutTrace(
-            start=(pad_x, pad_y),
-            end=(escape_x, escape_y),
-            width=self.trace_width,
-            layer=layer,
-            net_name=net_name,
-        ))
+        traces.append(
+            FanoutTrace(
+                start=(pad_x, pad_y),
+                end=(escape_x, escape_y),
+                width=self.trace_width,
+                layer=layer,
+                net_name=net_name,
+            )
+        )
 
         return traces

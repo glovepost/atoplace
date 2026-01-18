@@ -8,7 +8,7 @@ energy graph, playback controls, keyboard shortcuts, etc.
 def generate_viewer_javascript(
     has_energy_graph: bool = True,
     has_layer_controls: bool = True,
-    is_streaming: bool = False
+    is_streaming: bool = False,
 ) -> str:
     """Generate complete JavaScript for viewer interactivity.
 
@@ -21,7 +21,7 @@ def generate_viewer_javascript(
         Complete JavaScript code string
     """
 
-    js_code = '''
+    js_code = """
 // ============================================================================
 // Global State
 // ============================================================================
@@ -535,7 +535,7 @@ if (document.readyState === 'loading') {
 } else {
     initialize();
 }
-'''
+"""
 
     return js_code
 
@@ -547,7 +547,7 @@ def generate_canvas_render_javascript() -> str:
         JavaScript code for Canvas rendering
     """
 
-    js_code = '''
+    js_code = """
 // ============================================================================
 // Canvas Setup and Coordinate Transform
 // ============================================================================
@@ -1180,6 +1180,6 @@ function renderLabels(ctx, frame) {
         ctx.restore();
     }
 }
-'''
+"""
 
     return js_code

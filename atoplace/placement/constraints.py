@@ -5,35 +5,39 @@ Defines constraint types and a constraint solver for placement optimization.
 Constraints can be extracted from natural language or defined programmatically.
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional, Set
-from enum import Enum
 import logging
 import math
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List, Optional, Tuple
 
-from ..board.abstraction import Board, Component
+from ..board.abstraction import Board
 
 logger = logging.getLogger(__name__)
 
 
 class ConstraintType(Enum):
     """Types of placement constraints."""
-    PROXIMITY = "proximity"          # Keep components close
-    EDGE_PLACEMENT = "edge"          # Place on board edge
-    ZONE_ASSIGNMENT = "zone"         # Keep in specific area
-    ORIENTATION = "orientation"      # Specific rotation
-    LAYER_PREFERENCE = "layer"       # Top/bottom layer
-    KEEP_OUT = "keepout"             # Exclude from area
-    GROUPING = "group"               # Keep components together
-    ALIGNMENT = "alignment"          # Align components
-    SEPARATION = "separation"        # Keep components apart
-    FIXED = "fixed"                  # Lock position
+
+    PROXIMITY = "proximity"  # Keep components close
+    EDGE_PLACEMENT = "edge"  # Place on board edge
+    ZONE_ASSIGNMENT = "zone"  # Keep in specific area
+    ORIENTATION = "orientation"  # Specific rotation
+    LAYER_PREFERENCE = "layer"  # Top/bottom layer
+    KEEP_OUT = "keepout"  # Exclude from area
+    GROUPING = "group"  # Keep components together
+    ALIGNMENT = "alignment"  # Align components
+    SEPARATION = "separation"  # Keep components apart
+    FIXED = "fixed"  # Lock position
 
 
 @dataclass
 class PlacementConstraint:
     """Base class for all placement constraints."""
-    constraint_type: ConstraintType = ConstraintType.PROXIMITY  # Default, overridden by subclasses
+
+    constraint_type: ConstraintType = (
+        ConstraintType.PROXIMITY
+    )  # Default, overridden by subclasses
     priority: str = "preferred"  # "required", "preferred", "optional"
     description: str = ""
     source_text: str = ""  # Original natural language if applicable
@@ -48,8 +52,9 @@ class PlacementConstraint:
         """
         raise NotImplementedError
 
-    def calculate_force(self, board: Board, ref: str,
-                        strength: float) -> Tuple[float, float]:
+    def calculate_force(
+        self, board: Board, ref: str, strength: float
+    ) -> Tuple[float, float]:
         """
         Calculate force to satisfy this constraint.
 
@@ -62,6 +67,7 @@ class PlacementConstraint:
 @dataclass
 class ProximityConstraint(PlacementConstraint):
     """Keep target component close to anchor component."""
+
     target_ref: str = ""
     anchor_ref: str = ""
     max_distance: float = 5.0  # mm
@@ -77,15 +83,16 @@ class ProximityConstraint(PlacementConstraint):
         anchor = board.get_component(self.anchor_ref)
 
         if not target or not anchor:
-            return (False, float('inf'))
+            return (False, float("inf"))
 
         distance = target.distance_to(anchor)
         if distance <= self.max_distance:
             return (True, 0.0)
         return (False, distance - self.max_distance)
 
-    def calculate_force(self, board: Board, ref: str,
-                        strength: float) -> Tuple[float, float]:
+    def calculate_force(
+        self, board: Board, ref: str, strength: float
+    ) -> Tuple[float, float]:
         if ref != self.target_ref:
             return (0.0, 0.0)
 
@@ -97,7 +104,7 @@ class ProximityConstraint(PlacementConstraint):
 
         dx = anchor.x - target.x
         dy = anchor.y - target.y
-        distance = math.sqrt(dx*dx + dy*dy)
+        distance = math.sqrt(dx * dx + dy * dy)
 
         if distance <= self.ideal_distance or distance < 0.1:
             return (0.0, 0.0)
@@ -115,6 +122,7 @@ class EdgeConstraint(PlacementConstraint):
     this constraint uses bounding box edges rather than actual boundary edges.
     This may push components toward positions outside the actual board geometry.
     """
+
     component_ref: str = ""
     edge: str = "left"  # "left", "right", "top", "bottom"
     offset: float = 2.0  # mm from edge
@@ -132,15 +140,15 @@ class EdgeConstraint(PlacementConstraint):
                 "EdgeConstraint for %s uses bounding box edge for non-rectangular "
                 "board outline. Component may be pushed outside valid board area. "
                 "(Issue #21)",
-                self.component_ref
+                self.component_ref,
             )
             # Use object.__setattr__ since dataclass is frozen by default
-            object.__setattr__(self, '_warned_polygon', True)
+            object.__setattr__(self, "_warned_polygon", True)
 
     def is_satisfied(self, board: Board) -> Tuple[bool, float]:
         comp = board.get_component(self.component_ref)
         if not comp:
-            return (False, float('inf'))
+            return (False, float("inf"))
 
         self._check_polygon_warning(board)
         tolerance = 1.0  # mm
@@ -157,7 +165,7 @@ class EdgeConstraint(PlacementConstraint):
         try:
             edge_coord = board.outline.get_edge(self.edge)
         except ValueError:
-            return (False, float('inf'))
+            return (False, float("inf"))
 
         if self.edge in ("left", "right"):
             # For left edge: component's left side should be at offset from edge
@@ -180,8 +188,9 @@ class EdgeConstraint(PlacementConstraint):
 
         return (violation <= tolerance, max(0, violation - tolerance))
 
-    def calculate_force(self, board: Board, ref: str,
-                        strength: float) -> Tuple[float, float]:
+    def calculate_force(
+        self, board: Board, ref: str, strength: float
+    ) -> Tuple[float, float]:
         if ref != self.component_ref:
             return (0.0, 0.0)
 
@@ -226,6 +235,7 @@ class EdgeConstraint(PlacementConstraint):
 @dataclass
 class ZoneConstraint(PlacementConstraint):
     """Keep components within a specific zone."""
+
     components: List[str] = field(default_factory=list)
     zone_x: float = 0.0
     zone_y: float = 0.0
@@ -265,8 +275,9 @@ class ZoneConstraint(PlacementConstraint):
 
         return (total_violation == 0, total_violation)
 
-    def calculate_force(self, board: Board, ref: str,
-                        strength: float) -> Tuple[float, float]:
+    def calculate_force(
+        self, board: Board, ref: str, strength: float
+    ) -> Tuple[float, float]:
         if ref not in self.components:
             return (0.0, 0.0)
 
@@ -300,19 +311,22 @@ class ZoneConstraint(PlacementConstraint):
 @dataclass
 class GroupingConstraint(PlacementConstraint):
     """Keep a group of components together with optional bounding box optimization."""
+
     components: List[str] = field(default_factory=list)
     max_spread: float = 15.0  # mm maximum distance from centroid
 
     # Bounding box optimization parameters
     optimize_bbox: bool = False  # Enable bbox minimization
-    bbox_strength: float = 1.0   # Multiplier for bbox forces relative to centroid
+    bbox_strength: float = 1.0  # Multiplier for bbox forces relative to centroid
     min_clearance: float = 0.25  # Minimum clearance between components in group (mm)
 
     def __post_init__(self):
         self.constraint_type = ConstraintType.GROUPING
         if not self.description:
             bbox_note = " (bbox optimized)" if self.optimize_bbox else ""
-            self.description = f"Group {len(self.components)} components together{bbox_note}"
+            self.description = (
+                f"Group {len(self.components)} components together{bbox_note}"
+            )
 
     def is_satisfied(self, board: Board) -> Tuple[bool, float]:
         if len(self.components) < 2:
@@ -326,15 +340,16 @@ class GroupingConstraint(PlacementConstraint):
         for ref in self.components:
             comp = board.get_component(ref)
             if comp:
-                dist = math.sqrt((comp.x - cx)**2 + (comp.y - cy)**2)
+                dist = math.sqrt((comp.x - cx) ** 2 + (comp.y - cy) ** 2)
                 max_dist = max(max_dist, dist)
 
         if max_dist <= self.max_spread:
             return (True, 0.0)
         return (False, max_dist - self.max_spread)
 
-    def calculate_force(self, board: Board, ref: str,
-                        strength: float) -> Tuple[float, float]:
+    def calculate_force(
+        self, board: Board, ref: str, strength: float
+    ) -> Tuple[float, float]:
         if ref not in self.components:
             return (0.0, 0.0)
 
@@ -345,7 +360,7 @@ class GroupingConstraint(PlacementConstraint):
         cx, cy = self._get_centroid(board)
         dx = cx - comp.x
         dy = cy - comp.y
-        distance = math.sqrt(dx*dx + dy*dy)
+        distance = math.sqrt(dx * dx + dy * dy)
 
         if distance <= self.max_spread / 2 or distance < 0.1:
             return (0.0, 0.0)
@@ -371,8 +386,9 @@ class GroupingConstraint(PlacementConstraint):
 
         return (total_x / count, total_y / count)
 
-    def calculate_forces(self, state, board: Board,
-                         strength: float) -> Dict[str, Tuple[float, float]]:
+    def calculate_forces(
+        self, state, board: Board, strength: float
+    ) -> Dict[str, Tuple[float, float]]:
         """Calculate forces for all components in group.
 
         Combines centroid-pull with optional bounding box optimization.
@@ -422,9 +438,9 @@ class GroupingConstraint(PlacementConstraint):
 
         return forces
 
-    def _calculate_centroid_forces(self, positions: Dict[str, Tuple[float, float]],
-                                   board: Board,
-                                   strength: float) -> Dict[str, Tuple[float, float]]:
+    def _calculate_centroid_forces(
+        self, positions: Dict[str, Tuple[float, float]], board: Board, strength: float
+    ) -> Dict[str, Tuple[float, float]]:
         """Calculate forces pulling components toward group centroid."""
         forces: Dict[str, Tuple[float, float]] = {}
 
@@ -449,9 +465,9 @@ class GroupingConstraint(PlacementConstraint):
 
         return forces
 
-    def _calculate_bbox_forces(self, positions: Dict[str, Tuple[float, float]],
-                               board: Board,
-                               strength: float) -> Dict[str, Tuple[float, float]]:
+    def _calculate_bbox_forces(
+        self, positions: Dict[str, Tuple[float, float]], board: Board, strength: float
+    ) -> Dict[str, Tuple[float, float]]:
         """Calculate inward forces to minimize module bounding box.
 
         Algorithm:
@@ -466,7 +482,9 @@ class GroupingConstraint(PlacementConstraint):
             return forces
 
         # Get component sizes for accurate bbox calculation
-        comp_sizes: Dict[str, Tuple[float, float]] = {}  # ref -> (half_width, half_height)
+        comp_sizes: Dict[str, Tuple[float, float]] = (
+            {}
+        )  # ref -> (half_width, half_height)
         for ref in positions:
             comp = board.get_component(ref)
             if comp:
@@ -478,8 +496,8 @@ class GroupingConstraint(PlacementConstraint):
                 comp_sizes[ref] = (1.0, 1.0)  # Default 2mm x 2mm
 
         # 1. Calculate current module bounding box
-        min_x, min_y = float('inf'), float('inf')
-        max_x, max_y = float('-inf'), float('-inf')
+        min_x, min_y = float("inf"), float("inf")
+        max_x, max_y = float("-inf"), float("-inf")
 
         for ref, (x, y) in positions.items():
             hw, hh = comp_sizes.get(ref, (1.0, 1.0))
@@ -566,6 +584,7 @@ class GroupingConstraint(PlacementConstraint):
 @dataclass
 class SeparationConstraint(PlacementConstraint):
     """Keep two groups of components separated."""
+
     group_a: List[str] = field(default_factory=list)
     group_b: List[str] = field(default_factory=list)
     min_separation: float = 10.0  # mm between group centroids
@@ -585,14 +604,15 @@ class SeparationConstraint(PlacementConstraint):
         cx_a, cy_a = self._get_centroid(board, self.group_a)
         cx_b, cy_b = self._get_centroid(board, self.group_b)
 
-        distance = math.sqrt((cx_a - cx_b)**2 + (cy_a - cy_b)**2)
+        distance = math.sqrt((cx_a - cx_b) ** 2 + (cy_a - cy_b) ** 2)
 
         if distance >= self.min_separation:
             return (True, 0.0)
         return (False, self.min_separation - distance)
 
-    def calculate_force(self, board: Board, ref: str,
-                        strength: float) -> Tuple[float, float]:
+    def calculate_force(
+        self, board: Board, ref: str, strength: float
+    ) -> Tuple[float, float]:
         # Determine which group this component belongs to
         if ref in self.group_a:
             other_group = self.group_b
@@ -613,7 +633,7 @@ class SeparationConstraint(PlacementConstraint):
         cx, cy = self._get_centroid(board, other_group)
         dx = comp.x - cx
         dy = comp.y - cy
-        distance = math.sqrt(dx*dx + dy*dy)
+        distance = math.sqrt(dx * dx + dy * dy)
 
         if distance >= self.min_separation or distance < 0.1:
             return (0.0, 0.0)
@@ -643,6 +663,7 @@ class SeparationConstraint(PlacementConstraint):
 @dataclass
 class FixedConstraint(PlacementConstraint):
     """Lock a component at a specific position and/or rotation."""
+
     component_ref: str = ""
     x: Optional[float] = None  # None means don't constrain position
     y: Optional[float] = None
@@ -663,13 +684,13 @@ class FixedConstraint(PlacementConstraint):
     def is_satisfied(self, board: Board) -> Tuple[bool, float]:
         comp = board.get_component(self.component_ref)
         if not comp:
-            return (False, float('inf'))
+            return (False, float("inf"))
 
         violation = 0.0
 
         # Check position if specified
         if self.x is not None and self.y is not None and not self.rotation_only:
-            dist = math.sqrt((comp.x - self.x)**2 + (comp.y - self.y)**2)
+            dist = math.sqrt((comp.x - self.x) ** 2 + (comp.y - self.y) ** 2)
             violation += dist
 
         # Check rotation if specified
@@ -681,8 +702,9 @@ class FixedConstraint(PlacementConstraint):
 
         return (violation < 0.1, violation)
 
-    def calculate_force(self, board: Board, ref: str,
-                        strength: float) -> Tuple[float, float]:
+    def calculate_force(
+        self, board: Board, ref: str, strength: float
+    ) -> Tuple[float, float]:
         if ref != self.component_ref:
             return (0.0, 0.0)
 
@@ -695,8 +717,7 @@ class FixedConstraint(PlacementConstraint):
             return (0.0, 0.0)
 
         # Very strong force to fixed position
-        return (strength * 10 * (self.x - comp.x),
-                strength * 10 * (self.y - comp.y))
+        return (strength * 10 * (self.x - comp.x), strength * 10 * (self.y - comp.y))
 
     def get_target_rotation(self) -> Optional[float]:
         """Get the target rotation if this is a rotation constraint."""
@@ -755,8 +776,7 @@ class ConstraintSolver:
                     return False
         return True
 
-    def calculate_forces(self, ref: str, strength: float
-                         ) -> List[Tuple[float, float]]:
+    def calculate_forces(self, ref: str, strength: float) -> List[Tuple[float, float]]:
         """Calculate all constraint forces for a component."""
         forces = []
         for constraint in self.constraints:

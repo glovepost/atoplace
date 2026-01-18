@@ -8,10 +8,15 @@ while pcbnew operations run in Python 3.9.
 
 import logging
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from ..board.abstraction import Board
-from .ipc import IPCClient, IPCError, deserialize_board, serialize_board, DEFAULT_SOCKET_PATH
+from .ipc import (
+    DEFAULT_SOCKET_PATH,
+    IPCClient,
+    IPCError,
+    deserialize_board,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +61,7 @@ class IPCSession:
             self._connected = True
             # Verify connection with ping
             try:
-                result = self._client.call("ping")
+                self._client.call("ping")
                 logger.info("Connected to KiCad bridge")
                 return True
             except IPCError as e:
@@ -89,7 +94,9 @@ class IPCSession:
             self.source_path = path
             self._dirty = False
             self._dirty_refs.clear()
-            logger.info("Loaded board via IPC: %d components", len(self.board.components))
+            logger.info(
+                "Loaded board via IPC: %d components", len(self.board.components)
+            )
             return self
         except IPCError as e:
             raise RuntimeError(f"Failed to load board: {e.message}")
@@ -200,13 +207,15 @@ class IPCSession:
         for ref in self._dirty_refs:
             comp = self.board.components.get(ref)
             if comp:
-                updates.append({
-                    "ref": ref,
-                    "x": comp.x,
-                    "y": comp.y,
-                    "rotation": comp.rotation,
-                    "locked": comp.locked,
-                })
+                updates.append(
+                    {
+                        "ref": ref,
+                        "x": comp.x,
+                        "y": comp.y,
+                        "rotation": comp.rotation,
+                        "locked": comp.locked,
+                    }
+                )
 
         if updates:
             attempted_refs = {u.get("ref") for u in updates if u.get("ref")}
@@ -283,4 +292,5 @@ def create_session(use_ipc: bool = False, socket_path: str = None) -> Any:
         return IPCSession(path)
     else:
         from ..api.session import Session
+
         return Session()

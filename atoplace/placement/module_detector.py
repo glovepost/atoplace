@@ -10,17 +10,18 @@ via the centralized patterns module. Do NOT hardcode patterns here - update
 the YAML configuration instead.
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Set, Optional
-from enum import Enum
 import re
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List, Optional, Set
 
-from ..board.abstraction import Board, Component, Net
+from ..board.abstraction import Board
 from ..patterns import get_patterns
 
 
 class ModuleType(Enum):
     """Types of functional modules."""
+
     POWER_SUPPLY = "power_supply"
     POWER_REGULATOR = "power_regulator"
     MICROCONTROLLER = "microcontroller"
@@ -39,6 +40,7 @@ class ModuleType(Enum):
 @dataclass
 class FunctionalModule:
     """A detected functional module in the design."""
+
     module_type: ModuleType
     name: str
     components: Set[str] = field(default_factory=set)
@@ -67,14 +69,14 @@ class ModuleDetector:
 
     # Mapping from pattern keys to ModuleType enum values
     PATTERN_TO_MODULE_TYPE = {
-        'microcontroller': ModuleType.MICROCONTROLLER,
-        'rf': ModuleType.RF_FRONTEND,
-        'power_regulator': ModuleType.POWER_REGULATOR,
-        'sensor': ModuleType.SENSOR,
-        'esd': ModuleType.ESD_PROTECTION,
-        'opamp': ModuleType.ANALOG_SIGNAL,
-        'connector': ModuleType.CONNECTOR,
-        'crystal': ModuleType.CRYSTAL_OSCILLATOR,
+        "microcontroller": ModuleType.MICROCONTROLLER,
+        "rf": ModuleType.RF_FRONTEND,
+        "power_regulator": ModuleType.POWER_REGULATOR,
+        "sensor": ModuleType.SENSOR,
+        "esd": ModuleType.ESD_PROTECTION,
+        "opamp": ModuleType.ANALOG_SIGNAL,
+        "connector": ModuleType.CONNECTOR,
+        "crystal": ModuleType.CRYSTAL_OSCILLATOR,
     }
 
     def __init__(self, board: Board, patterns_config: Optional[str] = None):
@@ -136,7 +138,7 @@ class ModuleDetector:
     def _detect_ics(self):
         """Detect main ICs (MCU, sensors, etc.)."""
         for ref, comp in self.board.components.items():
-            if not ref.startswith('U'):
+            if not ref.startswith("U"):
                 continue
 
             fp = comp.footprint.upper()
@@ -148,7 +150,9 @@ class ModuleDetector:
             for mtype, patterns in self._component_patterns.items():
                 for pattern in patterns:
                     if re.search(pattern, value) or re.search(pattern, fp):
-                        module_type = self.PATTERN_TO_MODULE_TYPE.get(mtype, ModuleType.UNKNOWN)
+                        module_type = self.PATTERN_TO_MODULE_TYPE.get(
+                            mtype, ModuleType.UNKNOWN
+                        )
                         break
                 if module_type != ModuleType.UNKNOWN:
                     break
@@ -175,7 +179,7 @@ class ModuleDetector:
             value = comp.value.upper()
 
             is_regulator = False
-            for pattern in self._component_patterns['power_regulator']:
+            for pattern in self._component_patterns["power_regulator"]:
                 if re.search(pattern, value) or re.search(pattern, fp):
                     is_regulator = True
                     break
@@ -190,7 +194,7 @@ class ModuleDetector:
                 module.add_component(ref)
 
                 # Find associated capacitors on input/output
-                self._add_connected_passives(module, ref, ['C'])
+                self._add_connected_passives(module, ref, ["C"])
 
                 self.modules.append(module)
                 self._component_to_module[ref] = module
@@ -204,13 +208,13 @@ class ModuleDetector:
             fp = comp.footprint.upper()
             value = comp.value.upper()
 
-            for pattern in self._component_patterns['rf']:
+            for pattern in self._component_patterns["rf"]:
                 if re.search(pattern, value) or re.search(pattern, fp):
                     rf_components.add(ref)
                     break
 
             # Check for antenna
-            if 'ANT' in fp or 'ANTENNA' in fp:
+            if "ANT" in fp or "ANTENNA" in fp:
                 rf_components.add(ref)
 
         if rf_components:
@@ -229,7 +233,7 @@ class ModuleDetector:
 
             # Find RF matching network components
             for ref in rf_components:
-                self._add_connected_passives(module, ref, ['L', 'C', 'R'])
+                self._add_connected_passives(module, ref, ["L", "C", "R"])
 
             self.modules.append(module)
 
@@ -237,7 +241,7 @@ class ModuleDetector:
         """Detect decoupling capacitor networks."""
         # Find capacitors connected to power nets
         for ref, comp in self.board.components.items():
-            if not ref.startswith('C'):
+            if not ref.startswith("C"):
                 continue
             if ref in self._component_to_module:
                 continue
@@ -258,7 +262,10 @@ class ModuleDetector:
 
                     # Find connected IC (sorted for deterministic ordering)
                     for conn_ref in sorted(net.get_component_refs()):
-                        if conn_ref.startswith('U') and conn_ref in self._component_to_module:
+                        if (
+                            conn_ref.startswith("U")
+                            and conn_ref in self._component_to_module
+                        ):
                             ic_ref = conn_ref
                             break
 
@@ -278,8 +285,8 @@ class ModuleDetector:
             fp = comp.footprint.upper()
             value = comp.value.upper()
 
-            is_connector = ref.startswith('J') or ref.startswith('P')
-            for pattern in self._component_patterns['connector']:
+            is_connector = ref.startswith("J") or ref.startswith("P")
+            for pattern in self._component_patterns["connector"]:
                 if re.search(pattern, value) or re.search(pattern, fp):
                     is_connector = True
                     break
@@ -294,8 +301,9 @@ class ModuleDetector:
                 module.add_component(ref)
 
                 # Add ESD protection if connected
-                self._add_connected_by_type(module, ref, ['D', 'U'],
-                                            self._component_patterns.get('esd', []))
+                self._add_connected_by_type(
+                    module, ref, ["D", "U"], self._component_patterns.get("esd", [])
+                )
 
                 self.modules.append(module)
                 self._component_to_module[ref] = module
@@ -309,8 +317,8 @@ class ModuleDetector:
             fp = comp.footprint.upper()
             value = comp.value.upper()
 
-            is_crystal = ref.startswith('Y') or ref.startswith('X')
-            for pattern in self._component_patterns['crystal']:
+            is_crystal = ref.startswith("Y") or ref.startswith("X")
+            for pattern in self._component_patterns["crystal"]:
                 if re.search(pattern, value) or re.search(pattern, fp):
                     is_crystal = True
                     break
@@ -325,7 +333,7 @@ class ModuleDetector:
                 module.add_component(ref)
 
                 # Add load capacitors
-                self._add_connected_passives(module, ref, ['C'])
+                self._add_connected_passives(module, ref, ["C"])
 
                 self.modules.append(module)
                 self._component_to_module[ref] = module
@@ -333,13 +341,13 @@ class ModuleDetector:
     def _detect_leds(self):
         """Detect LED indicator circuits."""
         for ref, comp in self.board.components.items():
-            if not ref.startswith('D'):
+            if not ref.startswith("D"):
                 continue
             if ref in self._component_to_module:
                 continue
 
             fp = comp.footprint.upper()
-            if 'LED' in fp:
+            if "LED" in fp:
                 module = FunctionalModule(
                     module_type=ModuleType.LED_INDICATOR,
                     name=f"led_{ref}",
@@ -348,13 +356,14 @@ class ModuleDetector:
                 module.add_component(ref)
 
                 # Add current limiting resistor
-                self._add_connected_passives(module, ref, ['R'])
+                self._add_connected_passives(module, ref, ["R"])
 
                 self.modules.append(module)
                 self._component_to_module[ref] = module
 
-    def _add_connected_passives(self, module: FunctionalModule,
-                                 ref: str, prefixes: List[str]):
+    def _add_connected_passives(
+        self, module: FunctionalModule, ref: str, prefixes: List[str]
+    ):
         """Add passive components connected to a reference component."""
         comp = self.board.components.get(ref)
         if not comp:
@@ -378,9 +387,13 @@ class ModuleDetector:
                         self._component_to_module[conn_ref] = module
                         break
 
-    def _add_connected_by_type(self, module: FunctionalModule,
-                                ref: str, prefixes: List[str],
-                                patterns: List[str]):
+    def _add_connected_by_type(
+        self,
+        module: FunctionalModule,
+        ref: str,
+        prefixes: List[str],
+        patterns: List[str],
+    ):
         """Add components matching patterns that are connected."""
         comp = self.board.components.get(ref)
         if not comp:

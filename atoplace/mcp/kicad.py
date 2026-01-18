@@ -4,11 +4,10 @@ KiCad Python Detection Utility
 Auto-detects KiCad's Python interpreter across platforms.
 """
 
-import os
-import sys
-import subprocess
 import logging
-from pathlib import Path
+import os
+import subprocess
+import sys
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -113,9 +112,9 @@ def get_kicad_python() -> str:
             "  2. Set KICAD_PYTHON environment variable to your KiCad Python path\n"
             "\n"
             "Expected locations:\n"
-            f"  macOS: /Applications/KiCad/KiCad.app/.../python3\n"
-            f"  Linux: /usr/lib/kicad/bin/python3\n"
-            f"  Windows: C:\\Program Files\\KiCad\\8.0\\bin\\python.exe"
+            "  macOS: /Applications/KiCad/KiCad.app/.../python3\n"
+            "  Linux: /usr/lib/kicad/bin/python3\n"
+            "  Windows: C:\\Program Files\\KiCad\\8.0\\bin\\python.exe"
         )
 
     valid, message = validate_kicad_python(python_path)

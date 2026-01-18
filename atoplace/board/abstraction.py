@@ -7,15 +7,16 @@ allows the placement and routing engines to work independently of the
 underlying board format.
 """
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Set
 from pathlib import Path
-import math
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 
 class Layer(Enum):
     """PCB layer identifiers."""
+
     TOP_COPPER = "F.Cu"
     BOTTOM_COPPER = "B.Cu"
     INNER1 = "In1.Cu"
@@ -36,6 +37,7 @@ class Layer(Enum):
 @dataclass
 class Pad:
     """Represents a component pad."""
+
     number: str
     x: float  # Relative to component center (mm)
     y: float
@@ -47,8 +49,9 @@ class Pad:
     drill: Optional[float] = None  # For through-hole pads
     rotation: float = 0.0  # Pad rotation relative to component (degrees)
 
-    def absolute_position(self, comp_x: float, comp_y: float,
-                          comp_rotation: float = 0) -> Tuple[float, float]:
+    def absolute_position(
+        self, comp_x: float, comp_y: float, comp_rotation: float = 0
+    ) -> Tuple[float, float]:
         """Get absolute pad position given component position and rotation."""
         # Apply component rotation to pad position
         rad = math.radians(comp_rotation)
@@ -61,8 +64,9 @@ class Pad:
         """Get absolute pad rotation considering component rotation."""
         return (self.rotation + comp_rotation) % 360
 
-    def get_bounding_box(self, comp_x: float, comp_y: float,
-                         comp_rotation: float = 0) -> Tuple[float, float, float, float]:
+    def get_bounding_box(
+        self, comp_x: float, comp_y: float, comp_rotation: float = 0
+    ) -> Tuple[float, float, float, float]:
         """Get axis-aligned bounding box for this pad in absolute coordinates.
 
         Returns:
@@ -97,6 +101,7 @@ class RefDesText:
     relative to the component. This allows tracking and repositioning
     of ref des text during placement to avoid overlaps.
     """
+
     # Position relative to component center (mm)
     offset_x: float = 0.0
     offset_y: float = 0.0
@@ -110,8 +115,9 @@ class RefDesText:
     visible: bool = True
     layer: Layer = Layer.TOP_SILK
 
-    def get_absolute_position(self, comp_x: float, comp_y: float,
-                              comp_rotation: float = 0) -> Tuple[float, float]:
+    def get_absolute_position(
+        self, comp_x: float, comp_y: float, comp_rotation: float = 0
+    ) -> Tuple[float, float]:
         """Get absolute text position given component position and rotation."""
         rad = math.radians(comp_rotation)
         cos_r, sin_r = math.cos(rad), math.sin(rad)
@@ -119,8 +125,9 @@ class RefDesText:
         ry = self.offset_x * sin_r + self.offset_y * cos_r
         return (comp_x + rx, comp_y + ry)
 
-    def get_bounding_box(self, comp_x: float, comp_y: float,
-                         comp_rotation: float, text: str) -> Tuple[float, float, float, float]:
+    def get_bounding_box(
+        self, comp_x: float, comp_y: float, comp_rotation: float, text: str
+    ) -> Tuple[float, float, float, float]:
         """Get axis-aligned bounding box for the text in absolute coordinates.
 
         Args:
@@ -153,6 +160,7 @@ class RefDesText:
 @dataclass
 class Component:
     """Represents a PCB component/footprint."""
+
     reference: str  # e.g., "U1", "R1", "C1"
     footprint: str  # Footprint library:name
     value: str = ""
@@ -186,7 +194,9 @@ class Component:
     def is_through_hole(self) -> bool:
         """Check if component has through-hole pads."""
         # Heuristic: Battery holders with "TH" in name might be SMD on bottom
-        if self.footprint and ("BAT-TH" in self.footprint or "CR2032" in self.footprint):
+        if self.footprint and (
+            "BAT-TH" in self.footprint or "CR2032" in self.footprint
+        ):
             return False
         return any(p.drill is not None and p.drill > 0 for p in self.pads)
 
@@ -245,8 +255,9 @@ class Component:
 
         return (min_x, min_y, max_x, max_y)
 
-    def overlaps(self, other: 'Component', clearance: float = 0.0,
-                 include_pads: bool = False) -> bool:
+    def overlaps(
+        self, other: "Component", clearance: float = 0.0, include_pads: bool = False
+    ) -> bool:
         """Check if this component overlaps with another.
 
         Args:
@@ -263,14 +274,19 @@ class Component:
             bb2 = other.get_bounding_box()
 
         # Add clearance
-        bb1 = (bb1[0] - clearance, bb1[1] - clearance,
-               bb1[2] + clearance, bb1[3] + clearance)
+        bb1 = (
+            bb1[0] - clearance,
+            bb1[1] - clearance,
+            bb1[2] + clearance,
+            bb1[3] + clearance,
+        )
 
         # Check overlap
-        return not (bb1[2] < bb2[0] or bb2[2] < bb1[0] or
-                    bb1[3] < bb2[1] or bb2[3] < bb1[1])
+        return not (
+            bb1[2] < bb2[0] or bb2[2] < bb1[0] or bb1[3] < bb2[1] or bb2[3] < bb1[1]
+        )
 
-    def distance_to(self, other: 'Component') -> float:
+    def distance_to(self, other: "Component") -> float:
         """Calculate center-to-center distance to another component."""
         dx = self.x - other.x
         dy = self.y - other.y
@@ -291,6 +307,7 @@ class Component:
 @dataclass
 class Net:
     """Represents a PCB net (electrical connection)."""
+
     name: str
     code: int = 0  # Net code for KiCad
 
@@ -308,7 +325,7 @@ class Net:
     is_differential: bool = False
     diff_pair_net: Optional[str] = None  # Name of the paired net
 
-    def add_connection(self, component_ref: str, pad_number: str):
+    def add_connection(self, component_ref: str, pad_number: str) -> None:
         """Add a pad connection to this net."""
         conn = (component_ref, pad_number)
         if conn not in self.connections:
@@ -329,6 +346,7 @@ class BoardOutline:
     When has_outline is False, boundary checks should be skipped as no
     explicit outline was defined for the board.
     """
+
     # Simple rectangular board (used when polygon is None)
     width: float = 100.0  # mm
     height: float = 100.0
@@ -370,17 +388,22 @@ class BoardOutline:
                 if self._point_in_polygon(x, y, hole):
                     return False
                 # Also check margin distance from hole edges (cutout clearance)
-                if margin > 0 and not self._point_outside_hole_margin(x, y, hole, margin):
+                if margin > 0 and not self._point_outside_hole_margin(
+                    x, y, hole, margin
+                ):
                     return False
 
             return True
 
         # Simple rectangle check
-        return (self.origin_x + margin <= x <= self.origin_x + self.width - margin and
-                self.origin_y + margin <= y <= self.origin_y + self.height - margin)
+        return (
+            self.origin_x + margin <= x <= self.origin_x + self.width - margin
+            and self.origin_y + margin <= y <= self.origin_y + self.height - margin
+        )
 
-    def _point_in_polygon(self, x: float, y: float,
-                          polygon: List[Tuple[float, float]]) -> bool:
+    def _point_in_polygon(
+        self, x: float, y: float, polygon: List[Tuple[float, float]]
+    ) -> bool:
         """Ray casting algorithm for point-in-polygon test.
 
         Casts a ray from the point to the right and counts edge crossings.
@@ -405,9 +428,9 @@ class BoardOutline:
 
         return inside
 
-    def _point_inside_margin(self, x: float, y: float,
-                             polygon: List[Tuple[float, float]],
-                             margin: float) -> bool:
+    def _point_inside_margin(
+        self, x: float, y: float, polygon: List[Tuple[float, float]], margin: float
+    ) -> bool:
         """Check if point is at least margin distance from all polygon edges."""
         n = len(polygon)
         if n < 2:
@@ -425,9 +448,9 @@ class BoardOutline:
 
         return True
 
-    def _point_outside_hole_margin(self, x: float, y: float,
-                                   hole: List[Tuple[float, float]],
-                                   margin: float) -> bool:
+    def _point_outside_hole_margin(
+        self, x: float, y: float, hole: List[Tuple[float, float]], margin: float
+    ) -> bool:
         """Check if point is at least margin distance from all hole edges.
 
         This enforces cutout clearance - components must maintain distance
@@ -449,9 +472,9 @@ class BoardOutline:
 
         return True
 
-    def _point_to_segment_distance(self, px: float, py: float,
-                                   x1: float, y1: float,
-                                   x2: float, y2: float) -> float:
+    def _point_to_segment_distance(
+        self, px: float, py: float, x1: float, y1: float, x2: float, y2: float
+    ) -> float:
         """Calculate shortest distance from point (px, py) to line segment (x1,y1)-(x2,y2)."""
         # Vector from segment start to point
         dx = px - x1
@@ -532,8 +555,12 @@ class BoardOutline:
             xs = [p[0] for p in self.polygon]
             ys = [p[1] for p in self.polygon]
             return (min(xs), min(ys), max(xs), max(ys))
-        return (self.origin_x, self.origin_y,
-                self.origin_x + self.width, self.origin_y + self.height)
+        return (
+            self.origin_x,
+            self.origin_y,
+            self.origin_x + self.width,
+            self.origin_y + self.height,
+        )
 
 
 @dataclass
@@ -565,7 +592,7 @@ class Board:
 
     # --- Component Management ---
 
-    def add_component(self, component: Component):
+    def add_component(self, component: Component) -> None:
         """Add a component to the board."""
         self.components[component.reference] = component
 
@@ -579,12 +606,11 @@ class Board:
 
     def get_components_by_prefix(self, prefix: str) -> List[Component]:
         """Get all components with a given reference prefix (e.g., 'R', 'C', 'U')."""
-        return [c for c in self.components.values()
-                if c.reference.startswith(prefix)]
+        return [c for c in self.components.values() if c.reference.startswith(prefix)]
 
     # --- Net Management ---
 
-    def add_net(self, net: Net):
+    def add_net(self, net: Net) -> None:
         """Add a net to the board."""
         self.nets[net.name] = net
 
@@ -607,8 +633,11 @@ class Board:
         net = self.nets.get(net_name)
         if not net:
             return []
-        return [self.components[ref] for ref in net.get_component_refs()
-                if ref in self.components]
+        return [
+            self.components[ref]
+            for ref in net.get_component_refs()
+            if ref in self.components
+        ]
 
     def get_nets_between(self, ref1: str, ref2: str) -> List[Net]:
         """Get all nets connecting two components."""
@@ -625,9 +654,12 @@ class Board:
 
     # --- Placement Utilities ---
 
-    def find_overlaps(self, clearance: float = 0.25,
-                       check_layers: bool = False,
-                       include_pads: bool = False) -> List[Tuple[str, str, float]]:
+    def find_overlaps(
+        self,
+        clearance: float = 0.25,
+        check_layers: bool = False,
+        include_pads: bool = False,
+    ) -> List[Tuple[str, str, float]]:
         """
         Find all overlapping component pairs.
 
@@ -654,22 +686,34 @@ class Board:
             else:
                 bb1 = c1.get_bounding_box()
             # Expand by clearance
-            bb1 = (bb1[0] - clearance, bb1[1] - clearance,
-                   bb1[2] + clearance, bb1[3] + clearance)
+            bb1 = (
+                bb1[0] - clearance,
+                bb1[1] - clearance,
+                bb1[2] + clearance,
+                bb1[3] + clearance,
+            )
 
-            for ref2 in refs[i+1:]:
+            for ref2 in refs[i + 1 :]:
                 c2 = self.components[ref2]
 
                 # Skip if on opposite layers (top vs bottom)
                 if check_layers:
                     # Treat through-hole as existing on all layers
                     if not (c1.is_through_hole or c2.is_through_hole):
-                        layer1_is_top = c1.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
-                                                      Layer.TOP_MASK, Layer.TOP_PASTE,
-                                                      Layer.TOP_COURTYARD)
-                        layer2_is_top = c2.layer in (Layer.TOP_COPPER, Layer.TOP_SILK,
-                                                      Layer.TOP_MASK, Layer.TOP_PASTE,
-                                                      Layer.TOP_COURTYARD)
+                        layer1_is_top = c1.layer in (
+                            Layer.TOP_COPPER,
+                            Layer.TOP_SILK,
+                            Layer.TOP_MASK,
+                            Layer.TOP_PASTE,
+                            Layer.TOP_COURTYARD,
+                        )
+                        layer2_is_top = c2.layer in (
+                            Layer.TOP_COPPER,
+                            Layer.TOP_SILK,
+                            Layer.TOP_MASK,
+                            Layer.TOP_PASTE,
+                            Layer.TOP_COURTYARD,
+                        )
                         if layer1_is_top != layer2_is_top:
                             continue  # Components on opposite sides, skip
 
@@ -705,8 +749,9 @@ class Board:
             max(b[3] for b in all_bounds),
         )
 
-    def move_component(self, reference: str, x: float, y: float,
-                       rotation: Optional[float] = None):
+    def move_component(
+        self, reference: str, x: float, y: float, rotation: Optional[float] = None
+    ) -> None:
         """Move a component to a new position."""
         comp = self.components.get(reference)
         if comp:
@@ -717,7 +762,7 @@ class Board:
 
     # --- Statistics ---
 
-    def get_stats(self) -> Dict:
+    def get_stats(self) -> Dict[str, Union[int, float]]:
         """Get board statistics."""
         # Calculate area properly for polygon outlines
         board_area = self.calculate_board_area()
@@ -770,9 +815,10 @@ class Board:
     # --- I/O Methods (to be implemented by subclasses or adapters) ---
 
     @classmethod
-    def from_kicad(cls, path: Path) -> 'Board':
+    def from_kicad(cls, path: Path) -> "Board":
         """Load board from KiCad file."""
         from .kicad_adapter import load_kicad_board
+
         return load_kicad_board(path)
 
     def generate_outline_from_components(self, margin: float = 5.0) -> BoardOutline:
@@ -799,10 +845,10 @@ class Board:
             )
 
         # Find bounding box of all components (including pads)
-        min_x = float('inf')
-        min_y = float('inf')
-        max_x = float('-inf')
-        max_y = float('-inf')
+        min_x = float("inf")
+        min_y = float("inf")
+        max_x = float("-inf")
+        max_y = float("-inf")
 
         for comp in self.components.values():
             if comp.dnp:  # Skip Do Not Populate components
@@ -858,10 +904,10 @@ class Board:
             return self.generate_outline_from_components(margin=initial_margin)
 
         # Find component bounds (ignoring DNP)
-        comp_min_x = float('inf')
-        comp_min_y = float('inf')
-        comp_max_x = float('-inf')
-        comp_max_y = float('-inf')
+        comp_min_x = float("inf")
+        comp_min_y = float("inf")
+        comp_max_x = float("-inf")
+        comp_max_y = float("-inf")
 
         for comp in self.components.values():
             if comp.dnp:
@@ -873,8 +919,8 @@ class Board:
             comp_max_y = max(comp_max_y, bbox[3])
 
         # Minimum required dimensions (components + clearance on each side)
-        min_width = (comp_max_x - comp_min_x) + 2 * clearance
-        min_height = (comp_max_y - comp_min_y) + 2 * clearance
+        _min_width = (comp_max_x - comp_min_x) + 2 * clearance  # noqa: F841
+        _min_height = (comp_max_y - comp_min_y) + 2 * clearance  # noqa: F841
 
         # Start with initial margin
         current_margin = initial_margin
@@ -944,7 +990,9 @@ class Board:
 
         return True
 
-    def reposition_ref_des_text(self, clearance: float = 0.2, pad_clearance: float = 0.15) -> int:
+    def reposition_ref_des_text(
+        self, clearance: float = 0.2, pad_clearance: float = 0.15
+    ) -> int:
         """Reposition reference designator text to avoid overlaps.
 
         This method repositions ref des text for each component to:
@@ -975,16 +1023,14 @@ class Board:
             )
 
             # Check if current position has conflicts
-            has_conflict = self._check_text_conflicts(
-                comp, current_bbox, pad_clearance
-            )
+            has_conflict = self._check_text_conflicts(comp, current_bbox, pad_clearance)
 
             if not has_conflict:
                 continue
 
             # Try candidate positions around the component
             best_position = None
-            best_score = float('inf')
+            best_score = float("inf")
 
             candidates = self._generate_text_candidates(comp, ref_text, clearance)
 
@@ -1014,14 +1060,15 @@ class Board:
                     best_position = (offset_x, offset_y)
 
             # Apply best position if found and better than current
-            if best_position and best_score < float('inf'):
+            if best_position and best_score < float("inf"):
                 ref_text.offset_x, ref_text.offset_y = best_position
                 repositioned_count += 1
 
         return repositioned_count
 
-    def _generate_text_candidates(self, comp: Component, ref_text: RefDesText,
-                                  clearance: float) -> List[Tuple[float, float]]:
+    def _generate_text_candidates(
+        self, comp: Component, ref_text: RefDesText, clearance: float
+    ) -> List[Tuple[float, float]]:
         """Generate candidate positions for ref des text.
 
         Returns positions around the component where text could be placed.
@@ -1046,10 +1093,12 @@ class Board:
         # Try corners
         for x_mult in [-1, 1]:
             for y_mult in [-1, 1]:
-                candidates.append((
-                    x_mult * (comp_hw + text_width / 2 + clearance) * 0.7,
-                    y_mult * (comp_hh + text_height / 2 + clearance) * 0.7
-                ))
+                candidates.append(
+                    (
+                        x_mult * (comp_hw + text_width / 2 + clearance) * 0.7,
+                        y_mult * (comp_hh + text_height / 2 + clearance) * 0.7,
+                    )
+                )
 
         # Try edge-aligned positions (for small components, text to the side)
         # Left edge, above
@@ -1059,8 +1108,12 @@ class Board:
 
         return candidates
 
-    def _check_text_conflicts(self, comp: Component, text_bbox: Tuple[float, float, float, float],
-                              pad_clearance: float) -> bool:
+    def _check_text_conflicts(
+        self,
+        comp: Component,
+        text_bbox: Tuple[float, float, float, float],
+        pad_clearance: float,
+    ) -> bool:
         """Check if text bounding box conflicts with pads."""
         # Check against own component pads
         for pad in comp.pads:
@@ -1096,9 +1149,14 @@ class Board:
 
         return False
 
-    def _score_text_position(self, comp: Component,
-                             text_bbox: Tuple[float, float, float, float],
-                             pad_clearance: float, offset_x: float, offset_y: float) -> float:
+    def _score_text_position(
+        self,
+        comp: Component,
+        text_bbox: Tuple[float, float, float, float],
+        pad_clearance: float,
+        offset_x: float,
+        offset_y: float,
+    ) -> float:
         """Score a text position (lower is better).
 
         Considers:
@@ -1130,7 +1188,7 @@ class Board:
         score += overlap_penalty
 
         # Prefer positions closer to component
-        distance = math.sqrt(offset_x ** 2 + offset_y ** 2)
+        distance = math.sqrt(offset_x**2 + offset_y**2)
         score += distance * 2.0
 
         # Penalty for being outside board bounds
@@ -1142,19 +1200,26 @@ class Board:
 
         return score
 
-    def _bboxes_overlap(self, bb1: Tuple[float, float, float, float],
-                        bb2: Tuple[float, float, float, float]) -> bool:
+    def _bboxes_overlap(
+        self,
+        bb1: Tuple[float, float, float, float],
+        bb2: Tuple[float, float, float, float],
+    ) -> bool:
         """Check if two bounding boxes overlap."""
-        return not (bb1[2] < bb2[0] or bb2[2] < bb1[0] or
-                    bb1[3] < bb2[1] or bb2[3] < bb1[1])
+        return not (
+            bb1[2] < bb2[0] or bb2[2] < bb1[0] or bb1[3] < bb2[1] or bb2[3] < bb1[1]
+        )
 
     def to_kicad(self, path: Path):
         """Save board to KiCad file."""
         from .kicad_adapter import save_kicad_board
+
         save_kicad_board(self, path)
 
     def __repr__(self) -> str:
-        return (f"Board(name={self.name!r}, "
-                f"components={len(self.components)}, "
-                f"nets={len(self.nets)}, "
-                f"size={self.outline.width}x{self.outline.height}mm)")
+        return (
+            f"Board(name={self.name!r}, "
+            f"components={len(self.components)}, "
+            f"nets={len(self.nets)}, "
+            f"size={self.outline.width}x{self.outline.height}mm)"
+        )

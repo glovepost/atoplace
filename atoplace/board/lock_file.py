@@ -33,20 +33,21 @@ positions always take precedence; unlocked positions are used as initial
 hints but can be re-optimized.
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Set
-import logging
+from typing import Any, Dict, List, Optional, Set
 
 # Use yaml if available, fall back to basic serialization
 try:
     import yaml
+
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
 
-from .abstraction import Board, Component
+from .abstraction import Board
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ LOCK_FILE_VERSION = 1
 @dataclass
 class ComponentPosition:
     """Stored position for a single component."""
+
     reference: str
     x: float
     y: float
@@ -101,6 +103,7 @@ class AtoplaceLock:
     This file stores component positions that should be preserved across
     atopile builds and placement runs.
     """
+
     version: int = LOCK_FILE_VERSION
     created: Optional[datetime] = None
     modified: Optional[datetime] = None
@@ -230,9 +233,7 @@ class AtoplaceLock:
             "created": self.created.isoformat() if self.created else None,
             "modified": self.modified.isoformat() if self.modified else None,
             "build": self.build,
-            "components": {
-                ref: pos.to_dict() for ref, pos in self.components.items()
-            },
+            "components": {ref: pos.to_dict() for ref, pos in self.components.items()},
         }
 
     @classmethod
@@ -412,8 +413,9 @@ def _parse_simple_yaml(content: str) -> Dict[str, Any]:
                             current[key] = int(value)
                     except ValueError:
                         # Remove quotes if present
-                        if (value.startswith('"') and value.endswith('"')) or \
-                           (value.startswith("'") and value.endswith("'")):
+                        if (value.startswith('"') and value.endswith('"')) or (
+                            value.startswith("'") and value.endswith("'")
+                        ):
                             value = value[1:-1]
                         current[key] = value
             else:

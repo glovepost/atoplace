@@ -4,11 +4,11 @@ DRC (Design Rule Check) Integration
 Provides design rule checking using KiCad's DRC engine or custom checks.
 """
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-from pathlib import Path
-import math
 import logging
+import math
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 from ..board.abstraction import Board
 from ..dfm.profiles import DFMProfile
@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DRCViolation:
     """A DRC violation."""
+
     rule: str
     severity: str  # "error", "warning"
     message: str
@@ -94,7 +95,9 @@ class DRCChecker:
         # Use the maximum possible clearance for overlap detection to catch all violations
         # - check_layers: avoid false positives for components on opposite sides
         # - include_pads: catch overlaps where pads protrude beyond body
-        overlaps = self.board.find_overlaps(max_net_clearance, check_layers=True, include_pads=True)
+        overlaps = self.board.find_overlaps(
+            max_net_clearance, check_layers=True, include_pads=True
+        )
 
         for ref1, ref2, penetration in overlaps:
             c1 = self.board.get_component(ref1)
@@ -113,7 +116,10 @@ class DRCChecker:
                 for pad in c1.pads + c2.pads:
                     if pad.net and pad.net in self.board.nets:
                         net = self.board.nets[pad.net]
-                        if net.clearance is not None and net.clearance > required_clearance:
+                        if (
+                            net.clearance is not None
+                            and net.clearance > required_clearance
+                        ):
                             required_clearance = net.clearance
                             clearance_source = f"net-class '{net.net_class}'"
 
@@ -125,13 +131,15 @@ class DRCChecker:
                 # Only report violation if actual spacing is less than required clearance
                 # (we used max_net_clearance for detection, but each pair may have different requirements)
                 if actual_spacing < required_clearance:
-                    self.violations.append(DRCViolation(
-                        rule="component_clearance",
-                        severity="error",
-                        message=f"Clearance violation: {ref1} and {ref2} (spacing {actual_spacing:.2f}mm < {required_clearance:.2f}mm [{clearance_source}])",
-                        location=(mid_x, mid_y),
-                        items=[ref1, ref2],
-                    ))
+                    self.violations.append(
+                        DRCViolation(
+                            rule="component_clearance",
+                            severity="error",
+                            message=f"Clearance violation: {ref1} and {ref2} (spacing {actual_spacing:.2f}mm < {required_clearance:.2f}mm [{clearance_source}])",
+                            location=(mid_x, mid_y),
+                            items=[ref1, ref2],
+                        )
+                    )
 
     def _check_minimum_sizes(self):
         """Check that pads meet minimum size requirements.
@@ -162,36 +170,42 @@ class DRCChecker:
                 if pad.drill:
                     # Through-hole pad - check drill size
                     if pad.drill < min_th_drill:
-                        self.violations.append(DRCViolation(
-                            rule="min_drill_size",
-                            severity="warning",
-                            message=f"Drill in {ref}.{pad.number} too small ({pad.drill:.2f}mm < {min_th_drill:.2f}mm)",
-                            location=(abs_x, abs_y),
-                            items=[f"{ref}.{pad.number}"],
-                        ))
+                        self.violations.append(
+                            DRCViolation(
+                                rule="min_drill_size",
+                                severity="warning",
+                                message=f"Drill in {ref}.{pad.number} too small ({pad.drill:.2f}mm < {min_th_drill:.2f}mm)",
+                                location=(abs_x, abs_y),
+                                items=[f"{ref}.{pad.number}"],
+                            )
+                        )
 
                     # Check annular ring (pad size minus drill / 2)
                     min_dimension = min(pad.width, pad.height)
                     annular_ring = (min_dimension - pad.drill) / 2
                     if annular_ring < min_th_annular:
-                        self.violations.append(DRCViolation(
-                            rule="min_annular_ring",
-                            severity="warning",
-                            message=f"Annular ring in {ref}.{pad.number} too small ({annular_ring:.3f}mm < {min_th_annular:.3f}mm)",
-                            location=(abs_x, abs_y),
-                            items=[f"{ref}.{pad.number}"],
-                        ))
+                        self.violations.append(
+                            DRCViolation(
+                                rule="min_annular_ring",
+                                severity="warning",
+                                message=f"Annular ring in {ref}.{pad.number} too small ({annular_ring:.3f}mm < {min_th_annular:.3f}mm)",
+                                location=(abs_x, abs_y),
+                                items=[f"{ref}.{pad.number}"],
+                            )
+                        )
                 else:
                     # SMD pad - check minimum dimensions
                     # Only warn for extremely small pads (smaller than min_spacing)
                     if pad.width < min_smd_pad or pad.height < min_smd_pad:
-                        self.violations.append(DRCViolation(
-                            rule="min_smd_pad_size",
-                            severity="warning",
-                            message=f"SMD pad {ref}.{pad.number} very small ({pad.width:.2f}x{pad.height:.2f}mm)",
-                            location=(abs_x, abs_y),
-                            items=[f"{ref}.{pad.number}"],
-                        ))
+                        self.violations.append(
+                            DRCViolation(
+                                rule="min_smd_pad_size",
+                                severity="warning",
+                                message=f"SMD pad {ref}.{pad.number} very small ({pad.width:.2f}x{pad.height:.2f}mm)",
+                                location=(abs_x, abs_y),
+                                items=[f"{ref}.{pad.number}"],
+                            )
+                        )
 
     def _check_edge_clearance(self):
         """Check component clearance to board edges.
@@ -234,13 +248,15 @@ class DRCChecker:
                     violating_corners += 1
 
             if violating_corners > 0:
-                self.violations.append(DRCViolation(
-                    rule="edge_clearance",
-                    severity="error",
-                    message=f"{ref} too close to board edge or cutout ({violating_corners} corners violate {min_edge:.2f}mm clearance)",
-                    location=(comp.x, comp.y),
-                    items=[ref],
-                ))
+                self.violations.append(
+                    DRCViolation(
+                        rule="edge_clearance",
+                        severity="error",
+                        message=f"{ref} too close to board edge or cutout ({violating_corners} corners violate {min_edge:.2f}mm clearance)",
+                        location=(comp.x, comp.y),
+                        items=[ref],
+                    )
+                )
 
     def _check_hole_to_hole(self):
         """Check spacing between through-hole pads.
@@ -293,7 +309,7 @@ class DRCChecker:
                 continue
 
             for i, idx1 in enumerate(cell_indices):
-                for idx2 in cell_indices[i+1:]:
+                for idx2 in cell_indices[i + 1 :]:
                     pair_key = (min(idx1, idx2), max(idx1, idx2))
                     if pair_key in checked:
                         continue
@@ -307,19 +323,21 @@ class DRCChecker:
                         continue
 
                     # Calculate edge-to-edge distance
-                    center_dist = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+                    center_dist = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
                     edge_dist = center_dist - (d1 / 2) - (d2 / 2)
 
                     if edge_dist < min_spacing:
                         mid_x = (x1 + x2) / 2
                         mid_y = (y1 + y2) / 2
-                        self.violations.append(DRCViolation(
-                            rule="hole_to_hole",
-                            severity="warning",
-                            message=f"Hole spacing violation: {ref1}.{num1} to {ref2}.{num2} ({edge_dist:.3f}mm < {min_spacing:.3f}mm)",
-                            location=(mid_x, mid_y),
-                            items=[f"{ref1}.{num1}", f"{ref2}.{num2}"],
-                        ))
+                        self.violations.append(
+                            DRCViolation(
+                                rule="hole_to_hole",
+                                severity="warning",
+                                message=f"Hole spacing violation: {ref1}.{num1} to {ref2}.{num2} ({edge_dist:.3f}mm < {min_spacing:.3f}mm)",
+                                location=(mid_x, mid_y),
+                                items=[f"{ref1}.{num1}", f"{ref2}.{num2}"],
+                            )
+                        )
 
     def _check_hole_to_edge(self):
         """Check through-hole pad distance to board edge.
@@ -351,13 +369,15 @@ class DRCChecker:
                     required_margin = min_clearance + hole_radius
 
                     if not outline.contains_point(abs_x, abs_y, required_margin):
-                        self.violations.append(DRCViolation(
-                            rule="hole_to_edge",
-                            severity="warning",
-                            message=f"Hole {ref}.{pad.number} too close to board edge (requires {min_clearance:.2f}mm clearance)",
-                            location=(abs_x, abs_y),
-                            items=[f"{ref}.{pad.number}"],
-                        ))
+                        self.violations.append(
+                            DRCViolation(
+                                rule="hole_to_edge",
+                                severity="warning",
+                                message=f"Hole {ref}.{pad.number} too close to board edge (requires {min_clearance:.2f}mm clearance)",
+                                location=(abs_x, abs_y),
+                                items=[f"{ref}.{pad.number}"],
+                            )
+                        )
 
     def _check_silk_to_pad(self):
         """Check silkscreen clearance to pads.
@@ -400,19 +420,25 @@ class DRCChecker:
             import pcbnew
         except ImportError:
             # Return warning that native DRC was skipped
-            return (True, [DRCViolation(
-                rule="KICAD_DRC_UNAVAILABLE",
-                severity="warning",
-                message="KiCad DRC skipped: pcbnew module not available",
-                location=(0.0, 0.0),
-                items=[]
-            )])
+            return (
+                True,
+                [
+                    DRCViolation(
+                        rule="KICAD_DRC_UNAVAILABLE",
+                        severity="warning",
+                        message="KiCad DRC skipped: pcbnew module not available",
+                        location=(0.0, 0.0),
+                        items=[],
+                    )
+                ],
+            )
 
-        board = pcbnew.LoadBoard(str(pcb_path))
+        _board = pcbnew.LoadBoard(str(pcb_path))  # noqa: F841
 
         # Create DRC runner
         # Note: This is a simplified version - actual implementation
         # would need to handle KiCad's DRC markers properly
+        # TODO: Use _board to run actual KiCad DRC checks
 
         # For now, return empty (rely on custom checks)
         return (True, [])

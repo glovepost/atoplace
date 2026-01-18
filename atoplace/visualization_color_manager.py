@@ -7,11 +7,12 @@ and PCB layers.
 Based on patterns.py architecture - external configuration for maintainability.
 """
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import Dict, Optional
+
 import yaml
-import hashlib
 
 logger = logging.getLogger(__name__)
 

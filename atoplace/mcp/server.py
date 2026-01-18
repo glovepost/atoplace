@@ -21,11 +21,12 @@ Tools are organized into categories:
 - Validation: check overlaps, validate placement, DRC
 """
 
-from pathlib import Path
-from typing import List, Optional
 import json
 import logging
 import os
+from pathlib import Path
+from typing import List, Optional
+
 
 # Configure logging - use file to keep STDIO clean for MCP protocol
 def _get_default_log_path() -> str:
@@ -46,6 +47,7 @@ def _get_default_log_path() -> str:
     except (OSError, PermissionError):
         # Fall back to /tmp with unique filename
         import getpass
+
         try:
             username = getpass.getuser()
         except Exception:
@@ -55,6 +57,7 @@ def _get_default_log_path() -> str:
 
 LOG_FILE = os.environ.get("ATOPLACE_LOG", _get_default_log_path())
 _log_configured = False
+
 
 def _configure_logging():
     """Configure logging once."""
@@ -67,10 +70,12 @@ def _configure_logging():
     if not root.handlers:
         try:
             handler = logging.FileHandler(LOG_FILE, mode="a")
-            handler.setFormatter(logging.Formatter(
-                "%(asctime)s %(levelname)s [%(name)s] %(message)s",
-                datefmt="%H:%M:%S"
-            ))
+            handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+                    datefmt="%H:%M:%S",
+                )
+            )
             root.addHandler(handler)
             root.setLevel(logging.INFO)
 
@@ -79,41 +84,55 @@ def _configure_logging():
                 os.chmod(LOG_FILE, 0o600)
             except (OSError, PermissionError):
                 pass  # Best effort - may fail on some systems
-        except (OSError, PermissionError) as e:
+        except (OSError, PermissionError):
             # If file logging fails, just skip it (MCP needs clean STDIO)
             pass
     _log_configured = True
+
 
 _configure_logging()
 logger = logging.getLogger(__name__)
 
 try:
     from mcp.server.fastmcp import FastMCP
+
     MCP_AVAILABLE = True
 except ImportError:
     MCP_AVAILABLE = False
+
     # Stub for when MCP is not installed
     class FastMCP:
-        def __init__(self, name): self.name = name
-        def tool(self): return lambda f: f
-        def resource(self, uri): return lambda f: f
-        def run(self): print("MCP not installed")
+        def __init__(self, name):
+            self.name = name
+
+        def tool(self):
+            return lambda f: f
+
+        def resource(self, uri):
+            return lambda f: f
+
+        def run(self):
+            print("MCP not installed")
+
 
 from ..api.actions import LayoutActions
 from ..api.inspection import BoardInspector
 from ..api.session import Session
-from .context.micro import Microscope
 from .context.macro import MacroContext
+from .context.micro import Microscope
 from .context.vision import VisionContext
-from .prompts import SYSTEM_PROMPT, FIX_OVERLAPS_PROMPT
-
+from .prompts import FIX_OVERLAPS_PROMPT, SYSTEM_PROMPT
 
 # Initialize FastMCP server
 mcp = FastMCP("atoplace")
 
 # Session state - supports multiple backends
 # Prefer KIPY (live KiCad 9+), fall back to RPC, then IPC, then direct
-from .backends import create_session_with_fallback, get_backend_mode, BackendMode, BackendNotAvailableError
+from .backends import (
+    BackendMode,
+    BackendNotAvailableError,
+    create_session_with_fallback,
+)
 
 
 class SessionProvider:
@@ -196,10 +215,12 @@ class SessionProvider:
 # Global session provider instance
 session_provider = SessionProvider()
 
+
 # For backward compatibility, expose session and actual_mode as module-level attributes
 # These are properties that delegate to the session provider
 class _SessionProxy:
     """Proxy that delegates to session_provider for backward compatibility."""
+
     def __getattr__(self, name):
         return getattr(session_provider.session, name)
 
@@ -214,6 +235,7 @@ def _get_actual_mode() -> BackendMode:
     """Get actual backend mode from session provider."""
     return session_provider.actual_mode
 
+
 # Initialize immediately (preserves original behavior)
 # Can be deferred by setting ATOPLACE_LAZY_INIT=1
 if not os.environ.get("ATOPLACE_LAZY_INIT"):
@@ -224,14 +246,11 @@ if not os.environ.get("ATOPLACE_LAZY_INIT"):
 # Response Helpers
 # =============================================================================
 
+
 def _error_response(message: str, code: str = "error") -> str:
     """Standard error response format."""
     logger.warning("Error response: code=%s message=%s", code, message)
-    return json.dumps({
-        "status": "error",
-        "code": code,
-        "message": message
-    })
+    return json.dumps({"status": "error", "code": code, "message": message})
 
 
 def _success_response(data: dict) -> str:
@@ -289,11 +308,24 @@ def _validate_axis(axis: str) -> Optional[str]:
 
 # Path validation constants
 # Allowed paths can be configured via environment variable
-ALLOWED_PATH_ROOTS = os.environ.get("ATOPLACE_ALLOWED_PATHS", "").split(":") if os.environ.get("ATOPLACE_ALLOWED_PATHS") else []
+ALLOWED_PATH_ROOTS = (
+    os.environ.get("ATOPLACE_ALLOWED_PATHS", "").split(":")
+    if os.environ.get("ATOPLACE_ALLOWED_PATHS")
+    else []
+)
 BLOCKED_PATH_PATTERNS = [
-    "/etc/", "/var/", "/usr/", "/bin/", "/sbin/",  # System directories
-    "/.ssh/", "/.gnupg/", "/.aws/", "/.config/",   # Sensitive user directories
-    "/credentials", "/secrets", "/private",         # Common sensitive paths
+    "/etc/",
+    "/var/",
+    "/usr/",
+    "/bin/",
+    "/sbin/",  # System directories
+    "/.ssh/",
+    "/.gnupg/",
+    "/.aws/",
+    "/.config/",  # Sensitive user directories
+    "/credentials",
+    "/secrets",
+    "/private",  # Common sensitive paths
 ]
 
 # Pagination constants for discovery tools
@@ -340,7 +372,7 @@ def _validate_path(path: str, operation: str = "access") -> Optional[str]:
                     is_allowed = True
                     break
             if not is_allowed:
-                return f"Path not in allowed directories. Set ATOPLACE_ALLOWED_PATHS to configure."
+                return "Path not in allowed directories. Set ATOPLACE_ALLOWED_PATHS to configure."
 
         # For load operations, check file extension
         if operation == "load":
@@ -356,256 +388,9 @@ def _validate_path(path: str, operation: str = "access") -> Optional[str]:
 
 
 # =============================================================================
-# Module Detection Helpers
-# =============================================================================
-
-def _get_modules_from_board(board, use_heuristics_fallback: bool = True) -> tuple:
-    """
-    Get module groupings from board, preferring atopile source over heuristics.
-
-    This function:
-    1. First checks if the board has atopile module info already attached
-    2. If not, tries to detect an atopile project and load module hierarchy
-    3. Only falls back to heuristics if no atopile project is found
-
-    Args:
-        board: The Board instance to analyze
-        use_heuristics_fallback: If True, fall back to heuristics when no
-                                 atopile modules found (default: True)
-
-    Returns:
-        Tuple of (modules_dict, source, module_list) where:
-        - modules_dict: Dict[str, str] mapping ref to module type
-        - source: "atopile" or "heuristics"
-        - module_list: List of module info dicts for detailed reporting
-    """
-    from ..placement.module_detector import ModuleDetector
-    from ..board.atopile_adapter import AtopileProjectLoader, AtopileModuleParser
-
-    # First, check for atopile module info already on components
-    atopile_modules = {}  # ref -> module_path
-    module_components = {}  # module_path -> list of refs
-    module_types = {}  # module_path -> type
-
-    for ref, comp in board.components.items():
-        if "ato_module" in comp.properties:
-            module_path = comp.properties["ato_module"]
-            module_type = comp.properties.get("ato_module_type", "unknown")
-
-            atopile_modules[ref] = module_path
-            if module_path not in module_components:
-                module_components[module_path] = []
-                module_types[module_path] = module_type
-            module_components[module_path].append(ref)
-
-    # If we found atopile modules on components, use them
-    if atopile_modules:
-        return _build_atopile_module_response(atopile_modules, module_components, module_types)
-
-    # Try to detect atopile project and load module hierarchy
-    if session.source_path:
-        project_root = AtopileProjectLoader.find_project_root(session.source_path)
-        if project_root:
-            try:
-                loader = AtopileProjectLoader(project_root)
-                ato_source = loader.get_ato_source_path()
-
-                if ato_source and ato_source.exists():
-                    # Parse module hierarchy
-                    parser = AtopileModuleParser()
-                    hierarchy = parser.parse_file(ato_source)
-
-                    if hierarchy:
-                        # Try to apply module info to components
-                        result = _apply_atopile_modules_to_board(
-                            board, hierarchy, loader
-                        )
-                        if result:
-                            return result
-            except Exception as e:
-                logger.debug("Could not load atopile modules: %s", e)
-
-    # Fall back to heuristic detection if enabled
-    if use_heuristics_fallback:
-        detector = ModuleDetector(board)
-        detected_modules = detector.detect()
-        modules_dict = {
-            ref: mod.module_type.value
-            for mod in detected_modules
-            for ref in mod.components
-        }
-
-        # Build module list for detailed reporting
-        module_list = []
-        for mod in detected_modules:
-            module_list.append({
-                "name": mod.name,
-                "type": mod.module_type.value,
-                "components": list(mod.components),
-                "primary_component": mod.primary_component,
-                "priority": mod.priority,
-                "placement_hints": mod.placement_hints,
-                "source": "heuristics"
-            })
-
-        logger.info(
-            "Using heuristic modules: %d modules with %d components",
-            len(detected_modules), len(modules_dict)
-        )
-        return modules_dict, "heuristics", module_list
-
-    # No modules found and heuristics disabled
-    return {}, "none", []
-
-
-def _build_atopile_module_response(atopile_modules, module_components, module_types):
-    """Build the response tuple for atopile modules."""
-    # Build modules dict mapping ref -> module_type (for ForceDirectedRefiner)
-    modules_dict = {}
-    for ref, module_path in atopile_modules.items():
-        # Use the module path as the module "type" for grouping
-        # This preserves hierarchy like "power.regulator", "accel"
-        modules_dict[ref] = module_path
-
-    # Build module list for detailed reporting
-    module_list = []
-    for module_path, refs in module_components.items():
-        module_list.append({
-            "name": module_path,
-            "type": module_types.get(module_path, "unknown"),
-            "components": refs,
-            "primary_component": refs[0] if refs else None,
-            "priority": _get_module_priority(module_types.get(module_path, "unknown")),
-            "placement_hints": {},
-            "source": "atopile"
-        })
-
-    logger.info(
-        "Using atopile modules: %d modules with %d components",
-        len(module_components), len(atopile_modules)
-    )
-    return modules_dict, "atopile", module_list
-
-
-def _apply_atopile_modules_to_board(board, hierarchy, loader):
-    """
-    Apply atopile module info to board components and build response.
-
-    Maps atopile instance names to KiCad refs using multiple strategies:
-    1. atopile_address property on KiCad footprints
-    2. instance_to_ref_map from ato-lock.yaml
-    3. Case-insensitive matching
-
-    Returns the module response tuple if successful, None otherwise.
-    """
-    # Build mapping from atopile address to KiCad ref
-    address_to_ref = {}
-    components_with_address = 0
-    for ref, comp in board.components.items():
-        if 'atopile_address' in comp.properties:
-            address = comp.properties['atopile_address']
-            address_to_ref[address] = ref
-            components_with_address += 1
-            # Also map leaf name
-            if '.' in address:
-                leaf = address.split('.')[-1]
-                if leaf not in address_to_ref:
-                    address_to_ref[leaf] = ref
-
-    logger.debug(
-        "Atopile mapping: %d/%d components have atopile_address property",
-        components_with_address, len(board.components)
-    )
-
-    # Get instance-to-ref mapping from lock file
-    lock_ref_map = loader.instance_to_ref_map
-
-    # Collect module assignments
-    atopile_modules = {}  # ref -> module_path
-    module_components = {}  # module_path -> list of refs
-    module_types = {}  # module_path -> type
-
-    for module_path, module in hierarchy.items():
-        for instance_name in module.components:
-            kicad_ref = None
-
-            # Build qualified paths to try
-            qualified_path = f"{module_path}.{instance_name}"
-            simple_path = f"{module.name}.{instance_name}"
-
-            # Strategy 1: atopile_address property
-            for path in [qualified_path, simple_path, instance_name]:
-                if path in address_to_ref:
-                    kicad_ref = address_to_ref[path]
-                    break
-
-            # Strategy 2: Lock file mapping
-            if not kicad_ref:
-                for path in [qualified_path, simple_path, instance_name]:
-                    if path in lock_ref_map:
-                        kicad_ref = lock_ref_map[path]
-                        break
-                # Search for paths ending with instance name
-                if not kicad_ref:
-                    for path, ref in lock_ref_map.items():
-                        if path.endswith('.' + instance_name) or path == instance_name:
-                            kicad_ref = ref
-                            break
-
-            # Strategy 3: Case-insensitive match
-            if not kicad_ref:
-                for board_ref in board.components:
-                    if board_ref.lower() == instance_name.lower():
-                        kicad_ref = board_ref
-                        break
-
-            # If we found a mapping, record it
-            if kicad_ref and kicad_ref in board.components:
-                atopile_modules[kicad_ref] = module_path
-                if module_path not in module_components:
-                    module_components[module_path] = []
-                    module_types[module_path] = module.module_type or "unknown"
-                module_components[module_path].append(kicad_ref)
-
-                # Also set the property on the component for future use
-                comp = board.components[kicad_ref]
-                comp.properties["ato_module"] = module_path
-                comp.properties["ato_module_name"] = module.name
-                if module.module_type:
-                    comp.properties["ato_module_type"] = module.module_type
-
-    # If we mapped enough components, use atopile modules
-    if atopile_modules:
-        logger.info(
-            "Applied atopile modules: %d modules with %d/%d components mapped",
-            len(module_components), len(atopile_modules), len(board.components)
-        )
-        return _build_atopile_module_response(atopile_modules, module_components, module_types)
-
-    return None
-
-
-def _get_module_priority(module_type: str) -> int:
-    """Get placement priority for a module type."""
-    # Higher priority = place first (edge components, connectors)
-    priorities = {
-        "connector": 100,
-        "rf": 90,
-        "mcu": 80,
-        "microcontroller": 80,
-        "power": 70,
-        "sensor": 60,
-        "memory": 50,
-        "led": 40,
-        "crystal": 30,
-        "unknown": 10,
-    }
-    return priorities.get(module_type.lower(), 10)
-
-
-# =============================================================================
 # Board Management Tools
 # =============================================================================
+
 
 @mcp.tool()
 def load_board(path: str) -> str:
@@ -622,13 +407,18 @@ def load_board(path: str) -> str:
             return _error_response(err, "invalid_path")
 
         session.load(Path(path))
-        logger.info("Loaded board: %d components, %d nets",
-                   len(session.board.components), len(session.board.nets))
-        return _success_response({
-            "component_count": len(session.board.components),
-            "net_count": len(session.board.nets),
-            "backend": _get_actual_mode().value
-        })
+        logger.info(
+            "Loaded board: %d components, %d nets",
+            len(session.board.components),
+            len(session.board.nets),
+        )
+        return _success_response(
+            {
+                "component_count": len(session.board.components),
+                "net_count": len(session.board.nets),
+                "backend": _get_actual_mode().value,
+            }
+        )
     except Exception as e:
         logger.error("Load failed: %s", e)
         return _error_response(str(e), "load_failed")
@@ -677,7 +467,9 @@ def undo() -> str:
         if session.undo():
             return _success_response({"action": "undone", "message": "Undo successful"})
         else:
-            return _success_response({"action": "nothing_to_undo", "message": "No operations to undo"})
+            return _success_response(
+                {"action": "nothing_to_undo", "message": "No operations to undo"}
+            )
     except Exception as e:
         return _error_response(str(e), "undo_failed")
 
@@ -690,7 +482,9 @@ def redo() -> str:
         if session.redo():
             return _success_response({"action": "redone", "message": "Redo successful"})
         else:
-            return _success_response({"action": "nothing_to_redo", "message": "No operations to redo"})
+            return _success_response(
+                {"action": "nothing_to_redo", "message": "No operations to redo"}
+            )
     except Exception as e:
         return _error_response(str(e), "redo_failed")
 
@@ -699,8 +493,11 @@ def redo() -> str:
 # Placement Action Tools
 # =============================================================================
 
+
 @mcp.tool()
-def move_absolute(ref: str, x: float, y: float, rotation: Optional[float] = None) -> str:
+def move_absolute(
+    ref: str, x: float, y: float, rotation: Optional[float] = None
+) -> str:
     """
     Move component to absolute coordinates.
 
@@ -728,7 +525,9 @@ def move_absolute(ref: str, x: float, y: float, rotation: Optional[float] = None
 
 
 # Alias for backward compatibility with tests
-def move_component(ref: str, x: float, y: float, rotation: Optional[float] = None) -> str:
+def move_component(
+    ref: str, x: float, y: float, rotation: Optional[float] = None
+) -> str:
     """Alias for move_absolute for backward compatibility."""
     return move_absolute(ref, x, y, rotation)
 
@@ -783,7 +582,11 @@ def rotate(ref: str, angle: float) -> str:
 
 @mcp.tool()
 def place_next_to(
-    ref: str, target: str, side: str = "right", clearance: float = 0.5, align: str = "center"
+    ref: str,
+    target: str,
+    side: str = "right",
+    clearance: float = 0.5,
+    align: str = "center",
 ) -> str:
     """
     Place a component next to another with specified clearance.
@@ -839,7 +642,10 @@ def align_components(refs: List[str], axis: str = "x", anchor: str = "first") ->
 
 @mcp.tool()
 def distribute_evenly(
-    refs: List[str], start_ref: Optional[str] = None, end_ref: Optional[str] = None, axis: str = "auto"
+    refs: List[str],
+    start_ref: Optional[str] = None,
+    end_ref: Optional[str] = None,
+    axis: str = "auto",
 ) -> str:
     """
     Distribute components evenly between two points.
@@ -865,7 +671,10 @@ def distribute_evenly(
 
 @mcp.tool()
 def stack_components(
-    refs: List[str], direction: str = "down", spacing: float = 0.5, alignment: str = "center"
+    refs: List[str],
+    direction: str = "down",
+    spacing: float = 0.5,
+    alignment: str = "center",
 ) -> str:
     """
     Stack components sequentially in a direction.
@@ -921,7 +730,7 @@ def arrange_pattern(
     cols: Optional[int] = None,
     radius: Optional[float] = None,
     center_x: Optional[float] = None,
-    center_y: Optional[float] = None
+    center_y: Optional[float] = None,
 ) -> str:
     """
     Arrange components in a pattern (grid, row, column, or circular).
@@ -953,7 +762,10 @@ def arrange_pattern(
 
 @mcp.tool()
 def cluster_around(
-    anchor_ref: str, target_refs: List[str], side: str = "nearest", clearance: float = 0.5
+    anchor_ref: str,
+    target_refs: List[str],
+    side: str = "nearest",
+    clearance: float = 0.5,
 ) -> str:
     """
     Cluster components around an anchor on a specified side.
@@ -984,8 +796,11 @@ def cluster_around(
 # Context/Inspection Tools
 # =============================================================================
 
+
 @mcp.tool()
-def inspect_region(refs: List[str], padding: float = 5.0, include_image: bool = False) -> str:
+def inspect_region(
+    refs: List[str], padding: float = 5.0, include_image: bool = False
+) -> str:
     """
     Get detailed geometric data for a set of components.
 
@@ -1024,9 +839,7 @@ def get_board_summary() -> str:
 
 @mcp.tool()
 def check_overlaps(
-    refs: Optional[List[str]] = None,
-    limit: int = DEFAULT_LIMIT,
-    offset: int = 0
+    refs: Optional[List[str]] = None, limit: int = DEFAULT_LIMIT, offset: int = 0
 ) -> str:
     """
     Check for component overlaps.
@@ -1059,17 +872,19 @@ def check_overlaps(
         total_count = len(overlaps)
 
         # Apply pagination
-        paginated = overlaps[offset:offset + limit]
+        paginated = overlaps[offset : offset + limit]
         has_more = (offset + len(paginated)) < total_count
 
-        return _success_response({
-            "total_count": total_count,
-            "count": len(paginated),
-            "offset": offset,
-            "limit": limit,
-            "has_more": has_more,
-            "overlaps": paginated
-        })
+        return _success_response(
+            {
+                "total_count": total_count,
+                "count": len(paginated),
+                "offset": offset,
+                "limit": limit,
+                "has_more": has_more,
+                "overlaps": paginated,
+            }
+        )
     except Exception as e:
         return _error_response(str(e), "check_failed")
 
@@ -1104,17 +919,19 @@ def get_unplaced_components(limit: int = DEFAULT_LIMIT, offset: int = 0) -> str:
         total_count = len(unplaced)
 
         # Apply pagination
-        paginated = unplaced[offset:offset + limit]
+        paginated = unplaced[offset : offset + limit]
         has_more = (offset + len(paginated)) < total_count
 
-        return json.dumps({
-            "total_count": total_count,
-            "count": len(paginated),
-            "offset": offset,
-            "limit": limit,
-            "has_more": has_more,
-            "refs": paginated
-        })
+        return json.dumps(
+            {
+                "total_count": total_count,
+                "count": len(paginated),
+                "offset": offset,
+                "limit": limit,
+                "has_more": has_more,
+                "refs": paginated,
+            }
+        )
     except Exception as e:
         return _error_response(str(e), "discovery_failed")
 
@@ -1125,10 +942,7 @@ VALID_FILTERS = {"ref", "value", "footprint"}
 
 @mcp.tool()
 def find_components(
-    query: str,
-    filter_by: str = "ref",
-    limit: int = DEFAULT_LIMIT,
-    offset: int = 0
+    query: str, filter_by: str = "ref", limit: int = DEFAULT_LIMIT, offset: int = 0
 ) -> str:
     """
     Find components matching a query.
@@ -1149,7 +963,7 @@ def find_components(
         if filter_by.lower() not in VALID_FILTERS:
             return _error_response(
                 f"Invalid filter '{filter_by}'. Must be one of: ref, value, footprint",
-                "invalid_filter"
+                "invalid_filter",
             )
 
         # Clamp limit to valid range
@@ -1165,17 +979,19 @@ def find_components(
             return _error_response(str(e), "invalid_filter")
 
         # Apply pagination
-        paginated = matches[offset:offset + limit]
+        paginated = matches[offset : offset + limit]
         has_more = (offset + len(paginated)) < total_count
 
-        return json.dumps({
-            "total_count": total_count,
-            "count": len(paginated),
-            "offset": offset,
-            "limit": limit,
-            "has_more": has_more,
-            "matches": paginated
-        })
+        return json.dumps(
+            {
+                "total_count": total_count,
+                "count": len(paginated),
+                "offset": offset,
+                "limit": limit,
+                "has_more": has_more,
+                "matches": paginated,
+            }
+        )
     except Exception as e:
         return _error_response(str(e), "search_failed")
 
@@ -1184,13 +1000,14 @@ def find_components(
 # Validation Tools
 # =============================================================================
 
+
 @mcp.tool()
 def run_drc(
     use_kicad: bool = True,
     dfm_profile: str = "jlcpcb_standard",
     severity_filter: str = "all",
     limit: int = DEFAULT_LIMIT,
-    offset: int = 0
+    offset: int = 0,
 ) -> str:
     """
     Run Design Rule Check on the loaded board.
@@ -1209,8 +1026,8 @@ def run_drc(
     """
     try:
         _require_board()
-        from ..validation.drc import DRCChecker
         from ..dfm.profiles import get_profile
+        from ..validation.drc import DRCChecker
 
         # Clamp limit to valid range
         limit = max(1, min(limit, MAX_LIMIT))
@@ -1227,24 +1044,29 @@ def run_drc(
         total_count = len(violations)
 
         # Apply pagination
-        paginated = violations[offset:offset + limit]
+        paginated = violations[offset : offset + limit]
         has_more = (offset + len(paginated)) < total_count
 
-        return json.dumps({
-            "passed": passed,
-            "total_count": total_count,
-            "count": len(paginated),
-            "offset": offset,
-            "limit": limit,
-            "has_more": has_more,
-            "violations": [{
-                "rule": v.rule,
-                "severity": v.severity,
-                "message": v.message,
-                "items": v.items,
-                "location": {"x": v.location[0], "y": v.location[1]}
-            } for v in paginated]
-        })
+        return json.dumps(
+            {
+                "passed": passed,
+                "total_count": total_count,
+                "count": len(paginated),
+                "offset": offset,
+                "limit": limit,
+                "has_more": has_more,
+                "violations": [
+                    {
+                        "rule": v.rule,
+                        "severity": v.severity,
+                        "message": v.message,
+                        "items": v.items,
+                        "location": {"x": v.location[0], "y": v.location[1]},
+                    }
+                    for v in paginated
+                ],
+            }
+        )
     except Exception as e:
         logger.error("DRC failed: %s", e)
         return _error_response(str(e), "drc_failed")
@@ -1279,24 +1101,33 @@ def validate_placement(limit: int = DEFAULT_LIMIT, offset: int = 0) -> str:
         total_flags = len(all_flags)
 
         # Apply pagination to flags
-        paginated_flags = all_flags[offset:offset + limit]
+        paginated_flags = all_flags[offset : offset + limit]
         has_more = (offset + len(paginated_flags)) < total_flags
 
-        return json.dumps({
-            "overall_score": report.overall_score,
-            "placement_score": report.placement_score,
-            "routing_score": report.routing_score,
-            "dfm_score": report.dfm_score,
-            "electrical_score": report.electrical_score,
-            "flags_total_count": total_flags,
-            "flags_count": len(paginated_flags),
-            "flags_offset": offset,
-            "flags_limit": limit,
-            "flags_has_more": has_more,
-            "flags": [{"category": f.category.value, "severity": f.severity.value, "message": f.message} for f in paginated_flags],
-            "component_count": report.component_count,
-            "net_count": report.net_count
-        })
+        return json.dumps(
+            {
+                "overall_score": report.overall_score,
+                "placement_score": report.placement_score,
+                "routing_score": report.routing_score,
+                "dfm_score": report.dfm_score,
+                "electrical_score": report.electrical_score,
+                "flags_total_count": total_flags,
+                "flags_count": len(paginated_flags),
+                "flags_offset": offset,
+                "flags_limit": limit,
+                "flags_has_more": has_more,
+                "flags": [
+                    {
+                        "category": f.category.value,
+                        "severity": f.severity.value,
+                        "message": f.message,
+                    }
+                    for f in paginated_flags
+                ],
+                "component_count": report.component_count,
+                "net_count": report.net_count,
+            }
+        )
     except Exception as e:
         return _error_response(str(e), "validation_failed")
 
@@ -1305,11 +1136,12 @@ def validate_placement(limit: int = DEFAULT_LIMIT, offset: int = 0) -> str:
 # Advanced Placement Tools
 # =============================================================================
 
+
 @mcp.tool()
 def optimize_placement(
     constraints: Optional[List[str]] = None,
     iterations: int = 100,
-    enable_modules: bool = True
+    enable_modules: bool = True,
 ) -> str:
     """
     Run force-directed placement optimization with optional constraints.
@@ -1333,18 +1165,25 @@ def optimize_placement(
     """
     try:
         _require_board()
-        from ..placement.force_directed import ForceDirectedRefiner, RefinementConfig
         from ..nlp.constraint_parser import ConstraintParser
+        from ..placement.force_directed import ForceDirectedRefiner, RefinementConfig
+        from ..placement.module_detector import ModuleDetector
 
-        # Detect modules if enabled - prefer atopile modules over heuristics
+        # Detect modules if enabled
         modules = None
-        module_source = "none"
-        modules_detected = 0
         if enable_modules:
-            modules, module_source, module_list = _get_modules_from_board(
-                session.board, use_heuristics_fallback=True
+            detector = ModuleDetector(session.board)
+            detected_modules = detector.detect()
+            modules = {
+                ref: mod.module_type.value
+                for mod in detected_modules
+                for ref in mod.components
+            }
+            logger.info(
+                "Detected %d modules with %d components",
+                len(detected_modules),
+                len(modules),
             )
-            modules_detected = len(module_list)
 
         # Parse constraints
         parsed_constraints = []
@@ -1374,15 +1213,16 @@ def optimize_placement(
         modified_refs = list(session.board.components.keys())
         session.mark_modified(modified_refs)
 
-        return _success_response({
-            "success": True,
-            "iterations_run": iterations,
-            "modules_detected": modules_detected,
-            "module_source": module_source,
-            "constraints_applied": len(parsed_constraints),
-            "components_optimized": len(modified_refs),
-            "message": f"Optimized placement for {len(modified_refs)} components"
-        })
+        return _success_response(
+            {
+                "success": True,
+                "iterations_run": iterations,
+                "modules_detected": len(set(modules.values())) if modules else 0,
+                "constraints_applied": len(parsed_constraints),
+                "components_optimized": len(modified_refs),
+                "message": f"Optimized placement for {len(modified_refs)} components",
+            }
+        )
     except Exception as e:
         logger.error("Placement optimization failed: %s", e, exc_info=True)
         return _error_response(str(e), "optimization_failed")
@@ -1391,33 +1231,40 @@ def optimize_placement(
 @mcp.tool()
 def detect_modules() -> str:
     """
-    Detect functional modules in the board.
+    Detect functional modules in the board using connectivity and heuristics.
 
-    Prefers atopile module definitions from .ato source files when available.
-    Falls back to heuristic detection (connectivity and component patterns)
-    only when no atopile modules are found in the project.
-
-    Module types detected:
-    - From atopile: power, sensor, rf, mcu, connector, led, memory, etc.
-    - From heuristics: Microcontrollers, power regulators, RF frontends,
-      sensors, ESD protection, crystal oscillators
+    Identifies module types like:
+    - Microcontrollers and their support circuits
+    - Power regulators and decoupling
+    - RF frontends and matching networks
+    - Sensors and signal conditioning
+    - ESD protection circuits
+    - Crystal oscillators
 
     Returns:
-        JSON with detected modules, their components, and source (atopile/heuristics)
+        JSON with detected modules and their components
     """
     try:
         _require_board()
+        from ..placement.module_detector import ModuleDetector
 
-        # Use the unified helper that prefers atopile over heuristics
-        modules_dict, source, module_list = _get_modules_from_board(
-            session.board, use_heuristics_fallback=True
-        )
+        detector = ModuleDetector(session.board)
+        modules = detector.detect()
 
-        return json.dumps({
-            "module_count": len(module_list),
-            "source": source,
-            "modules": module_list
-        }, indent=2)
+        result = []
+        for module in modules:
+            result.append(
+                {
+                    "name": module.name,
+                    "type": module.module_type.value,
+                    "components": list(module.components),
+                    "primary_component": module.primary_component,
+                    "priority": module.priority,
+                    "placement_hints": module.placement_hints,
+                }
+            )
+
+        return json.dumps({"module_count": len(modules), "modules": result}, indent=2)
     except Exception as e:
         logger.error("Module detection failed: %s", e, exc_info=True)
         return _error_response(str(e), "detection_failed")
@@ -1458,14 +1305,18 @@ def parse_constraint(text: str) -> str:
                 "type": constraint.constraint_type.value,
                 "confidence": parsed_constraint.confidence.value,
                 "source_text": parsed_constraint.source_text,
-                "description": str(constraint)
+                "description": str(constraint),
             }
 
             # Add type-specific fields
             if hasattr(constraint, "components"):
                 constraint_dict["components"] = list(constraint.components)
             if hasattr(constraint, "edge"):
-                constraint_dict["edge"] = constraint.edge.value if hasattr(constraint.edge, 'value') else str(constraint.edge)
+                constraint_dict["edge"] = (
+                    constraint.edge.value
+                    if hasattr(constraint.edge, "value")
+                    else str(constraint.edge)
+                )
             if hasattr(constraint, "distance"):
                 constraint_dict["distance"] = constraint.distance
             if hasattr(constraint, "zone"):
@@ -1477,13 +1328,16 @@ def parse_constraint(text: str) -> str:
 
             constraints_data.append(constraint_dict)
 
-        return json.dumps({
-            "original_text": text,
-            "parsed_count": len(result.constraints),
-            "constraints": constraints_data,
-            "unrecognized_text": result.unrecognized_text,
-            "warnings": result.warnings
-        }, indent=2)
+        return json.dumps(
+            {
+                "original_text": text,
+                "parsed_count": len(result.constraints),
+                "constraints": constraints_data,
+                "unrecognized_text": result.unrecognized_text,
+                "warnings": result.warnings,
+            },
+            indent=2,
+        )
     except Exception as e:
         logger.error("Constraint parsing failed: %s", e, exc_info=True)
         return _error_response(str(e), "parse_failed")
@@ -1510,44 +1364,41 @@ def get_atopile_context(ato_path: Optional[str] = None) -> str:
     try:
         _require_board()
         from ..board.atopile_adapter import (
-            AtopileProjectLoader,
             AtopileModuleParser,
-            detect_board_source
+            AtopileProjectLoader,
         )
 
         # Auto-detect atopile source if not provided
         if ato_path is None and session.source_path:
             try:
                 # Try to find project root from the loaded board path
-                project_root = AtopileProjectLoader.find_project_root(session.source_path)
+                project_root = AtopileProjectLoader.find_project_root(
+                    session.source_path
+                )
                 if project_root:
                     ato_path = str(project_root)
                     logger.info("Auto-detected atopile project root: %s", ato_path)
                 else:
                     return _error_response(
                         "No atopile project found. Provide ato_path parameter.",
-                        "no_atopile_source"
+                        "no_atopile_source",
                     )
             except Exception as e:
                 logger.warning("Could not auto-detect atopile source: %s", e)
                 return _error_response(
                     "No atopile source found. Provide ato_path parameter.",
-                    "no_atopile_source"
+                    "no_atopile_source",
                 )
 
         if not ato_path:
             return _error_response(
-                "No atopile path provided and auto-detection failed",
-                "missing_path"
+                "No atopile path provided and auto-detection failed", "missing_path"
             )
 
         # Load atopile project
         project_path = Path(ato_path)
         if not project_path.exists():
-            return _error_response(
-                f"Path does not exist: {ato_path}",
-                "path_not_found"
-            )
+            return _error_response(f"Path does not exist: {ato_path}", "path_not_found")
 
         # Initialize loader
         loader = AtopileProjectLoader(project_path)
@@ -1563,14 +1414,16 @@ def get_atopile_context(ato_path: Optional[str] = None) -> str:
             module_hierarchy = parser.parse_file(ato_source)
 
             for module_path, module_info in module_hierarchy.items():
-                modules_data.append({
-                    "path": module_path,
-                    "name": module_info.name,
-                    "type": module_info.module_type or "unknown",
-                    "components": module_info.components,
-                    "submodules": len(module_info.submodules),
-                    "parent": module_info.parent
-                })
+                modules_data.append(
+                    {
+                        "path": module_path,
+                        "name": module_info.name,
+                        "type": module_info.module_type or "unknown",
+                        "components": module_info.components,
+                        "submodules": len(module_info.submodules),
+                        "parent": module_info.parent,
+                    }
+                )
 
         # Extract component metadata from lock file
         components_metadata = {}
@@ -1584,7 +1437,7 @@ def get_atopile_context(ato_path: Optional[str] = None) -> str:
                         "mpn": comp_data.get("mpn", ""),
                         "package": comp_data.get("package", ""),
                         "manufacturer": comp_data.get("manufacturer", ""),
-                        "description": comp_data.get("description", "")
+                        "description": comp_data.get("description", ""),
                     }
 
         # Build response
@@ -1596,7 +1449,7 @@ def get_atopile_context(ato_path: Optional[str] = None) -> str:
             "module_count": len(modules_data),
             "modules": modules_data,
             "components_with_metadata": len(components_metadata),
-            "component_metadata": components_metadata
+            "component_metadata": components_metadata,
         }
 
         return json.dumps(result, indent=2)
@@ -1609,6 +1462,7 @@ def get_atopile_context(ato_path: Optional[str] = None) -> str:
 # =============================================================================
 # BGA Fanout Tools
 # =============================================================================
+
 
 @mcp.tool()
 def detect_bga_components() -> str:
@@ -1636,18 +1490,23 @@ def detect_bga_components() -> str:
             comp = session.board.components.get(ref)
             if comp:
                 pitch = generator.measure_pitch(comp)
-                bga_info.append({
-                    "ref": ref,
-                    "footprint": comp.footprint,
-                    "pad_count": len(comp.pads),
-                    "pitch_mm": round(pitch, 3) if pitch > 0 else None,
-                    "position": {"x": round(comp.x, 3), "y": round(comp.y, 3)},
-                })
+                bga_info.append(
+                    {
+                        "ref": ref,
+                        "footprint": comp.footprint,
+                        "pad_count": len(comp.pads),
+                        "pitch_mm": round(pitch, 3) if pitch > 0 else None,
+                        "position": {"x": round(comp.x, 3), "y": round(comp.y, 3)},
+                    }
+                )
 
-        return json.dumps({
-            "detected_count": len(bga_refs),
-            "components": bga_info,
-        }, indent=2)
+        return json.dumps(
+            {
+                "detected_count": len(bga_refs),
+                "components": bga_info,
+            },
+            indent=2,
+        )
 
     except Exception as e:
         logger.error("BGA detection failed: %s", e, exc_info=True)
@@ -1656,9 +1515,7 @@ def detect_bga_components() -> str:
 
 @mcp.tool()
 def fanout_component(
-    ref: str,
-    strategy: str = "auto",
-    include_escape: bool = True
+    ref: str, strategy: str = "auto", include_escape: bool = True
 ) -> str:
     """
     Generate fanout pattern for a specific BGA component.
@@ -1690,7 +1547,7 @@ def fanout_component(
         if strategy.lower() not in strategy_map:
             return _error_response(
                 f"Invalid strategy: {strategy}. Use: auto, dogbone, vip",
-                "invalid_strategy"
+                "invalid_strategy",
             )
 
         generator = FanoutGenerator(session.board)
@@ -1729,19 +1586,22 @@ def fanout_component(
             for t in result.traces
         ]
 
-        return json.dumps({
-            "success": True,
-            "component": ref,
-            "strategy_used": result.strategy_used.value,
-            "pitch_mm": round(result.pitch_detected, 3),
-            "ring_count": result.ring_count,
-            "via_count": len(result.vias),
-            "trace_count": len(result.traces),
-            "vias": vias_data,
-            "traces": traces_data,
-            "stats": result.stats,
-            "warnings": result.warnings,
-        }, indent=2)
+        return json.dumps(
+            {
+                "success": True,
+                "component": ref,
+                "strategy_used": result.strategy_used.value,
+                "pitch_mm": round(result.pitch_detected, 3),
+                "ring_count": result.ring_count,
+                "via_count": len(result.vias),
+                "trace_count": len(result.traces),
+                "vias": vias_data,
+                "traces": traces_data,
+                "stats": result.stats,
+                "warnings": result.warnings,
+            },
+            indent=2,
+        )
 
     except Exception as e:
         logger.error("Fanout generation failed: %s", e, exc_info=True)
@@ -1749,10 +1609,7 @@ def fanout_component(
 
 
 @mcp.tool()
-def fanout_all_bgas(
-    strategy: str = "auto",
-    include_escape: bool = True
-) -> str:
+def fanout_all_bgas(strategy: str = "auto", include_escape: bool = True) -> str:
     """
     Generate fanout for all detected BGA components on the board.
 
@@ -1778,7 +1635,7 @@ def fanout_all_bgas(
         if strategy.lower() not in strategy_map:
             return _error_response(
                 f"Invalid strategy: {strategy}. Use: auto, dogbone, vip",
-                "invalid_strategy"
+                "invalid_strategy",
             )
 
         generator = FanoutGenerator(session.board)
@@ -1800,26 +1657,31 @@ def fanout_all_bgas(
                 "success": result.success,
             }
             if result.success:
-                comp_result.update({
-                    "strategy": result.strategy_used.value,
-                    "pitch_mm": round(result.pitch_detected, 3),
-                    "rings": result.ring_count,
-                    "vias": len(result.vias),
-                    "traces": len(result.traces),
-                })
+                comp_result.update(
+                    {
+                        "strategy": result.strategy_used.value,
+                        "pitch_mm": round(result.pitch_detected, 3),
+                        "rings": result.ring_count,
+                        "vias": len(result.vias),
+                        "traces": len(result.traces),
+                    }
+                )
             else:
                 comp_result["failure_reason"] = result.failure_reason
             component_results.append(comp_result)
 
-        return json.dumps({
-            "success": success_count > 0,
-            "total_components": len(results),
-            "successful": success_count,
-            "failed": len(results) - success_count,
-            "total_vias": total_vias,
-            "total_traces": total_traces,
-            "components": component_results,
-        }, indent=2)
+        return json.dumps(
+            {
+                "success": success_count > 0,
+                "total_components": len(results),
+                "successful": success_count,
+                "failed": len(results) - success_count,
+                "total_vias": total_vias,
+                "total_traces": total_traces,
+                "components": component_results,
+            },
+            indent=2,
+        )
 
     except Exception as e:
         logger.error("Fanout all BGAs failed: %s", e, exc_info=True)
@@ -1882,18 +1744,23 @@ def get_fanout_preview(ref: str) -> str:
             for ring in rings
         ]
 
-        return json.dumps({
-            "ref": ref,
-            "is_bga_candidate": is_bga,
-            "footprint": comp.footprint,
-            "pad_count": len(comp.pads),
-            "pitch_mm": round(pitch, 3) if pitch > 0 else None,
-            "recommended_strategy": recommended_strategy if is_bga else None,
-            "ring_count": len(rings),
-            "rings": ring_info,
-            "layers_needed": sorted(layer_mapping.layer_to_pads.keys()) if layer_mapping else [],
-            "board_layers": session.board.layer_count,
-        }, indent=2)
+        return json.dumps(
+            {
+                "ref": ref,
+                "is_bga_candidate": is_bga,
+                "footprint": comp.footprint,
+                "pad_count": len(comp.pads),
+                "pitch_mm": round(pitch, 3) if pitch > 0 else None,
+                "recommended_strategy": recommended_strategy if is_bga else None,
+                "ring_count": len(rings),
+                "rings": ring_info,
+                "layers_needed": (
+                    sorted(layer_mapping.layer_to_pads.keys()) if layer_mapping else []
+                ),
+                "board_layers": session.board.layer_count,
+            },
+            indent=2,
+        )
 
     except Exception as e:
         logger.error("Fanout preview failed: %s", e, exc_info=True)
@@ -1904,13 +1771,14 @@ def get_fanout_preview(ref: str) -> str:
 # Routing Tools
 # =============================================================================
 
+
 @mcp.tool()
 def route_board(
     visualize: bool = False,
     diff_pairs: Optional[List[str]] = None,
     critical_nets: Optional[List[str]] = None,
     limit: int = DEFAULT_LIMIT,
-    offset: int = 0
+    offset: int = 0,
 ) -> str:
     """
     Route all nets on the board using the multi-phase routing pipeline.
@@ -1963,39 +1831,46 @@ def route_board(
         # Build response
         net_summaries = []
         for net_name, net_result in result.net_results.items():
-            net_summaries.append({
-                "net": net_name,
-                "success": net_result.success,
-                "length_mm": round(net_result.total_length, 2),
-                "vias": net_result.via_count,
-                "segments": len(net_result.segments),
-                "failure_reason": net_result.failure_reason if not net_result.success else None
-            })
+            net_summaries.append(
+                {
+                    "net": net_name,
+                    "success": net_result.success,
+                    "length_mm": round(net_result.total_length, 2),
+                    "vias": net_result.via_count,
+                    "segments": len(net_result.segments),
+                    "failure_reason": (
+                        net_result.failure_reason if not net_result.success else None
+                    ),
+                }
+            )
 
         total_nets_in_results = len(net_summaries)
 
         # Apply pagination to net summaries
-        paginated = net_summaries[offset:offset + limit]
+        paginated = net_summaries[offset : offset + limit]
         has_more = (offset + len(paginated)) < total_nets_in_results
 
-        return json.dumps({
-            "success": result.success,
-            "completion_rate": round(result.completion_rate, 1),
-            "total_nets": result.total_nets,
-            "routed_nets": result.routed_nets,
-            "failed_nets": result.failed_nets,
-            "total_length_mm": round(result.total_length, 1),
-            "total_vias": result.total_vias,
-            "phases_completed": [p.value for p in result.phases_completed],
-            "nets_total_count": total_nets_in_results,
-            "nets_count": len(paginated),
-            "nets_offset": offset,
-            "nets_limit": limit,
-            "nets_has_more": has_more,
-            "nets": paginated,
-            "errors": result.errors,
-            "warnings": result.warnings
-        }, indent=2)
+        return json.dumps(
+            {
+                "success": result.success,
+                "completion_rate": round(result.completion_rate, 1),
+                "total_nets": result.total_nets,
+                "routed_nets": result.routed_nets,
+                "failed_nets": result.failed_nets,
+                "total_length_mm": round(result.total_length, 1),
+                "total_vias": result.total_vias,
+                "phases_completed": [p.value for p in result.phases_completed],
+                "nets_total_count": total_nets_in_results,
+                "nets_count": len(paginated),
+                "nets_offset": offset,
+                "nets_limit": limit,
+                "nets_has_more": has_more,
+                "nets": paginated,
+                "errors": result.errors,
+                "warnings": result.warnings,
+            },
+            indent=2,
+        )
 
     except Exception as e:
         logger.error("Board routing failed: %s", e, exc_info=True)
@@ -2030,7 +1905,7 @@ def route_net(net_name: str, visualize: bool = False) -> str:
                 "start": {"x": round(s.start[0], 3), "y": round(s.start[1], 3)},
                 "end": {"x": round(s.end[0], 3), "y": round(s.end[1], 3)},
                 "layer": s.layer,
-                "width": s.width
+                "width": s.width,
             }
             for s in result.segments
         ]
@@ -2040,23 +1915,26 @@ def route_net(net_name: str, visualize: bool = False) -> str:
                 "x": round(v.x, 3),
                 "y": round(v.y, 3),
                 "drill": v.drill_diameter,
-                "pad": v.pad_diameter
+                "pad": v.pad_diameter,
             }
             for v in result.vias
         ]
 
-        return json.dumps({
-            "success": result.success,
-            "net": net_name,
-            "length_mm": round(result.total_length, 2),
-            "via_count": result.via_count,
-            "segment_count": len(result.segments),
-            "iterations": result.iterations,
-            "explored_nodes": result.explored_count,
-            "segments": segments_data,
-            "vias": vias_data,
-            "failure_reason": result.failure_reason if not result.success else None
-        }, indent=2)
+        return json.dumps(
+            {
+                "success": result.success,
+                "net": net_name,
+                "length_mm": round(result.total_length, 2),
+                "via_count": result.via_count,
+                "segment_count": len(result.segments),
+                "iterations": result.iterations,
+                "explored_nodes": result.explored_count,
+                "segments": segments_data,
+                "vias": vias_data,
+                "failure_reason": result.failure_reason if not result.success else None,
+            },
+            indent=2,
+        )
 
     except Exception as e:
         logger.error("Net routing failed: %s", e, exc_info=True)
@@ -2093,16 +1971,19 @@ def detect_diff_pairs() -> str:
                 "positive_net": p.positive_net,
                 "negative_net": p.negative_net,
                 "pattern": p.pattern.value,
-                "confidence": p.confidence
+                "confidence": p.confidence,
             }
             for p in pairs
         ]
 
-        return json.dumps({
-            "detected_count": len(pairs),
-            "total_nets": len(net_names),
-            "diff_pairs": pairs_data
-        }, indent=2)
+        return json.dumps(
+            {
+                "detected_count": len(pairs),
+                "total_nets": len(net_names),
+                "diff_pairs": pairs_data,
+            },
+            indent=2,
+        )
 
     except Exception as e:
         logger.error("Diff pair detection failed: %s", e, exc_info=True)
@@ -2132,7 +2013,7 @@ def get_routing_preview() -> str:
         net_stats = {"single_pad": 0, "two_pad": 0, "multi_pad": 0}
         total_pads = 0
         for net_name, net in session.board.nets.items():
-            pad_count = len(net.pads) if hasattr(net, 'pads') else 0
+            pad_count = len(net.pads) if hasattr(net, "pads") else 0
             total_pads += pad_count
             if pad_count <= 1:
                 net_stats["single_pad"] += 1
@@ -2159,21 +2040,26 @@ def get_routing_preview() -> str:
         elif len(session.board.nets) > 100:
             complexity = "moderate"
 
-        return json.dumps({
-            "net_count": len(session.board.nets),
-            "component_count": len(session.board.components),
-            "layer_count": session.board.layer_count,
-            "net_stats": net_stats,
-            "diff_pairs_detected": len(diff_pairs),
-            "diff_pair_names": [p.name for p in diff_pairs],
-            "bga_components": bga_refs,
-            "estimated_complexity": complexity,
-            "recommendations": {
-                "enable_fanout": len(bga_refs) > 0,
-                "route_diff_pairs_first": len(diff_pairs) > 0,
-                "estimated_routing_time": "quick" if complexity == "simple" else "moderate"
-            }
-        }, indent=2)
+        return json.dumps(
+            {
+                "net_count": len(session.board.nets),
+                "component_count": len(session.board.components),
+                "layer_count": session.board.layer_count,
+                "net_stats": net_stats,
+                "diff_pairs_detected": len(diff_pairs),
+                "diff_pair_names": [p.name for p in diff_pairs],
+                "bga_components": bga_refs,
+                "estimated_complexity": complexity,
+                "recommendations": {
+                    "enable_fanout": len(bga_refs) > 0,
+                    "route_diff_pairs_first": len(diff_pairs) > 0,
+                    "estimated_routing_time": (
+                        "quick" if complexity == "simple" else "moderate"
+                    ),
+                },
+            },
+            indent=2,
+        )
 
     except Exception as e:
         logger.error("Routing preview failed: %s", e, exc_info=True)
@@ -2184,11 +2070,10 @@ def get_routing_preview() -> str:
 # Pin Swap Optimization Tools
 # =============================================================================
 
+
 @mcp.tool()
 def analyze_pin_swaps(
-    ref: Optional[str] = None,
-    limit: int = DEFAULT_LIMIT,
-    offset: int = 0
+    ref: Optional[str] = None, limit: int = DEFAULT_LIMIT, offset: int = 0
 ) -> str:
     """
     Analyze potential pin swaps for routing optimization.
@@ -2223,10 +2108,7 @@ def analyze_pin_swaps(
             if "error" in analysis:
                 return _error_response(analysis["error"], "analysis_failed")
 
-            return json.dumps({
-                "component": ref,
-                "analysis": analysis
-            }, indent=2)
+            return json.dumps({"component": ref, "analysis": analysis}, indent=2)
         else:
             # Analyze all swappable components
             groups = swapper._detector.detect_all()
@@ -2235,33 +2117,38 @@ def analyze_pin_swaps(
             for comp_ref in groups.keys():
                 analysis = swapper.analyze_component(comp_ref)
                 if "error" not in analysis:
-                    analyses.append({
-                        "component": comp_ref,
-                        "swap_groups": analysis.get("swap_groups", 0),
-                        "current_crossings": analysis.get("current_crossings", 0),
-                        "groups": analysis.get("groups", [])
-                    })
+                    analyses.append(
+                        {
+                            "component": comp_ref,
+                            "swap_groups": analysis.get("swap_groups", 0),
+                            "current_crossings": analysis.get("current_crossings", 0),
+                            "groups": analysis.get("groups", []),
+                        }
+                    )
 
             total_count = len(analyses)
 
             # Apply pagination
-            paginated = analyses[offset:offset + limit]
+            paginated = analyses[offset : offset + limit]
             has_more = (offset + len(paginated)) < total_count
 
             # Get global crossing stats
             crossing_result = swapper.get_crossing_analysis()
 
-            return json.dumps({
-                "components_with_swaps": total_count,
-                "total_crossings": crossing_result.total_crossings,
-                "crossing_density": round(crossing_result.crossing_density, 2),
-                "analyses_total_count": total_count,
-                "analyses_count": len(paginated),
-                "analyses_offset": offset,
-                "analyses_limit": limit,
-                "analyses_has_more": has_more,
-                "analyses": paginated
-            }, indent=2)
+            return json.dumps(
+                {
+                    "components_with_swaps": total_count,
+                    "total_crossings": crossing_result.total_crossings,
+                    "crossing_density": round(crossing_result.crossing_density, 2),
+                    "analyses_total_count": total_count,
+                    "analyses_count": len(paginated),
+                    "analyses_offset": offset,
+                    "analyses_limit": limit,
+                    "analyses_has_more": has_more,
+                    "analyses": paginated,
+                },
+                indent=2,
+            )
 
     except Exception as e:
         logger.error("Pin swap analysis failed: %s", e, exc_info=True)
@@ -2270,9 +2157,7 @@ def analyze_pin_swaps(
 
 @mcp.tool()
 def optimize_pin_swaps(
-    ref: Optional[str] = None,
-    min_improvement: float = 5.0,
-    apply: bool = True
+    ref: Optional[str] = None, min_improvement: float = 5.0, apply: bool = True
 ) -> str:
     """
     Optimize pin assignments to reduce routing complexity.
@@ -2306,28 +2191,37 @@ def optimize_pin_swaps(
         total_swaps = 0
         for comp_ref, result in results.items():
             total_swaps += result.total_swaps
-            result_data.append({
-                "component": comp_ref,
-                "success": result.success,
-                "groups_detected": result.groups_detected,
-                "groups_optimized": result.groups_optimized,
-                "swaps_performed": result.total_swaps,
-                "crossing_improvement": f"{result.crossing_improvement:.1f}%",
-                "wire_improvement": f"{result.wire_improvement:.1f}%",
-                "failure_reason": result.failure_reason if not result.success else None
-            })
+            result_data.append(
+                {
+                    "component": comp_ref,
+                    "success": result.success,
+                    "groups_detected": result.groups_detected,
+                    "groups_optimized": result.groups_optimized,
+                    "swaps_performed": result.total_swaps,
+                    "crossing_improvement": f"{result.crossing_improvement:.1f}%",
+                    "wire_improvement": f"{result.wire_improvement:.1f}%",
+                    "failure_reason": (
+                        result.failure_reason if not result.success else None
+                    ),
+                }
+            )
 
         # Get crossing stats
         crossing_result = swapper.get_crossing_analysis()
 
-        return json.dumps({
-            "success": total_swaps > 0,
-            "total_swaps": total_swaps,
-            "components_optimized": len([r for r in results.values() if r.total_swaps > 0]),
-            "total_crossings": crossing_result.total_crossings,
-            "results": result_data,
-            "constraint_updates_pending": swapper.pending_constraint_count
-        }, indent=2)
+        return json.dumps(
+            {
+                "success": total_swaps > 0,
+                "total_swaps": total_swaps,
+                "components_optimized": len(
+                    [r for r in results.values() if r.total_swaps > 0]
+                ),
+                "total_crossings": crossing_result.total_crossings,
+                "results": result_data,
+                "constraint_updates_pending": swapper.pending_constraint_count,
+            },
+            indent=2,
+        )
 
     except Exception as e:
         logger.error("Pin swap optimization failed: %s", e, exc_info=True)
@@ -2353,18 +2247,23 @@ def get_crossing_analysis() -> str:
         counter = CrossingCounter(session.board)
         result = counter.count_all()
 
-        return json.dumps({
-            "total_crossings": result.total_crossings,
-            "edges_analyzed": result.edges_analyzed,
-            "crossing_density": round(result.crossing_density, 3),
-            "crossings_by_component": dict(sorted(
-                result.crossings_by_component.items(),
-                key=lambda x: x[1],
-                reverse=True
-            )[:20]),
-            "worst_nets": result.worst_nets[:10],
-            "crossing_pairs_sample": result.crossing_pairs[:10]
-        }, indent=2)
+        return json.dumps(
+            {
+                "total_crossings": result.total_crossings,
+                "edges_analyzed": result.edges_analyzed,
+                "crossing_density": round(result.crossing_density, 3),
+                "crossings_by_component": dict(
+                    sorted(
+                        result.crossings_by_component.items(),
+                        key=lambda x: x[1],
+                        reverse=True,
+                    )[:20]
+                ),
+                "worst_nets": result.worst_nets[:10],
+                "crossing_pairs_sample": result.crossing_pairs[:10],
+            },
+            indent=2,
+        )
 
     except Exception as e:
         logger.error("Crossing analysis failed: %s", e, exc_info=True)
@@ -2373,8 +2272,7 @@ def get_crossing_analysis() -> str:
 
 @mcp.tool()
 def export_pin_constraints(
-    format: str = "xdc",
-    output_path: Optional[str] = None
+    format: str = "xdc", output_path: Optional[str] = None
 ) -> str:
     """
     Export pin swap constraints to a file.
@@ -2391,7 +2289,7 @@ def export_pin_constraints(
     """
     try:
         _require_board()
-        from ..routing.pinswapper import PinSwapper, SwapConfig, ConstraintFormat
+        from ..routing.pinswapper import ConstraintFormat, PinSwapper, SwapConfig
 
         format_map = {
             "xdc": ConstraintFormat.XDC,
@@ -2403,7 +2301,7 @@ def export_pin_constraints(
         if format.lower() not in format_map:
             return _error_response(
                 f"Invalid format: {format}. Use: xdc, qsf, tcl, csv, json",
-                "invalid_format"
+                "invalid_format",
             )
 
         constraint_format = format_map[format.lower()]
@@ -2414,26 +2312,33 @@ def export_pin_constraints(
         swapper.optimize_all(apply=False)  # Don't apply, just generate constraints
 
         if swapper.pending_constraint_count == 0:
-            return json.dumps({
-                "success": False,
-                "message": "No pin swaps to export. Run optimize_pin_swaps first."
-            })
+            return json.dumps(
+                {
+                    "success": False,
+                    "message": "No pin swaps to export. Run optimize_pin_swaps first.",
+                }
+            )
 
         if output_path:
             swapper.export_constraints(Path(output_path), constraint_format)
-            return json.dumps({
-                "success": True,
-                "path": output_path,
-                "constraint_count": swapper.pending_constraint_count
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "path": output_path,
+                    "constraint_count": swapper.pending_constraint_count,
+                }
+            )
         else:
             content = swapper.get_constraint_preview(constraint_format)
-            return json.dumps({
-                "success": True,
-                "format": format,
-                "constraint_count": swapper.pending_constraint_count,
-                "content": content
-            }, indent=2)
+            return json.dumps(
+                {
+                    "success": True,
+                    "format": format,
+                    "constraint_count": swapper.pending_constraint_count,
+                    "content": content,
+                },
+                indent=2,
+            )
 
     except Exception as e:
         logger.error("Constraint export failed: %s", e, exc_info=True)
@@ -2444,9 +2349,11 @@ def export_pin_constraints(
 # MCP Resources
 # =============================================================================
 
+
 @mcp.resource("prompts://system")
 def system_prompt_resource() -> str:
     return SYSTEM_PROMPT
+
 
 @mcp.resource("prompts://fix_overlaps")
 def fix_overlaps_prompt_resource() -> str:
@@ -2458,8 +2365,11 @@ def main():
         print("Error: MCP package not installed.")
         return
 
-    logger.info("Starting AtoPlace MCP server with backend: %s", _get_actual_mode().value)
+    logger.info(
+        "Starting AtoPlace MCP server with backend: %s", _get_actual_mode().value
+    )
     mcp.run()
+
 
 if __name__ == "__main__":
     main()

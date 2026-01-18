@@ -43,18 +43,21 @@ def __getattr__(name):
     if name == "ManufacturingOutputGenerator":
         try:
             from .manufacturing import ManufacturingOutputGenerator
+
             return ManufacturingOutputGenerator
         except ImportError:
             raise ImportError(error_msg)
     elif name == "JLCPCBExporter":
         try:
             from .jlcpcb import JLCPCBExporter
+
             return JLCPCBExporter
         except ImportError:
             raise ImportError(error_msg)
     elif name == "GerberGenerator":
         try:
             from .gerber import GerberGenerator
+
             return GerberGenerator
         except ImportError:
             raise ImportError(error_msg)

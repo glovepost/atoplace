@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Add test components to the tutorial board"""
+
 from pathlib import Path
+
+from atoplace.board.abstraction import Component, Layer, Net, Pad
 from atoplace.board.kicad_adapter import load_kicad_board, save_kicad_board
-from atoplace.board.abstraction import Component, Pad, Net, Layer
 
 # Load the empty tutorial PCB
 pcb_path = Path("examples/tutorial/elec/layout/default/tutorial.kicad_pcb")
@@ -31,7 +33,7 @@ for ref in ["C1", "C2"]:
         pads=[
             Pad(number="1", x=-0.95, y=0, width=1.0, height=1.3),
             Pad(number="2", x=0.95, y=0, width=1.0, height=1.3),
-        ]
+        ],
     )
     components.append(comp)
     print(f"  Created {ref}: {comp.footprint}")
@@ -51,7 +53,7 @@ for ref in ["R1", "R2", "R3"]:
         pads=[
             Pad(number="1", x=-0.5, y=0, width=0.6, height=0.6),
             Pad(number="2", x=0.5, y=0, width=0.6, height=0.6),
-        ]
+        ],
     )
     components.append(comp)
     print(f"  Created {ref}: {comp.footprint}")
@@ -71,7 +73,7 @@ for ref in ["C3", "C4"]:
         pads=[
             Pad(number="1", x=-0.5, y=0, width=0.6, height=0.6),
             Pad(number="2", x=0.5, y=0, width=0.6, height=0.6),
-        ]
+        ],
     )
     components.append(comp)
     print(f"  Created {ref}: {comp.footprint}")
@@ -90,7 +92,7 @@ comp = Component(
     pads=[
         Pad(number="1", x=-1.4, y=0, width=1.6, height=1.8),
         Pad(number="2", x=1.4, y=0, width=1.6, height=1.8),
-    ]
+    ],
 )
 components.append(comp)
 print(f"  Created {comp.reference}: {comp.footprint}")
@@ -101,7 +103,9 @@ board.components = components
 # Create simple nets for connectivity
 # Following the power filter circuit pattern
 nets = [
-    Net(name="VCC", connections=[(comp, "1") for comp in [components[0], components[2]]]),
+    Net(
+        name="VCC", connections=[(comp, "1") for comp in [components[0], components[2]]]
+    ),
     Net(name="GND", connections=[(comp, "2") for comp in components]),
     Net(name="VCC_FILTERED", connections=[(comp, "1") for comp in components[3:]]),
 ]

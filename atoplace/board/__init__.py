@@ -1,9 +1,9 @@
 """Board abstraction layer for unified KiCad/atopile access."""
 
-from .abstraction import Board, Component, Net, Pad, Layer, BoardOutline, RefDesText
+from .abstraction import Board, BoardOutline, Component, Layer, Net, Pad, RefDesText
 from .atopile_adapter import (
-    AtopileProjectLoader,
     AtopileModuleParser,
+    AtopileProjectLoader,
     ComponentMetadata,
     ModuleHierarchy,
     detect_board_source,
@@ -12,12 +12,12 @@ from .atopile_adapter import (
 from .lock_file import (
     AtoplaceLock,
     ComponentPosition,
-    get_lock_file_path,
-    parse_lock_file,
-    write_lock_file,
     apply_lock_to_board,
     create_lock_from_board,
+    get_lock_file_path,
     merge_lock_files,
+    parse_lock_file,
+    write_lock_file,
 )
 
 __all__ = [

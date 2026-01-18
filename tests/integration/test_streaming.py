@@ -12,16 +12,15 @@ the optimization in real-time.
 """
 
 import asyncio
-import sys
 import logging
-import random
 import math
+import random
+import sys
 from pathlib import Path
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -58,17 +57,14 @@ async def test_streaming_placement():
     logger.info(f"Board loaded: {len(board.components)} components")
 
     if len(board.components) == 0:
-        logger.warning("Board has no components! Streaming test may not be very interesting.")
+        logger.warning(
+            "Board has no components! Streaming test may not be very interesting."
+        )
         logger.info("Try using examples/tutorial/tutorial_with_components.kicad_pcb")
         return
 
     # Create streaming visualizer
-    viz = StreamingVisualizer(
-        board,
-        host='localhost',
-        port=8765,
-        max_fps=10.0
-    )
+    viz = StreamingVisualizer(board, host="localhost", port=8765, max_fps=10.0)
 
     try:
         # Start streaming server and generate viewer
@@ -108,13 +104,15 @@ async def test_streaming_placement():
                 # Calculate direction toward center
                 dx = board_center_x - cx
                 dy = board_center_y - cy
-                dist = math.sqrt(dx*dx + dy*dy)
+                dist = math.sqrt(dx * dx + dy * dy)
 
                 if dist > 0.1:  # If not at center
                     # Move toward center with some randomness
-                    step_size = 0.5 * (1.0 - iteration / num_iterations)  # Decreasing step size
-                    nx = cx + (dx/dist) * step_size + random.gauss(0, 0.1)
-                    ny = cy + (dy/dist) * step_size + random.gauss(0, 0.1)
+                    step_size = 0.5 * (
+                        1.0 - iteration / num_iterations
+                    )  # Decreasing step size
+                    nx = cx + (dx / dist) * step_size + random.gauss(0, 0.1)
+                    ny = cy + (dy / dist) * step_size + random.gauss(0, 0.1)
 
                     # Slight rotation
                     rot = comp.rotation + random.gauss(0, 1.0)
@@ -126,14 +124,14 @@ async def test_streaming_placement():
             # Simulate module assignments (group components by type)
             modules = {}
             for i, comp in enumerate(components):
-                if 'C' in comp.reference:
-                    modules[comp.reference] = 'power_supply'
-                elif 'R' in comp.reference:
-                    modules[comp.reference] = 'analog'
-                elif 'U' in comp.reference:
-                    modules[comp.reference] = 'microcontroller'
+                if "C" in comp.reference:
+                    modules[comp.reference] = "power_supply"
+                elif "R" in comp.reference:
+                    modules[comp.reference] = "analog"
+                elif "U" in comp.reference:
+                    modules[comp.reference] = "microcontroller"
                 else:
-                    modules[comp.reference] = 'digital'
+                    modules[comp.reference] = "digital"
 
             # Simulate force vectors (smaller as we converge)
             forces = {}
@@ -142,11 +140,9 @@ async def test_streaming_placement():
                     cx, cy = comp.position
                     dx = board_center_x - cx
                     dy = board_center_y - cy
-                    magnitude = math.sqrt(dx*dx + dy*dy)
+                    magnitude = math.sqrt(dx * dx + dy * dy)
                     if magnitude > 0.1:
-                        forces[comp.reference] = [
-                            (dx/10, dy/10, "attraction")
-                        ]
+                        forces[comp.reference] = [(dx / 10, dy / 10, "attraction")]
 
             # Simulate energy decay
             energy = 1000.0 * (1.0 - iteration / num_iterations)
@@ -165,7 +161,9 @@ async def test_streaming_placement():
 
             # Log progress
             if iteration % 10 == 0:
-                logger.info(f"Iteration {iteration}/{num_iterations} - Energy: {energy:.1f}")
+                logger.info(
+                    f"Iteration {iteration}/{num_iterations} - Energy: {energy:.1f}"
+                )
 
             # Check for user interaction
             if await viz.is_paused():
@@ -177,7 +175,9 @@ async def test_streaming_placement():
 
             if await viz.is_stop_requested():
                 logger.warning("⏹ Optimization STOPPED by user")
-                await viz.send_status("warning", f"Optimization stopped by user at iteration {iteration}")
+                await viz.send_status(
+                    "warning", f"Optimization stopped by user at iteration {iteration}"
+                )
                 break
 
             # Small delay to simulate real computation
@@ -185,7 +185,9 @@ async def test_streaming_placement():
 
         # Optimization complete
         logger.info("✓ Optimization complete!")
-        await viz.send_status("complete", f"Optimization finished after {iteration+1} iterations")
+        await viz.send_status(
+            "complete", f"Optimization finished after {iteration+1} iterations"
+        )
 
         # Export final visualization
         logger.info("Exporting final visualization...")

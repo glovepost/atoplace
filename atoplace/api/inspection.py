@@ -7,8 +7,9 @@ All operations take a Board instance and return structured data that can
 be easily consumed by both RPC and MCP interfaces.
 """
 
-from typing import List, Dict, Optional, Tuple
-from ..board.abstraction import Board, Component
+from typing import Dict, List, Optional
+
+from ..board.abstraction import Board
 
 
 class BoardInspector:
@@ -27,9 +28,7 @@ class BoardInspector:
         self.board = board
 
     def check_overlaps(
-        self,
-        refs: Optional[List[str]] = None,
-        include_pads: bool = True
+        self, refs: Optional[List[str]] = None, include_pads: bool = True
     ) -> List[Dict[str, any]]:
         """Check for component overlaps.
 
@@ -51,14 +50,16 @@ class BoardInspector:
         # Select components to check
         components = []
         if refs:
-            components = [self.board.components[r] for r in refs if r in self.board.components]
+            components = [
+                self.board.components[r] for r in refs if r in self.board.components
+            ]
         else:
             components = list(self.board.components.values())
 
         # Check all pairs for overlaps using proper bounding boxes
         overlaps = []
         for i, c1 in enumerate(components):
-            for c2 in components[i+1:]:
+            for c2 in components[i + 1 :]:
                 # Get proper bounding boxes (with rotation and optionally pads)
                 if include_pads:
                     bbox1 = c1.get_bounding_box_with_pads()
@@ -76,18 +77,18 @@ class BoardInspector:
                 overlap_y = min(max_y1, max_y2) - max(min_y1, min_y2)
 
                 if overlap_x > 0 and overlap_y > 0:
-                    overlaps.append({
-                        "refs": [c1.reference, c2.reference],
-                        "overlap_x": round(overlap_x, 3),
-                        "overlap_y": round(overlap_y, 3),
-                    })
+                    overlaps.append(
+                        {
+                            "refs": [c1.reference, c2.reference],
+                            "overlap_x": round(overlap_x, 3),
+                            "overlap_y": round(overlap_y, 3),
+                        }
+                    )
 
         return overlaps
 
     def find_components(
-        self,
-        query: str,
-        filter_by: str = "ref"
+        self, query: str, filter_by: str = "ref"
     ) -> List[Dict[str, any]]:
         """Find components matching a search query.
 
@@ -128,14 +129,16 @@ class BoardInspector:
 
             # Case-insensitive substring match
             if query.lower() in search_value.lower():
-                matches.append({
-                    "ref": ref,
-                    "value": comp.value,
-                    "footprint": comp.footprint,
-                    "x": round(comp.x, 3),
-                    "y": round(comp.y, 3),
-                    "rotation": comp.rotation,
-                })
+                matches.append(
+                    {
+                        "ref": ref,
+                        "value": comp.value,
+                        "footprint": comp.footprint,
+                        "x": round(comp.x, 3),
+                        "y": round(comp.y, 3),
+                        "rotation": comp.rotation,
+                    }
+                )
 
         return matches
 
@@ -180,6 +183,9 @@ class BoardInspector:
             "component_count": len(self.board.components),
             "net_count": len(self.board.nets),
             "layer_count": self.board.layer_count,
-            "board_area": round(self.board.calculate_board_area(), 2)
-                          if self.board.outline else None,
+            "board_area": (
+                round(self.board.calculate_board_area(), 2)
+                if self.board.outline
+                else None
+            ),
         }

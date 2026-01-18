@@ -14,13 +14,13 @@ import os
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..board.abstraction import Board
-from ..dfm.profiles import DFMProfile, get_profile
-from ..validation.drc import DRCChecker, DRCViolation
+from ..dfm.profiles import get_profile
+from ..validation.drc import DRCChecker
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +29,11 @@ logger = logging.getLogger(__name__)
 # DRC Result Data Structures
 # =============================================================================
 
+
 @dataclass
 class DRCViolationInfo:
     """Unified DRC violation format for MCP responses."""
+
     id: str
     rule: str
     severity: str  # "error", "warning"
@@ -49,6 +51,7 @@ class DRCViolationInfo:
 @dataclass
 class DRCResult:
     """Complete DRC result."""
+
     passed: bool
     error_count: int
     warning_count: int
@@ -131,6 +134,7 @@ def classify_violation(rule: str) -> Tuple[bool, Optional[str]]:
 # DRC Runner
 # =============================================================================
 
+
 class DRCRunner:
     """
     Runs DRC checks using available backends.
@@ -212,30 +216,28 @@ class DRCRunner:
             return None
 
         # Create temp file for JSON output
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             output_path = Path(f.name)
 
         try:
             # Run kicad-cli DRC
             cmd = [
-                kicad_cli, "pcb", "drc",
-                "--format", "json",
+                kicad_cli,
+                "pcb",
+                "drc",
+                "--format",
+                "json",
                 "--severity-all",
-                "--units", "mm",
-                "-o", str(output_path),
-                str(board_path)
+                "--units",
+                "mm",
+                "-o",
+                str(output_path),
+                str(board_path),
             ]
 
             logger.info("Running kicad-cli DRC: %s", " ".join(cmd))
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
             # Exit code 5 means violations found (not an error)
             if result.returncode not in (0, 5):
@@ -247,7 +249,7 @@ class DRCRunner:
                 logger.error("DRC output file not created")
                 return None
 
-            with open(output_path, 'r') as f:
+            with open(output_path, "r") as f:
                 drc_data = json.load(f)
 
             return self._parse_kicad_cli_output(drc_data)
@@ -329,7 +331,7 @@ class DRCRunner:
                 items=items,
                 actionable=actionable,
                 suggested_action=suggested,
-                source="kicad-cli"
+                source="kicad-cli",
             )
             violations.append(violation)
             self._cached_violations[vid] = violation
@@ -342,7 +344,7 @@ class DRCRunner:
             warning_count=warning_count,
             violations=violations,
             source="kicad-cli",
-            summary=f"KiCad DRC: {error_count} errors, {warning_count} warnings"
+            summary=f"KiCad DRC: {error_count} errors, {warning_count} warnings",
         )
 
     # =========================================================================
@@ -350,9 +352,7 @@ class DRCRunner:
     # =========================================================================
 
     def run_atoplace_drc(
-        self,
-        board: Board,
-        dfm_profile: str = "jlcpcb_standard"
+        self, board: Board, dfm_profile: str = "jlcpcb_standard"
     ) -> DRCResult:
         """
         Run DRC using atoplace's built-in checker.
@@ -368,7 +368,9 @@ class DRCRunner:
         try:
             profile = get_profile(dfm_profile)
         except KeyError:
-            logger.warning("Unknown DFM profile: %s, using jlcpcb_standard", dfm_profile)
+            logger.warning(
+                "Unknown DFM profile: %s, using jlcpcb_standard", dfm_profile
+            )
             profile = get_profile("jlcpcb_standard")
 
         # Run checks
@@ -398,7 +400,7 @@ class DRCRunner:
                 items=v.items,
                 actionable=actionable,
                 suggested_action=suggested,
-                source="atoplace"
+                source="atoplace",
             )
             result_violations.append(violation)
             self._cached_violations[vid] = violation
@@ -409,7 +411,7 @@ class DRCRunner:
             warning_count=warning_count,
             violations=result_violations,
             source="atoplace",
-            summary=f"Atoplace DRC: {error_count} errors, {warning_count} warnings"
+            summary=f"Atoplace DRC: {error_count} errors, {warning_count} warnings",
         )
 
     # =========================================================================
@@ -421,7 +423,7 @@ class DRCRunner:
         board: Board,
         board_path: Optional[Path] = None,
         dfm_profile: str = "jlcpcb_standard",
-        use_kicad: bool = True
+        use_kicad: bool = True,
     ) -> DRCResult:
         """
         Run DRC using both backends and combine results.
@@ -472,13 +474,14 @@ class DRCRunner:
             warning_count=total_warnings,
             violations=all_violations,
             source=source,
-            summary=f"DRC ({source}): {total_errors} errors, {total_warnings} warnings"
+            summary=f"DRC ({source}): {total_errors} errors, {total_warnings} warnings",
         )
 
 
 # =============================================================================
 # Auto-Fix Strategies
 # =============================================================================
+
 
 class DRCFixer:
     """Automatic DRC violation fixer."""
@@ -487,9 +490,7 @@ class DRCFixer:
         self.board = board
 
     def fix_clearance_violation(
-        self,
-        violation: DRCViolationInfo,
-        strategy: str = "auto"
+        self, violation: DRCViolationInfo, strategy: str = "auto"
     ) -> Tuple[bool, str, List[Dict[str, Any]]]:
         """
         Attempt to fix a clearance violation.
@@ -515,7 +516,7 @@ class DRCFixer:
         # Calculate direction to move apart
         dx = comp2.x - comp1.x
         dy = comp2.y - comp1.y
-        distance = (dx**2 + dy**2)**0.5
+        distance = (dx**2 + dy**2) ** 0.5
 
         if distance < 0.001:
             # Components at same position, pick arbitrary direction
@@ -555,23 +556,26 @@ class DRCFixer:
 
         else:  # spread
             half_move = move_amount / 2
-            updates.append({
-                "ref": ref1,
-                "x": comp1.x - nx * half_move,
-                "y": comp1.y - ny * half_move
-            })
-            updates.append({
-                "ref": ref2,
-                "x": comp2.x + nx * half_move,
-                "y": comp2.y + ny * half_move
-            })
+            updates.append(
+                {
+                    "ref": ref1,
+                    "x": comp1.x - nx * half_move,
+                    "y": comp1.y - ny * half_move,
+                }
+            )
+            updates.append(
+                {
+                    "ref": ref2,
+                    "x": comp2.x + nx * half_move,
+                    "y": comp2.y + ny * half_move,
+                }
+            )
             message = f"Spread {ref1} and {ref2} apart"
 
         return True, message, updates
 
     def fix_edge_clearance_violation(
-        self,
-        violation: DRCViolationInfo
+        self, violation: DRCViolationInfo
     ) -> Tuple[bool, str, List[Dict[str, Any]]]:
         """
         Attempt to fix an edge clearance violation.
@@ -603,7 +607,7 @@ class DRCFixer:
         # Move component toward center
         dx = center_x - comp.x
         dy = center_y - comp.y
-        distance = (dx**2 + dy**2)**0.5
+        distance = (dx**2 + dy**2) ** 0.5
 
         if distance < 0.001:
             return False, f"Component {ref} is already at board center", []
@@ -616,14 +620,14 @@ class DRCFixer:
         new_x = comp.x + nx * move_amount
         new_y = comp.y + ny * move_amount
 
-        return True, f"Moved {ref} toward board center", [
-            {"ref": ref, "x": new_x, "y": new_y}
-        ]
+        return (
+            True,
+            f"Moved {ref} toward board center",
+            [{"ref": ref, "x": new_x, "y": new_y}],
+        )
 
     def fix_violation(
-        self,
-        violation: DRCViolationInfo,
-        strategy: str = "auto"
+        self, violation: DRCViolationInfo, strategy: str = "auto"
     ) -> Tuple[bool, str, List[Dict[str, Any]]]:
         """
         Attempt to fix a violation using appropriate strategy.

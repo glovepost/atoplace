@@ -13,23 +13,24 @@ For PCB routing, w = 2-3 is often ideal - much faster with acceptable paths.
 """
 
 import heapq
-import math
 import logging
+import math
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Set
 from enum import Enum
+from typing import Dict, List, Optional, Set, Tuple
 
-from .spatial_index import SpatialHashIndex, Obstacle
-from .visualizer import RouteVisualizer, RouteSegment, Via
+from .spatial_index import Obstacle, SpatialHashIndex
+from .visualizer import RouteSegment, RouteVisualizer, Via
 
 logger = logging.getLogger(__name__)
 
 
 class RouteDirection(Enum):
     """Allowed routing directions."""
+
     MANHATTAN = "manhattan"  # Only horizontal/vertical
-    DIAGONAL = "diagonal"    # Allow 45-degree angles
-    ANY = "any"              # Any angle (gridless)
+    DIAGONAL = "diagonal"  # Allow 45-degree angles
+    ANY = "any"  # Any angle (gridless)
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class RouteNode:
     This is much finer than any PCB grid (typically 0.1mm to 2.54mm) while
     being robust against FP representation errors. (Issue #26)
     """
+
     x: float
     y: float
     layer: int
@@ -85,6 +87,7 @@ class RouteNode:
 @dataclass
 class RoutingResult:
     """Result of routing a single net."""
+
     success: bool
     net_name: str = ""
     segments: List[RouteSegment] = field(default_factory=list)
@@ -99,9 +102,10 @@ class RoutingResult:
 @dataclass
 class RouterConfig:
     """Configuration for the A* router."""
+
     # A* parameters
     greedy_weight: float = 2.0  # Heuristic multiplier (1=optimal, 2-3=fast)
-    grid_size: float = 0.1     # Routing grid resolution in mm
+    grid_size: float = 0.1  # Routing grid resolution in mm
     max_iterations: int = 50000  # Max A* iterations per net
 
     # Routing style
@@ -109,7 +113,7 @@ class RouterConfig:
     prefer_layer: Optional[int] = None  # Preferred routing layer (0=top, 1=bottom)
 
     # Layer configuration
-    layer_count: int = 2       # Number of routing layers (2, 4, 6, 8...)
+    layer_count: int = 2  # Number of routing layers (2, 4, 6, 8...)
     inner_layer_cost: float = 1.2  # Cost multiplier for using inner layers
 
     # Via parameters
@@ -118,12 +122,12 @@ class RouterConfig:
     # Example: via_cost=5.0 with grid_size=0.1mm means a via costs 0.5mm equivalent
     # routing distance. This intentional coupling ensures consistent behavior
     # regardless of absolute grid size. (Issue #27 - documented as intentional)
-    via_cost: float = 5.0      # Via cost in grid steps (multiplied by grid_size)
+    via_cost: float = 5.0  # Via cost in grid steps (multiplied by grid_size)
     min_via_spacing: float = 0.5  # Minimum spacing between vias in mm
 
     # Trace parameters
-    trace_width: float = 0.2   # Default trace width in mm
-    clearance: float = 0.15    # Clearance from obstacles
+    trace_width: float = 0.2  # Default trace width in mm
+    clearance: float = 0.15  # Clearance from obstacles
 
     # Goal tolerance
     goal_tolerance: float = 0.2  # Distance to consider "at goal"
@@ -144,7 +148,7 @@ class AStarRouter:
         self,
         obstacle_index: SpatialHashIndex,
         config: RouterConfig = None,
-        visualizer: Optional[RouteVisualizer] = None
+        visualizer: Optional[RouteVisualizer] = None,
     ):
         """
         Args:
@@ -175,9 +179,9 @@ class AStarRouter:
         self.routed_segments = []
         self.routed_vias = []
         self._viz_obstacles_captured = False
-        if hasattr(self, '_viz_obstacles'):
+        if hasattr(self, "_viz_obstacles"):
             del self._viz_obstacles
-        if hasattr(self, '_viz_pads'):
+        if hasattr(self, "_viz_pads"):
             del self._viz_pads
 
     def _setup_neighbor_offsets(self):
@@ -186,22 +190,26 @@ class AStarRouter:
         self.offsets = []
 
         # Manhattan directions (always included)
-        self.offsets.extend([
-            (g, 0, 1.0),      # Right
-            (-g, 0, 1.0),     # Left
-            (0, g, 1.0),      # Up
-            (0, -g, 1.0),     # Down
-        ])
+        self.offsets.extend(
+            [
+                (g, 0, 1.0),  # Right
+                (-g, 0, 1.0),  # Left
+                (0, g, 1.0),  # Up
+                (0, -g, 1.0),  # Down
+            ]
+        )
 
         if self.config.direction in (RouteDirection.DIAGONAL, RouteDirection.ANY):
             # 45-degree diagonals
             d = g * math.sqrt(2)
-            self.offsets.extend([
-                (g, g, d),     # Up-right
-                (g, -g, d),    # Down-right
-                (-g, g, d),    # Up-left
-                (-g, -g, d),   # Down-left
-            ])
+            self.offsets.extend(
+                [
+                    (g, g, d),  # Up-right
+                    (g, -g, d),  # Down-right
+                    (-g, g, d),  # Up-left
+                    (-g, -g, d),  # Down-left
+                ]
+            )
 
     def route_net(
         self,
@@ -209,7 +217,7 @@ class AStarRouter:
         net_name: str = "",
         net_id: Optional[int] = None,
         trace_width: Optional[float] = None,
-        clearance: Optional[float] = None
+        clearance: Optional[float] = None,
     ) -> RoutingResult:
         """
         Route a net connecting multiple pads.
@@ -265,7 +273,7 @@ class AStarRouter:
             # Find nearest unconnected pad to any connected point
             best_start = None
             best_end = None
-            best_dist = float('inf')
+            best_dist = float("inf")
 
             for conn in connected_nodes:
                 for rem in remaining_nodes:
@@ -283,18 +291,13 @@ class AStarRouter:
                     vias=all_vias,
                     iterations=total_iterations,
                     explored_count=total_explored,
-                    failure_reason="No valid start/end pair found"
+                    failure_reason="No valid start/end pair found",
                 )
 
             # Route between best pair
             # Try on original layers first
             result = self._route_two_points(
-                best_start,
-                best_end,
-                net_id,
-                trace_width,
-                clearance,
-                net_name
+                best_start, best_end, net_id, trace_width, clearance, net_name
             )
 
             # If failed quickly, try starting on alternate layers
@@ -307,24 +310,24 @@ class AStarRouter:
 
                     alt_start = RouteNode(best_start.x, best_start.y, alt_layer)
                     alt_result = self._route_two_points(
-                        alt_start,
-                        best_end,
-                        net_id,
-                        trace_width,
-                        clearance,
-                        net_name
+                        alt_start, best_end, net_id, trace_width, clearance, net_name
                     )
                     if alt_result.success or alt_result.iterations > result.iterations:
                         # Alternate layer found a path or explored more - use it
                         if alt_result.success:
                             # Add via to switch to alternate layer at start
                             from .visualizer import Via
-                            all_vias.append(Via(
-                                x=best_start.x, y=best_start.y,
-                                drill_diameter=0.3, pad_diameter=0.6,
-                                net_id=net_id,
-                                net_name=net_name
-                            ))
+
+                            all_vias.append(
+                                Via(
+                                    x=best_start.x,
+                                    y=best_start.y,
+                                    drill_diameter=0.3,
+                                    pad_diameter=0.6,
+                                    net_id=net_id,
+                                    net_name=net_name,
+                                )
+                            )
                         result = alt_result
                         if result.success:
                             break  # Found a working route
@@ -344,7 +347,7 @@ class AStarRouter:
                     vias=all_vias,
                     iterations=total_iterations,
                     explored_count=total_explored,
-                    failure_reason=f"Failed segment: {result.failure_reason}"
+                    failure_reason=f"Failed segment: {result.failure_reason}",
                 )
 
             all_segments.extend(result.segments)
@@ -368,7 +371,7 @@ class AStarRouter:
             iterations=total_iterations,
             explored_count=total_explored,
             total_length=total_length,
-            via_count=len(all_vias)
+            via_count=len(all_vias),
         )
 
     def _route_two_points(
@@ -378,7 +381,7 @@ class AStarRouter:
         net_id: Optional[int],
         trace_width: float,
         net_clearance: float,
-        net_name: str = ""
+        net_name: str = "",
     ) -> RoutingResult:
         """Route between two points using A* with greedy multiplier.
 
@@ -415,7 +418,7 @@ class AStarRouter:
                     net_name=net_name,
                     iterations=iterations,
                     explored_count=len(closed),
-                    failure_reason=f"Max iterations ({self.config.max_iterations}) exceeded"
+                    failure_reason=f"Max iterations ({self.config.max_iterations}) exceeded",
                 )
 
             # Pop node with lowest f_score
@@ -475,15 +478,11 @@ class AStarRouter:
             net_name=net_name,
             iterations=iterations,
             explored_count=len(closed),
-            failure_reason="No path found (open set exhausted)"
+            failure_reason="No path found (open set exhausted)",
         )
 
     def _get_neighbors(
-        self,
-        node: RouteNode,
-        goal: RouteNode,
-        net_id: Optional[int],
-        clearance: float
+        self, node: RouteNode, goal: RouteNode, net_id: Optional[int], clearance: float
     ) -> List[Tuple[RouteNode, float]]:
         """Get valid neighboring nodes with movement costs.
 
@@ -530,11 +529,13 @@ class AStarRouter:
 
     def _check_path_clear(
         self,
-        x1: float, y1: float,
-        x2: float, y2: float,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         layer: int,
         clearance: float,
-        net_id: Optional[int]
+        net_id: Optional[int],
     ) -> bool:
         """Check if path between two points is clear of obstacles.
 
@@ -561,10 +562,7 @@ class AStarRouter:
         )
 
     def _can_place_via(
-        self,
-        x: float, y: float,
-        clearance: float,
-        net_id: Optional[int]
+        self, x: float, y: float, clearance: float, net_id: Optional[int]
     ) -> bool:
         """Check if a via can be placed at this location."""
         via_clearance = self.config.min_via_spacing / 2 + clearance
@@ -603,7 +601,7 @@ class AStarRouter:
         self,
         came_from: Dict[RouteNode, RouteNode],
         current: RouteNode,
-        start: RouteNode
+        start: RouteNode,
     ) -> List[RouteNode]:
         """Reconstruct path from start to current using came_from map."""
         path = [current]
@@ -620,7 +618,7 @@ class AStarRouter:
         iterations: int,
         explored: int,
         net_name: str,
-        net_id: Optional[int] = None
+        net_id: Optional[int] = None,
     ) -> RoutingResult:
         """Convert node path to trace segments and vias."""
         segments = []
@@ -633,14 +631,16 @@ class AStarRouter:
 
             if curr.layer != next_.layer:
                 # Via (layer change)
-                vias.append(Via(
-                    x=curr.x,
-                    y=curr.y,
-                    drill_diameter=0.3,  # Standard via
-                    pad_diameter=0.6,
-                    net_id=net_id,
-                    net_name=net_name
-                ))
+                vias.append(
+                    Via(
+                        x=curr.x,
+                        y=curr.y,
+                        drill_diameter=0.3,  # Standard via
+                        pad_diameter=0.6,
+                        net_id=net_id,
+                        net_name=net_name,
+                    )
+                )
             else:
                 # Trace segment
                 seg = RouteSegment(
@@ -649,7 +649,7 @@ class AStarRouter:
                     layer=curr.layer,
                     width=trace_width,
                     net_id=net_id,
-                    net_name=net_name
+                    net_name=net_name,
                 )
                 segments.append(seg)
                 total_length += curr.distance_to(next_)
@@ -662,7 +662,7 @@ class AStarRouter:
             iterations=iterations,
             explored_count=explored,
             total_length=total_length,
-            via_count=len(vias)
+            via_count=len(vias),
         )
 
     def _capture_viz_frame(
@@ -672,7 +672,7 @@ class AStarRouter:
         current: RouteNode,
         goal: RouteNode,
         net_name: str,
-        iterations: int
+        iterations: int,
     ):
         """Capture visualization frame for debugging."""
         if not self.viz:
@@ -683,7 +683,10 @@ class AStarRouter:
 
         # Extract obstacles for visualization (only once to avoid overhead)
         # Use instance variable to cache obstacles/pads
-        if not hasattr(self, '_viz_obstacles_captured') or not self._viz_obstacles_captured:
+        if (
+            not hasattr(self, "_viz_obstacles_captured")
+            or not self._viz_obstacles_captured
+        ):
             self._viz_obstacles_captured = True
             self._viz_obstacles = []
             self._viz_pads = []
@@ -701,7 +704,7 @@ class AStarRouter:
             frontier_nodes=frontier,
             current_path=[(current.x, current.y, current.layer)],
             current_net=net_name,
-            label=f"Iter {iterations}"
+            label=f"Iter {iterations}",
         )
 
     def add_routed_trace(self, segment: RouteSegment):
@@ -719,16 +722,18 @@ class AStarRouter:
         min_y = min(segment.start[1], segment.end[1]) - segment.width / 2
         max_y = max(segment.start[1], segment.end[1]) + segment.width / 2
 
-        self.obstacles.add(Obstacle(
-            min_x=min_x,
-            min_y=min_y,
-            max_x=max_x,
-            max_y=max_y,
-            layer=segment.layer,
-            clearance=0,  # Clearance applied during collision check, not here
-            net_id=segment.net_id,
-            obstacle_type="trace"
-        ))
+        self.obstacles.add(
+            Obstacle(
+                min_x=min_x,
+                min_y=min_y,
+                max_x=max_x,
+                max_y=max_y,
+                layer=segment.layer,
+                clearance=0,  # Clearance applied during collision check, not here
+                net_id=segment.net_id,
+                obstacle_type="trace",
+            )
+        )
 
     def add_routed_via(self, via: Via):
         """Add a routed via as an obstacle for future routing.
@@ -741,16 +746,18 @@ class AStarRouter:
 
         # Add to obstacle index (blocks all layers)
         r = via.pad_diameter / 2
-        self.obstacles.add(Obstacle(
-            min_x=via.x - r,
-            min_y=via.y - r,
-            max_x=via.x + r,
-            max_y=via.y + r,
-            layer=-1,  # All layers
-            clearance=0,  # Clearance applied during collision check, not here
-            net_id=via.net_id,
-            obstacle_type="via"
-        ))
+        self.obstacles.add(
+            Obstacle(
+                min_x=via.x - r,
+                min_y=via.y - r,
+                max_x=via.x + r,
+                max_y=via.y + r,
+                layer=-1,  # All layers
+                clearance=0,  # Clearance applied during collision check, not here
+                net_id=via.net_id,
+                obstacle_type="via",
+            )
+        )
 
 
 class NetOrderer:
@@ -809,28 +816,23 @@ class NetOrderer:
         xs = [p.center[0] for p in pads]
         ys = [p.center[1] for p in pads]
         if xs and ys:
-            diagonal = math.sqrt(
-                (max(xs) - min(xs))**2 + (max(ys) - min(ys))**2
-            )
+            diagonal = math.sqrt((max(xs) - min(xs)) ** 2 + (max(ys) - min(ys)) ** 2)
             score += diagonal
 
         # 3. Pad count (more pads = more complex routing)
         score += len(pads) * 5
 
         # 4. Critical nets bonus (route first)
-        if hasattr(net, 'is_power') and net.is_power:
+        if hasattr(net, "is_power") and net.is_power:
             score += 1000
-        if hasattr(net, 'is_ground') and net.is_ground:
+        if hasattr(net, "is_ground") and net.is_ground:
             score += 1000
 
         return score
 
 
 def route_board(
-    board,
-    dfm_profile,
-    config: RouterConfig = None,
-    visualize: bool = False
+    board, dfm_profile, config: RouterConfig = None, visualize: bool = False
 ) -> Dict[str, RoutingResult]:
     """
     Convenience function to route all nets on a board.
@@ -890,7 +892,7 @@ def route_board(
             net_name=net.net_name,
             net_id=net.net_id,
             trace_width=net_trace_width,
-            clearance=net_clearance
+            clearance=net_clearance,
         )
         results[net.net_name] = result
 

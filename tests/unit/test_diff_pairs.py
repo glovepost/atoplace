@@ -8,19 +8,20 @@ Tests cover:
 - Edge cases (empty lists, no pairs, partial matches)
 """
 
-import pytest
 from typing import List
+
+import pytest
 
 from atoplace.routing.diff_pairs import (
     DiffPairDetector,
-    DiffPairSpec,
     DiffPairPattern,
+    DiffPairSpec,
 )
-
 
 # =============================================================================
 # Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def usb_nets() -> List[str]:
@@ -33,16 +34,24 @@ def multi_pattern_nets() -> List[str]:
     """Nets with multiple differential pair patterns."""
     return [
         # USB style
-        "USB_D+", "USB_D-",
+        "USB_D+",
+        "USB_D-",
         # P/N suffix
-        "LVDS_TX_P", "LVDS_TX_N",
-        "LVDS_RX_P", "LVDS_RX_N",
+        "LVDS_TX_P",
+        "LVDS_TX_N",
+        "LVDS_RX_P",
+        "LVDS_RX_N",
         # Direct suffix
-        "DATAP", "DATAN",
+        "DATAP",
+        "DATAN",
         # POS/NEG style
-        "CLK_POS", "CLK_NEG",
+        "CLK_POS",
+        "CLK_NEG",
         # Non-diff nets
-        "VCC", "GND", "RESET", "EN",
+        "VCC",
+        "GND",
+        "RESET",
+        "EN",
     ]
 
 
@@ -50,17 +59,24 @@ def multi_pattern_nets() -> List[str]:
 def hdmi_nets() -> List[str]:
     """HDMI differential pairs (multiple channels)."""
     return [
-        "HDMI_D0_P", "HDMI_D0_N",
-        "HDMI_D1_P", "HDMI_D1_N",
-        "HDMI_D2_P", "HDMI_D2_N",
-        "HDMI_CLK_P", "HDMI_CLK_N",
-        "HDMI_CEC", "HDMI_HPD", "+5V",
+        "HDMI_D0_P",
+        "HDMI_D0_N",
+        "HDMI_D1_P",
+        "HDMI_D1_N",
+        "HDMI_D2_P",
+        "HDMI_D2_N",
+        "HDMI_CLK_P",
+        "HDMI_CLK_N",
+        "HDMI_CEC",
+        "HDMI_HPD",
+        "+5V",
     ]
 
 
 # =============================================================================
 # Detection Tests
 # =============================================================================
+
 
 class TestDiffPairDetector:
     """Test the DiffPairDetector class."""

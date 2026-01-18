@@ -4,10 +4,7 @@ Tests for the AtoPlace Layout Actions API.
 Tests the atomic placement operations provided by LayoutActions.
 """
 
-import pytest
-import math
-
-from atoplace.api.actions import LayoutActions, ActionResult
+from atoplace.api.actions import LayoutActions
 
 
 class TestMoveAbsolute:

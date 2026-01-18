@@ -7,16 +7,16 @@ Key insight: You can't debug routing problems by staring at numbers.
 Every algorithm component needs visualization.
 """
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple, Set
-from pathlib import Path
-import math
 import json
-import warnings
 import logging
+import math
+import warnings
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 
-from .spatial_index import Obstacle, SpatialHashIndex
 from ..visualization_color_manager import get_color_manager
+from .spatial_index import Obstacle
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RouteSegment:
     """A segment of a routed trace."""
+
     start: Tuple[float, float]
     end: Tuple[float, float]
     layer: int
@@ -35,6 +36,7 @@ class RouteSegment:
 @dataclass
 class Via:
     """A via connecting layers."""
+
     x: float
     y: float
     drill_diameter: float
@@ -49,6 +51,7 @@ class VisualizationFrame:
 
     Captures the complete state at one point in time for debugging.
     """
+
     # Static elements
     board_outline: List[Tuple[float, float]] = field(default_factory=list)
     obstacles: List[Obstacle] = field(default_factory=list)
@@ -213,7 +216,7 @@ class RouteVisualizer:
         ]
 
         # Background
-        lines.append(f'<rect width="100%" height="100%" fill="white"/>')
+        lines.append('<rect width="100%" height="100%" fill="white"/>')
 
         # Board outline
         lines.append(self._render_board_outline())
@@ -251,16 +254,16 @@ class RouteVisualizer:
         if frame.label:
             lines.append(
                 f'<text x="10" y="20" font-family="monospace" font-size="14">'
-                f'{frame.label} (iter {frame.iteration})</text>'
+                f"{frame.label} (iter {frame.iteration})</text>"
             )
         if frame.current_net_name:
             lines.append(
                 f'<text x="10" y="40" font-family="monospace" font-size="12">'
-                f'Net: {frame.current_net_name}</text>'
+                f"Net: {frame.current_net_name}</text>"
             )
 
-        lines.append('</svg>')
-        return '\n'.join(lines)
+        lines.append("</svg>")
+        return "\n".join(lines)
 
     def _render_board_outline(self) -> str:
         """Render board outline rectangle."""
@@ -389,7 +392,7 @@ class RouteVisualizer:
         warnings.warn(
             "export_html_report() is deprecated. Use export_svg_delta_html() instead.",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
         if not self.frames:
             logger.warning("No frames to export")
@@ -401,14 +404,16 @@ class RouteVisualizer:
         frame_svgs = []
         for i, frame in enumerate(self.frames):
             svg = self.render_frame_svg(frame)
-            frame_svgs.append({
-                "index": i,
-                "label": frame.label or f"Frame {i}",
-                "net": frame.current_net_name,
-                "svg": svg.replace('\n', ''),
-            })
+            frame_svgs.append(
+                {
+                    "index": i,
+                    "label": frame.label or f"Frame {i}",
+                    "net": frame.current_net_name,
+                    "svg": svg.replace("\n", ""),
+                }
+            )
 
-        html = f'''<!DOCTYPE html>
+        html = f"""<!DOCTYPE html>
 <html>
 <head>
     <title>Routing Visualization Report</title>
@@ -481,16 +486,14 @@ class RouteVisualizer:
         }});
     </script>
 </body>
-</html>'''
+</html>"""
 
         path.write_text(html)
         logger.info(f"Exported HTML report to {path}")
         return path
 
     def export_svg_delta_html(
-        self,
-        filename: str = "routing_debug.html",
-        output_dir: Optional[str] = None
+        self, filename: str = "routing_debug.html", output_dir: Optional[str] = None
     ) -> Optional[Path]:
         """Export routing visualization using SVG delta format.
 
@@ -509,8 +512,8 @@ class RouteVisualizer:
             logger.warning("No frames to export")
             return None
 
-        from ..visualization import get_svg_delta_viewer_js, get_styles_css
         from ..placement.viewer_template import generate_viewer_html_template
+        from ..visualization import get_svg_delta_viewer_js
 
         out_dir = Path(output_dir) if output_dir else self.output_dir
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -528,29 +531,31 @@ class RouteVisualizer:
                 # Extract pad geometry as tuples: [x, y, width, height, rotation, net]
                 pad_geom = []
                 for pad in comp.pads:
-                    pad_rot = getattr(pad, 'rotation', 0.0) or 0.0
-                    pad_geom.append([pad.x, pad.y, pad.width, pad.height, pad_rot, pad.net or ""])
+                    pad_rot = getattr(pad, "rotation", 0.0) or 0.0
+                    pad_geom.append(
+                        [pad.x, pad.y, pad.width, pad.height, pad_rot, pad.net or ""]
+                    )
 
                 static_props_json[ref] = {
-                    'width': comp.width,
-                    'height': comp.height,
-                    'pads': pad_geom
+                    "width": comp.width,
+                    "height": comp.height,
+                    "pads": pad_geom,
                 }
 
                 # Component layer
                 if comp.layer == Layer.TOP_COPPER:
-                    component_layers[ref] = 'top'
+                    component_layers[ref] = "top"
                 elif comp.layer == Layer.BOTTOM_COPPER:
-                    component_layers[ref] = 'bottom'
+                    component_layers[ref] = "bottom"
                 else:
-                    component_layers[ref] = 'top'
+                    component_layers[ref] = "top"
 
                 # Initial position for first frame (array format: [x, y, rotation])
                 initial_component_state[ref] = [comp.x, comp.y, comp.rotation]
 
             # Build netlist
             for ref, comp in self.board.components.items():
-                if getattr(comp, 'dnp', False):
+                if getattr(comp, "dnp", False):
                     continue
                 for pad_index, pad in enumerate(comp.pads):
                     net_name = (pad.net or "").strip()
@@ -567,24 +572,28 @@ class RouteVisualizer:
             # Convert traces to delta format
             traces = []
             for trace in frame.completed_traces:
-                traces.append({
-                    'start': [trace.start[0], trace.start[1]],
-                    'end': [trace.end[0], trace.end[1]],
-                    'layer': trace.layer,
-                    'width': trace.width,
-                    'net': str(trace.net_id) if trace.net_id else ''
-                })
+                traces.append(
+                    {
+                        "start": [trace.start[0], trace.start[1]],
+                        "end": [trace.end[0], trace.end[1]],
+                        "layer": trace.layer,
+                        "width": trace.width,
+                        "net": str(trace.net_id) if trace.net_id else "",
+                    }
+                )
 
             # Convert vias to delta format
             vias = []
             for via in frame.completed_vias:
-                vias.append({
-                    'x': via.x,
-                    'y': via.y,
-                    'drill': via.drill_diameter,
-                    'pad': via.pad_diameter,
-                    'net': str(via.net_id) if via.net_id else ''
-                })
+                vias.append(
+                    {
+                        "x": via.x,
+                        "y": via.y,
+                        "drill": via.drill_diameter,
+                        "pad": via.pad_diameter,
+                        "net": str(via.net_id) if via.net_id else "",
+                    }
+                )
 
             # Convert A* debug data
             astar_explored = list(frame.explored_nodes) if frame.explored_nodes else []
@@ -597,32 +606,32 @@ class RouteVisualizer:
                 changed_components = initial_component_state
 
             delta_frame = {
-                'index': i,
-                'label': frame.label or f"Frame {i}",
-                'phase': frame.current_net_name or "Routing",
-                'iteration': frame.iteration,
-                'traces': traces,
-                'vias': vias,
-                'astar_explored': astar_explored,
-                'astar_frontier': astar_frontier,
-                'astar_path': astar_path,
-                'changed_components': changed_components
+                "index": i,
+                "label": frame.label or f"Frame {i}",
+                "phase": frame.current_net_name or "Routing",
+                "iteration": frame.iteration,
+                "traces": traces,
+                "vias": vias,
+                "astar_explored": astar_explored,
+                "astar_frontier": astar_frontier,
+                "astar_path": astar_path,
+                "changed_components": changed_components,
             }
             delta_frames.append(delta_frame)
 
         # Calculate board bounds for JavaScript
         board_bounds = {
-            'minX': self.bounds[0],
-            'minY': self.bounds[1],
-            'maxX': self.bounds[2],
-            'maxY': self.bounds[3],
-            'scale': self.scale,
-            'padding': self.margin * self.scale
+            "minX": self.bounds[0],
+            "minY": self.bounds[1],
+            "maxX": self.bounds[2],
+            "maxY": self.bounds[3],
+            "scale": self.scale,
+            "padding": self.margin * self.scale,
         }
 
         # Generate JavaScript with data
         js_code = get_svg_delta_viewer_js()
-        data_js = f'''
+        data_js = f"""
 // Board bounds for coordinate transforms
 const boardBounds = {json.dumps(board_bounds)};
 
@@ -651,7 +660,7 @@ document.addEventListener('DOMContentLoaded', function() {{
     showFrame(0);
     drawEnergyGraph();
 }});
-'''
+"""
 
         # Helper to transform coordinates
         def tx(x):
@@ -689,7 +698,7 @@ document.addEventListener('DOMContentLoaded', function() {{
                     f'<rect x="{cx - hw}" y="{cy - hh}" '
                     f'width="{ts(comp.width)}" height="{ts(comp.height)}" '
                     f'fill="#2d5a3d" stroke="#1a1a1a" stroke-width="1" opacity="0.9"/>'
-                    f'</g>'
+                    f"</g>"
                 )
 
                 # Component pads
@@ -703,7 +712,7 @@ document.addEventListener('DOMContentLoaded', function() {{
                     pad_cx, pad_cy = tx(px), ty(py)
                     pad_hw = ts(pad.width / 2)
                     pad_hh = ts(pad.height / 2)
-                    pad_rot = rotation + (getattr(pad, 'rotation', 0) or 0)
+                    pad_rot = rotation + (getattr(pad, "rotation", 0) or 0)
 
                     pad_color = "#4a9" if comp.layer == Layer.TOP_COPPER else "#49a"
 
@@ -723,13 +732,13 @@ document.addEventListener('DOMContentLoaded', function() {{
                     f'font-size="8" fill="white" opacity="0.8">{ref}</text>'
                 )
 
-        components_group = '\n'.join(component_svg)
-        pads_group = '\n'.join(pad_svg)
-        labels_group = '\n'.join(label_svg)
+        components_group = "\n".join(component_svg)
+        pads_group = "\n".join(pad_svg)
+        labels_group = "\n".join(label_svg)
 
         # Create initial SVG with board outline and components
         # Components are placed directly in SVG (not in a group) for JS compatibility
-        svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg"
+        svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg"
              id="routing-svg"
              width="{self.svg_width}" height="{self.svg_height}"
              viewBox="0 0 {self.svg_width} {self.svg_height}">
@@ -755,17 +764,17 @@ document.addEventListener('DOMContentLoaded', function() {{
             <g class="vias-group"></g>
             <!-- Labels -->
             {labels_group}
-        </svg>'''
+        </svg>"""
 
         # Generate HTML using shared template
         html = generate_viewer_html_template(
             title="Routing Visualization",
-            static_content='<div id="svg-container">' + svg_content + '</div>',
-            dynamic_content='',
+            static_content='<div id="svg-container">' + svg_content + "</div>",
+            dynamic_content="",
             javascript_code=data_js,
             module_types={},
             total_frames=len(delta_frames),
-            is_streaming=False
+            is_streaming=False,
         )
 
         html_path = out_dir / filename
@@ -792,23 +801,23 @@ def create_visualizer_from_board(board) -> RouteVisualizer:
 
     if board.outline:
         # Try different outline attributes
-        if hasattr(board.outline, 'get_bounding_box'):
+        if hasattr(board.outline, "get_bounding_box"):
             bbox = board.outline.get_bounding_box()
             if bbox:
                 bounds = bbox
-        elif hasattr(board.outline, 'polygon') and board.outline.polygon:
+        elif hasattr(board.outline, "polygon") and board.outline.polygon:
             xs = [p[0] for p in board.outline.polygon]
             ys = [p[1] for p in board.outline.polygon]
             bounds = (min(xs), min(ys), max(xs), max(ys))
-        elif hasattr(board.outline, 'points') and board.outline.points:
+        elif hasattr(board.outline, "points") and board.outline.points:
             xs = [p[0] for p in board.outline.points]
             ys = [p[1] for p in board.outline.points]
             bounds = (min(xs), min(ys), max(xs), max(ys))
 
     if not bounds:
         # Fall back to component bounds
-        min_x = min_y = float('inf')
-        max_x = max_y = float('-inf')
+        min_x = min_y = float("inf")
+        max_x = max_y = float("-inf")
         for comp in board.components.values():
             bbox = comp.get_bounding_box()
             min_x = min(min_x, bbox[0])

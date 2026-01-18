@@ -12,11 +12,11 @@ The viewer supports:
 """
 
 import json
-import math
 import logging
+import math
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..visualization_color_manager import get_color_manager
 
@@ -30,13 +30,16 @@ class UnifiedFrame:
     Supports both placement and routing data in a single frame structure.
     Either or both can be populated depending on the workflow phase.
     """
+
     index: int
     label: str = ""
     phase: str = ""  # "placement", "routing", "transition"
     iteration: int = 0
 
     # Placement data (component positions)
-    changed_components: Dict[str, Tuple[float, float, float]] = field(default_factory=dict)
+    changed_components: Dict[str, Tuple[float, float, float]] = field(
+        default_factory=dict
+    )
     changed_modules: Dict[str, str] = field(default_factory=dict)
     forces: Dict[str, List[Tuple[float, float, str]]] = field(default_factory=dict)
     overlaps: List[Tuple[str, str]] = field(default_factory=list)
@@ -111,11 +114,11 @@ class UnifiedVisualizer:
         bounds = None
 
         if self.board.outline:
-            if hasattr(self.board.outline, 'get_bounding_box'):
+            if hasattr(self.board.outline, "get_bounding_box"):
                 bbox = self.board.outline.get_bounding_box()
                 if bbox:
                     bounds = bbox
-            elif hasattr(self.board.outline, 'polygon') and self.board.outline.polygon:
+            elif hasattr(self.board.outline, "polygon") and self.board.outline.polygon:
                 xs = [p[0] for p in self.board.outline.polygon]
                 ys = [p[1] for p in self.board.outline.polygon]
                 bounds = (min(xs), min(ys), max(xs), max(ys))
@@ -123,8 +126,8 @@ class UnifiedVisualizer:
         if not bounds:
             # Fall back to component bounds
             if self.board.components:
-                min_x = min_y = float('inf')
-                max_x = max_y = float('-inf')
+                min_x = min_y = float("inf")
+                max_x = max_y = float("-inf")
                 for comp in self.board.components.values():
                     bbox = comp.get_bounding_box()
                     min_x = min(min_x, bbox[0])
@@ -159,50 +162,52 @@ class UnifiedVisualizer:
         def layer_to_string(layer: Layer) -> str:
             """Convert Layer enum to string for JavaScript."""
             if layer == Layer.TOP_COPPER:
-                return 'top'
+                return "top"
             elif layer == Layer.BOTTOM_COPPER:
-                return 'bottom'
+                return "bottom"
             elif layer in (Layer.INNER1, Layer.INNER2, Layer.INNER3, Layer.INNER4):
-                return 'inner'
+                return "inner"
             else:
-                return 'top'  # Default to top for unknown layers
+                return "top"  # Default to top for unknown layers
 
         for ref, comp in self.board.components.items():
             # Pad geometry with layer information (Issue #37)
             pad_geom = []
             for pad in comp.pads:
-                pad_rot = getattr(pad, 'rotation', 0.0) or 0.0
+                pad_rot = getattr(pad, "rotation", 0.0) or 0.0
                 pad_layer = layer_to_string(pad.layer)
                 is_through_hole = pad.drill is not None and pad.drill > 0
-                pad_geom.append([
-                    pad.x,
-                    pad.y,
-                    pad.width,
-                    pad.height,
-                    pad_rot,
-                    pad.net or "",
-                    pad_layer,
-                    is_through_hole
-                ])
+                pad_geom.append(
+                    [
+                        pad.x,
+                        pad.y,
+                        pad.width,
+                        pad.height,
+                        pad_rot,
+                        pad.net or "",
+                        pad_layer,
+                        is_through_hole,
+                    ]
+                )
 
             self.static_props[ref] = {
-                'width': comp.width,
-                'height': comp.height,
-                'pads': pad_geom
+                "width": comp.width,
+                "height": comp.height,
+                "pads": pad_geom,
             }
 
             # Component layer
             if comp.layer == Layer.TOP_COPPER:
-                self.component_layers[ref] = 'top'
+                self.component_layers[ref] = "top"
             elif comp.layer == Layer.BOTTOM_COPPER:
-                self.component_layers[ref] = 'bottom'
+                self.component_layers[ref] = "bottom"
             else:
-                self.component_layers[ref] = 'top'
+                self.component_layers[ref] = "top"
 
     def _build_netlist(self):
         """Build netlist from board for ratsnest visualization."""
         for ref, comp in self.board.components.items():
-            if getattr(comp, 'dnp', False):
+            if getattr(comp, "dnp", False):
                 continue
             for pad_idx, pad in enumerate(comp.pads):
                 net_name = (pad.net or "").strip()
@@ -214,7 +219,9 @@ class UnifiedVisualizer:
         for net_name in sorted(self.netlist.keys()):
             self.netlist[net_name] = sorted(self.netlist[net_name])
 
-    def add_placement_frames(self, placement_frames, static_props=None, component_layers=None):
+    def add_placement_frames(
+        self, placement_frames, static_props=None, component_layers=None
+    ):
         """Add placement frames to the timeline.
 
         Args:
@@ -232,27 +239,35 @@ class UnifiedVisualizer:
         if static_props is not None:
             for ref, props in static_props.items():
                 # Handle ComponentStaticProps dataclass or plain dict
-                if hasattr(props, 'width') and not isinstance(props, dict):
+                if hasattr(props, "width") and not isinstance(props, dict):
                     # ComponentStaticProps dataclass - convert to dict format
                     pad_geom = []
-                    if hasattr(props, 'pads') and props.pads:
+                    if hasattr(props, "pads") and props.pads:
                         for pad in props.pads:
                             # PadStaticProps: x, y, width, height, rotation, net
-                            pad_rot = getattr(pad, 'rotation', 0.0) or 0.0
-                            pad_net = getattr(pad, 'net', '') or ''
+                            pad_rot = getattr(pad, "rotation", 0.0) or 0.0
+                            pad_net = getattr(pad, "net", "") or ""
                             # Use extended format if layer info available, else basic format
-                            pad_layer = getattr(pad, 'layer', 'top') or 'top'
-                            is_through_hole = getattr(pad, 'is_through_hole', False)
-                            pad_geom.append([
-                                pad.x, pad.y, pad.width, pad.height,
-                                pad_rot, pad_net, pad_layer, is_through_hole
-                            ])
+                            pad_layer = getattr(pad, "layer", "top") or "top"
+                            is_through_hole = getattr(pad, "is_through_hole", False)
+                            pad_geom.append(
+                                [
+                                    pad.x,
+                                    pad.y,
+                                    pad.width,
+                                    pad.height,
+                                    pad_rot,
+                                    pad_net,
+                                    pad_layer,
+                                    is_through_hole,
+                                ]
+                            )
                     self.static_props[ref] = {
-                        'width': props.width,
-                        'height': props.height,
-                        'pads': pad_geom
+                        "width": props.width,
+                        "height": props.height,
+                        "pads": pad_geom,
                     }
-                elif isinstance(props, dict) and 'width' in props:
+                elif isinstance(props, dict) and "width" in props:
                     # Already in dict format - use as-is
                     self.static_props[ref] = props
                 # else: skip invalid entries
@@ -284,9 +299,13 @@ class UnifiedVisualizer:
             # Collect module colors
             for ref, module_name in pf.modules.items():
                 if module_name and module_name not in self.module_colors:
-                    self.module_colors[module_name] = get_color_manager().get_module_color(module_name)
+                    self.module_colors[module_name] = (
+                        get_color_manager().get_module_color(module_name)
+                    )
 
-        logger.info(f"Added {len(placement_frames)} placement frames (total: {len(self.frames)})")
+        logger.info(
+            f"Added {len(placement_frames)} placement frames (total: {len(self.frames)})"
+        )
 
     def add_routing_frames(self, routing_frames):
         """Add routing frames to the timeline.
@@ -314,14 +333,16 @@ class UnifiedVisualizer:
             frame_wire_length = 0.0
             for trace in rf.completed_traces:
                 # Prefer net_name over net_id for matching netlist (Issue #31)
-                net = trace.net_name or (str(trace.net_id) if trace.net_id else '')
-                traces.append({
-                    'start': [trace.start[0], trace.start[1]],
-                    'end': [trace.end[0], trace.end[1]],
-                    'layer': trace.layer,
-                    'width': trace.width,
-                    'net': net
-                })
+                net = trace.net_name or (str(trace.net_id) if trace.net_id else "")
+                traces.append(
+                    {
+                        "start": [trace.start[0], trace.start[1]],
+                        "end": [trace.end[0], trace.end[1]],
+                        "layer": trace.layer,
+                        "width": trace.width,
+                        "net": net,
+                    }
+                )
                 # Track routed nets and calculate wire length (Issue #34)
                 if net:
                     routed_nets.add(net)
@@ -333,14 +354,16 @@ class UnifiedVisualizer:
             vias = []
             for via in rf.completed_vias:
                 # Prefer net_name over net_id for matching netlist (Issue #31)
-                net = via.net_name or (str(via.net_id) if via.net_id else '')
-                vias.append({
-                    'x': via.x,
-                    'y': via.y,
-                    'drill': via.drill_diameter,
-                    'pad': via.pad_diameter,
-                    'net': net
-                })
+                net = via.net_name or (str(via.net_id) if via.net_id else "")
+                vias.append(
+                    {
+                        "x": via.x,
+                        "y": via.y,
+                        "drill": via.drill_diameter,
+                        "pad": via.pad_diameter,
+                        "net": net,
+                    }
+                )
                 # Track routed nets from vias too (Issue #34)
                 if net:
                     routed_nets.add(net)
@@ -368,9 +391,13 @@ class UnifiedVisualizer:
             )
             self.frames.append(uf)
 
-        logger.info(f"Added {len(routing_frames)} routing frames (total: {len(self.frames)})")
+        logger.info(
+            f"Added {len(routing_frames)} routing frames (total: {len(self.frames)})"
+        )
 
-    def add_transition_frame(self, label: str = "Placement Complete → Starting Routing"):
+    def add_transition_frame(
+        self, label: str = "Placement Complete → Starting Routing"
+    ):
         """Add a transition frame between placement and routing phases."""
         if not self.frames:
             return
@@ -543,38 +570,38 @@ class UnifiedVisualizer:
         for frame in self.frames:
             # Core frame metadata - always present
             delta = {
-                'index': frame.index,
-                'label': frame.label,
-                'phase': frame.phase,
-                'iteration': frame.iteration,
+                "index": frame.index,
+                "label": frame.label,
+                "phase": frame.phase,
+                "iteration": frame.iteration,
             }
 
             # Component positions and modules (merged incrementally by JS)
-            delta['changed_components'] = frame.changed_components
-            delta['changed_modules'] = frame.changed_modules
+            delta["changed_components"] = frame.changed_components
+            delta["changed_modules"] = frame.changed_modules
 
             # Overlay arrays - ALWAYS include to ensure proper clearing
             # (see Delta Encoding Rules #3 above)
-            delta['forces'] = frame.forces
-            delta['overlaps'] = frame.overlaps
+            delta["forces"] = frame.forces
+            delta["overlaps"] = frame.overlaps
 
             # Scalar metrics - ALWAYS include for consistent info bar display
             # (see Delta Encoding Rules #4 above)
-            delta['energy'] = frame.energy
-            delta['max_move'] = frame.max_move
-            delta['overlap_count'] = frame.overlap_count
-            delta['wire_length'] = frame.wire_length
-            delta['nets_routed'] = frame.nets_routed
+            delta["energy"] = frame.energy
+            delta["max_move"] = frame.max_move
+            delta["overlap_count"] = frame.overlap_count
+            delta["wire_length"] = frame.wire_length
+            delta["nets_routed"] = frame.nets_routed
 
             # Routing overlay arrays - ALWAYS include (even when empty) so JavaScript
             # clears previous state. Without this, old A* nodes/paths persist
             # when a frame legitimately has empty routing data (Issue #30).
-            delta['traces'] = frame.traces
-            delta['vias'] = frame.vias
-            delta['astar_explored'] = frame.astar_explored
-            delta['astar_frontier'] = frame.astar_frontier
-            delta['astar_path'] = frame.astar_path
-            delta['current_net'] = frame.current_net
+            delta["traces"] = frame.traces
+            delta["vias"] = frame.vias
+            delta["astar_explored"] = frame.astar_explored
+            delta["astar_frontier"] = frame.astar_frontier
+            delta["astar_path"] = frame.astar_path
+            delta["current_net"] = frame.current_net
 
             delta_frames.append(delta)
 
@@ -594,7 +621,7 @@ class UnifiedVisualizer:
         outline = self.board.outline
 
         # Check if we have a polygon outline
-        if outline and hasattr(outline, 'polygon') and outline.polygon:
+        if outline and hasattr(outline, "polygon") and outline.polygon:
             # Build SVG path for polygon outline
             polygon = outline.polygon
             if len(polygon) >= 3:
@@ -605,7 +632,7 @@ class UnifiedVisualizer:
                 path_data += " Z"  # Close path
 
                 # Add holes/cutouts (counter-clockwise for fill-rule)
-                if hasattr(outline, 'holes') and outline.holes:
+                if hasattr(outline, "holes") and outline.holes:
                     for hole in outline.holes:
                         if len(hole) >= 3:
                             path_data += f" M {tx(hole[0][0])} {ty(hole[0][1])}"
@@ -613,22 +640,22 @@ class UnifiedVisualizer:
                                 path_data += f" L {tx(point[0])} {ty(point[1])}"
                             path_data += " Z"
 
-                return f'''<path d="{path_data}"
+                return f"""<path d="{path_data}"
                       fill="none"
                       stroke="{board_outline_color}"
                       stroke-width="2"
                       fill-rule="evenodd"
-                      class="board-outline"/>'''
+                      class="board-outline"/>"""
 
         # Fall back to rectangle (bounding box)
-        return f'''<rect x="{self.margin * self.scale}"
+        return f"""<rect x="{self.margin * self.scale}"
                   y="{self.margin * self.scale}"
                   width="{self.board_width * self.scale}"
                   height="{self.board_height * self.scale}"
                   fill="none"
                   stroke="{board_outline_color}"
                   stroke-width="2"
-                  class="board-outline"/>'''
+                  class="board-outline"/>"""
 
     def _generate_initial_svg(self) -> str:
         """Generate initial SVG with board outline and components at frame 0 positions."""
@@ -676,7 +703,7 @@ class UnifiedVisualizer:
                 f'<rect x="{cx - hw}" y="{cy - hh}" '
                 f'width="{ts(comp.width)}" height="{ts(comp.height)}" '
                 f'fill="#2d5a3d" stroke="#1a1a1a" stroke-width="1" opacity="0.9"/>'
-                f'</g>'
+                f"</g>"
             )
 
             # Component pads - use data-pad-index for JavaScript to find them
@@ -690,7 +717,7 @@ class UnifiedVisualizer:
                 pad_cx, pad_cy = tx(px), ty(py)
                 pad_hw = ts(pad.width / 2)
                 pad_hh = ts(pad.height / 2)
-                pad_rot = rotation + (getattr(pad, 'rotation', 0) or 0)
+                pad_rot = rotation + (getattr(pad, "rotation", 0) or 0)
 
                 # Determine pad layer class based on pad's actual layer (Issue #37)
                 is_through_hole = pad.drill is not None and pad.drill > 0
@@ -710,7 +737,7 @@ class UnifiedVisualizer:
                     pad_color = "#6a9"
 
                 # Render pad based on shape (Issue #35)
-                pad_shape = getattr(pad, 'shape', 'rect') or 'rect'
+                pad_shape = getattr(pad, "shape", "rect") or "rect"
 
                 common_attrs = (
                     f'class="pad-element {pad_layer_class}" data-ref="{ref}" data-pad-index="{pad_idx}" '
@@ -721,13 +748,13 @@ class UnifiedVisualizer:
                     # Circle pad - use radius as half the larger dimension
                     pad_r = max(pad_hw, pad_hh)
                     pad_svg.append(
-                        f'<circle {common_attrs} '
+                        f"<circle {common_attrs} "
                         f'cx="{pad_cx}" cy="{pad_cy}" r="{pad_r}"/>'
                     )
                 elif pad_shape == "oval":
                     # Oval pad - use ellipse element
                     pad_svg.append(
-                        f'<ellipse {common_attrs} '
+                        f"<ellipse {common_attrs} "
                         f'cx="{pad_cx}" cy="{pad_cy}" rx="{pad_hw}" ry="{pad_hh}" '
                         f'transform="rotate({-pad_rot} {pad_cx} {pad_cy})"/>'
                     )
@@ -736,7 +763,7 @@ class UnifiedVisualizer:
                     # Corner radius is typically 25% of the smaller dimension
                     corner_radius = min(pad_hw, pad_hh) * 0.25
                     pad_svg.append(
-                        f'<rect {common_attrs} '
+                        f"<rect {common_attrs} "
                         f'x="{pad_cx - pad_hw}" y="{pad_cy - pad_hh}" '
                         f'width="{ts(pad.width)}" height="{ts(pad.height)}" '
                         f'rx="{corner_radius}" ry="{corner_radius}" '
@@ -745,7 +772,7 @@ class UnifiedVisualizer:
                 else:
                     # Default: rectangular pad
                     pad_svg.append(
-                        f'<rect {common_attrs} '
+                        f"<rect {common_attrs} "
                         f'x="{pad_cx - pad_hw}" y="{pad_cy - pad_hh}" '
                         f'width="{ts(pad.width)}" height="{ts(pad.height)}" '
                         f'transform="rotate({-pad_rot} {pad_cx} {pad_cy})"/>'
@@ -768,15 +795,17 @@ class UnifiedVisualizer:
                 f'font-size="8" fill="white" opacity="0.8">{ref}</text>'
             )
 
-        components_group = '\n'.join(component_svg)
-        pads_group = '\n'.join(pad_svg)
-        labels_group = '\n'.join(label_svg)
+        components_group = "\n".join(component_svg)
+        pads_group = "\n".join(pad_svg)
+        labels_group = "\n".join(label_svg)
 
         board_outline_color = get_color_manager().get_routing_color("board_outline")
         # Generate board outline (polygon or rectangle) - Issue #32
-        board_outline_svg = self._generate_board_outline_svg(tx, ty, board_outline_color)
+        board_outline_svg = self._generate_board_outline_svg(
+            tx, ty, board_outline_color
+        )
 
-        svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg"
+        svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg"
              id="unified-svg"
              width="{self.svg_width}" height="{self.svg_height}"
              viewBox="0 0 {self.svg_width} {self.svg_height}">
@@ -799,14 +828,14 @@ class UnifiedVisualizer:
             <g class="labels-group">
                 {labels_group}
             </g>
-        </svg>'''
+        </svg>"""
 
         return svg_content
 
     def export_html(
         self,
         filename: str = "unified_visualization.html",
-        output_dir: str = "placement_debug"
+        output_dir: str = "placement_debug",
     ) -> Optional[Path]:
         """Export unified visualization as HTML file.
 
@@ -821,8 +850,8 @@ class UnifiedVisualizer:
             logger.warning("No frames to export")
             return None
 
-        from . import get_svg_delta_viewer_js, get_styles_css
         from ..placement.viewer_template import generate_viewer_html_template
+        from . import get_svg_delta_viewer_js
 
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -832,17 +861,17 @@ class UnifiedVisualizer:
 
         # Calculate board bounds for JavaScript
         board_bounds = {
-            'minX': self.bounds[0],
-            'minY': self.bounds[1],
-            'maxX': self.bounds[2],
-            'maxY': self.bounds[3],
-            'scale': self.scale,
-            'padding': self.margin * self.scale
+            "minX": self.bounds[0],
+            "minY": self.bounds[1],
+            "maxX": self.bounds[2],
+            "maxY": self.bounds[3],
+            "scale": self.scale,
+            "padding": self.margin * self.scale,
         }
 
         # Generate JavaScript with data
         js_code = get_svg_delta_viewer_js()
-        data_js = f'''
+        data_js = f"""
 // Board bounds for coordinate transforms
 const boardBounds = {json.dumps(board_bounds)};
 
@@ -871,7 +900,7 @@ document.addEventListener('DOMContentLoaded', function() {{
     showFrame(0);
     drawEnergyGraph();
 }});
-'''
+"""
 
         # Generate initial SVG
         svg_content = self._generate_initial_svg()
@@ -884,12 +913,14 @@ document.addEventListener('DOMContentLoaded', function() {{
         # Generate HTML using shared template
         html = generate_viewer_html_template(
             title="Unified Visualization (Placement + Routing)",
-            static_content='<div id="svg-container">' + svg_content + '</div>',
-            dynamic_content='',
+            static_content='<div id="svg-container">' + svg_content + "</div>",
+            dynamic_content="",
             javascript_code=data_js,
-            module_types={m: self.module_colors.get(m, '#3498db') for m in module_types if m},
+            module_types={
+                m: self.module_colors.get(m, "#3498db") for m in module_types if m
+            },
             total_frames=len(delta_frames),
-            is_streaming=False
+            is_streaming=False,
         )
 
         html_path = out_dir / filename

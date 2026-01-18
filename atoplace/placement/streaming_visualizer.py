@@ -36,12 +36,12 @@ Usage:
 
 import asyncio
 import logging
-from typing import Dict, List, Tuple, Optional
 from pathlib import Path
+from typing import Dict, List, Tuple
 
-from .visualizer import PlacementVisualizer
 from .stream_server import StreamServer
 from .stream_viewer import generate_stream_viewer_html
+from .visualizer import PlacementVisualizer
 
 logger = logging.getLogger(__name__)
 
@@ -174,9 +174,7 @@ class StreamingVisualizer:
                     "modules": frame.modules,
                     "forces": frame.forces,
                     "overlaps": frame.overlaps,
-                    "movement": {
-                        ref: list(mov) for ref, mov in frame.movement.items()
-                    },
+                    "movement": {ref: list(mov) for ref, mov in frame.movement.items()},
                     "connections": frame.connections,
                     "energy": frame.energy,
                     "max_move": frame.max_move,
@@ -222,7 +220,11 @@ class StreamingVisualizer:
         if self.streaming:
             await self.server.broadcast_status(status, message)
 
-    def export_canvas_html(self, filename: str = "placement_canvas.html", output_dir: str = "placement_debug"):
+    def export_canvas_html(
+        self,
+        filename: str = "placement_canvas.html",
+        output_dir: str = "placement_debug",
+    ):
         """Export Canvas-based HTML with all captured frames.
 
         This exports the complete visualization after optimization finishes,
@@ -237,7 +239,11 @@ class StreamingVisualizer:
         """
         return self.visualizer.export_canvas_html(filename, output_dir)
 
-    def export_html_report(self, filename: str = "placement_debug.html", output_dir: str = "placement_debug"):
+    def export_html_report(
+        self,
+        filename: str = "placement_debug.html",
+        output_dir: str = "placement_debug",
+    ):
         """Export legacy SVG-based HTML report.
 
         Args:
@@ -277,10 +283,7 @@ class StreamingVisualizer:
 
 
 def create_streaming_visualizer(
-    board,
-    host: str = "localhost",
-    port: int = 8765,
-    max_fps: float = 10.0
+    board, host: str = "localhost", port: int = 8765, max_fps: float = 10.0
 ) -> StreamingVisualizer:
     """Create a streaming visualizer for real-time visualization.
 
@@ -305,7 +308,7 @@ async def example_streaming_optimization():
     board = Board.from_kicad("example.kicad_pcb")
 
     # Create streaming visualizer
-    viz = StreamingVisualizer(board, host='localhost', port=8765, max_fps=10.0)
+    viz = StreamingVisualizer(board, host="localhost", port=8765, max_fps=10.0)
 
     try:
         # Start streaming server and generate viewer
@@ -323,7 +326,7 @@ async def example_streaming_optimization():
                 iteration=iteration,
                 phase="refinement",
                 modules={},  # Module assignments
-                forces={},   # Force vectors
+                forces={},  # Force vectors
                 energy=100.0 - iteration,  # Decreasing energy
                 max_move=1.0 / (iteration + 1),  # Decreasing movement
             )

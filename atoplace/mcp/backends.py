@@ -10,23 +10,25 @@ The kipy backend enables real-time component manipulation with instant
 visual updates in KiCad, without save/reload cycles.
 """
 
-import os
 import logging
+import os
 from enum import Enum
-from typing import Union, Tuple, Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
 class BackendMode(Enum):
     """Available backend modes for MCP session."""
+
     DIRECT = "direct"  # Direct pcbnew access
-    IPC = "ipc"        # Bridge-based IPC
-    KIPY = "kipy"      # KiCad IPC API (kicad-python)
+    IPC = "ipc"  # Bridge-based IPC
+    KIPY = "kipy"  # KiCad IPC API (kicad-python)
 
 
 class BackendNotAvailableError(Exception):
     """Raised when a requested backend is not available."""
+
     pass
 
 
@@ -122,7 +124,8 @@ def check_direct_available() -> Tuple[bool, str]:
     """
     try:
         import pcbnew
-        version = pcbnew.Version() if hasattr(pcbnew, 'Version') else "unknown"
+
+        version = pcbnew.Version() if hasattr(pcbnew, "Version") else "unknown"
         return True, f"pcbnew available (KiCad {version})"
     except ImportError:
         return False, "pcbnew not available (not in KiCad Python environment)"
@@ -136,9 +139,9 @@ def get_available_backends() -> dict:
         Dict with backend info: {mode: {'available': bool, 'message': str}}
     """
     return {
-        'kipy': dict(zip(['available', 'message'], check_kipy_available())),
-        'ipc': dict(zip(['available', 'message'], check_ipc_available())),
-        'direct': dict(zip(['available', 'message'], check_direct_available())),
+        "kipy": dict(zip(["available", "message"], check_kipy_available())),
+        "ipc": dict(zip(["available", "message"], check_ipc_available())),
+        "direct": dict(zip(["available", "message"], check_direct_available())),
     }
 
 
@@ -193,17 +196,16 @@ def create_session_with_fallback(preferred: BackendMode = BackendMode.KIPY):
         try:
             session = create_session(mode)
             if mode != preferred:
-                logger.warning("Fell back to %s mode (preferred: %s)",
-                              mode.value, preferred.value)
+                logger.warning(
+                    "Fell back to %s mode (preferred: %s)", mode.value, preferred.value
+                )
             return session, mode
         except BackendNotAvailableError as e:
             last_error = e
             logger.debug("Backend %s not available: %s", mode.value, e)
             continue
 
-    raise BackendNotAvailableError(
-        f"No backends available. Last error: {last_error}"
-    )
+    raise BackendNotAvailableError(f"No backends available. Last error: {last_error}")
 
 
 def _create_kipy_session():

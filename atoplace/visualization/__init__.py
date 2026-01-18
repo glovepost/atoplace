@@ -13,13 +13,12 @@ Assets are stored in visualization/assets/ and can be loaded either:
 """
 
 from pathlib import Path
-from typing import Optional
 
 # Asset directory path
 ASSETS_DIR = Path(__file__).parent / "assets"
 
 # Import unified visualizer
-from .unified import UnifiedVisualizer, UnifiedFrame, create_unified_visualizer
+from .unified import UnifiedFrame, UnifiedVisualizer, create_unified_visualizer
 
 
 def get_asset_path(filename: str) -> Path:

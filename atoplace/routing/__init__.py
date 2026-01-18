@@ -37,80 +37,79 @@ Phase 2 - Critical Nets (implemented):
 """
 
 # Phase 0 - Pin Optimization
-from .pinswapper import (
-    PinSwapper,
-    SwapResult,
-    SwapConfig,
-    SwapGroupDetector,
-    SwapGroup,
-    SwapGroupType,
-    SwappablePin,
-    CrossingCounter,
-    CrossingResult,
-    RatsnestEdge,
-    BipartiteMatcher,
-    MatchingResult,
-    SwapAssignment,
-    ConstraintGenerator,
-    ConstraintFormat,
-    ConstraintUpdate,
-)
-
-# Phase 3A - Foundation
-from .spatial_index import SpatialHashIndex, Obstacle, auto_calibrate_cell_size
-from .obstacle_map import ObstacleMapBuilder, NetPads, build_obstacle_map
-from .visualizer import (
-    RouteVisualizer,
-    VisualizationFrame,
-    RouteSegment,
-    Via,
-    create_visualizer_from_board,
-)
-
 # Phase 3B - Core Router
 from .astar_router import (
     AStarRouter,
+    NetOrderer,
+    RouteDirection,
+    RouteNode,
     RouterConfig,
     RoutingResult,
-    RouteNode,
-    RouteDirection,
-    NetOrderer,
     route_board,
-)
-
-# Phase 3B+ - Routing Manager
-from .manager import (
-    RoutingManager,
-    RoutingManagerConfig,
-    RoutingManagerResult,
-    RoutingPhase,
-    NetPriority,
-    DiffPair,
-    route_board_managed,
 )
 
 # Phase 2 - Critical Nets (Diff Pairs)
 from .diff_pairs import (
     DiffPairDetector,
+    DiffPairGeometry,
+    DiffPairPattern,
+    DiffPairResult,
     DiffPairRouter,
     DiffPairSpec,
-    DiffPairResult,
-    DiffPairPattern,
-    DiffPairGeometry,
     LengthMatcher,
 )
 
 # Phase 3D - BGA Fanout
 from .fanout import (
+    DogbonePattern,
+    EscapeRouter,
     FanoutGenerator,
     FanoutResult,
     FanoutStrategy,
-    DogbonePattern,
-    VIPPattern,
-    FanoutVia,
     FanoutTrace,
+    FanoutVia,
     LayerAssigner,
-    EscapeRouter,
+    VIPPattern,
+)
+
+# Phase 3B+ - Routing Manager
+from .manager import (
+    DiffPair,
+    NetPriority,
+    RoutingManager,
+    RoutingManagerConfig,
+    RoutingManagerResult,
+    RoutingPhase,
+    route_board_managed,
+)
+from .obstacle_map import NetPads, ObstacleMapBuilder, build_obstacle_map
+from .pinswapper import (
+    BipartiteMatcher,
+    ConstraintFormat,
+    ConstraintGenerator,
+    ConstraintUpdate,
+    CrossingCounter,
+    CrossingResult,
+    MatchingResult,
+    PinSwapper,
+    RatsnestEdge,
+    SwapAssignment,
+    SwapConfig,
+    SwapGroup,
+    SwapGroupDetector,
+    SwapGroupType,
+    SwappablePin,
+    SwapResult,
+)
+
+# Phase 3A - Foundation
+from .spatial_index import Obstacle, SpatialHashIndex, auto_calibrate_cell_size
+from .visualizer import (
+    RouteSegment,
+    RouteVisualizer,
+    Via,
+    VisualizationFrame,
+    create_visualizer_from_board,
 )
 
 __all__ = [
@@ -190,6 +189,7 @@ def __getattr__(name):
     if name == "FreeroutingRunner":
         try:
             from .freerouting import FreeroutingRunner
+
             return FreeroutingRunner
         except ImportError:
             raise ImportError(
@@ -199,6 +199,7 @@ def __getattr__(name):
     elif name == "NetClassAssigner":
         try:
             from .net_classes import NetClassAssigner
+
             return NetClassAssigner
         except ImportError:
             raise ImportError(

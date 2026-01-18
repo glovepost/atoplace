@@ -1,15 +1,15 @@
-"Pin Swapping & Optimization
+"""Pin Swapping & Optimization
 
 Algorithms to optimize FPGA/MCU pin assignments before routing.
 Reduces ratsnest crossing count to simplify PCB layout.
-"
+"""
 
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from ..board.abstraction import Board, Component, Net, Pad
+from ..board.abstraction import Board
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +66,10 @@ class SwapResult:
 
 class SwapGroupDetector:
     """Detects swappable groups on components."""
-    
+
     def __init__(self, board: Board):
         self.board = board
-        
+
     def detect(self) -> List[SwapGroup]:
         """
         Auto-detect swap groups based on component info.
@@ -82,7 +82,7 @@ class SwapGroupDetector:
 
 class CrossingCounter:
     """Calculates crossing number/cost for a set of connections."""
-    
+
     @staticmethod
     def count_crossings(edges: List[RatsnestEdge]) -> float:
         """
@@ -133,7 +133,7 @@ class ConstraintFormat(Enum):
 
 class ConstraintGenerator:
     """Generates FPGA constraint files from assignments."""
-    
+
     @staticmethod
     def generate(assignments: Dict[str, str], format: ConstraintFormat = ConstraintFormat.XDC) -> str:
         lines = []
@@ -145,14 +145,14 @@ class ConstraintGenerator:
 
 class BipartiteMatcher:
     """Solves assignment problem using min-weight matching."""
-    
+
     def match(self, cost_matrix) -> MatchingResult:
         """
         Solve linear sum assignment (Hungarian algorithm).
-        
+
         Args:
             cost_matrix: 2D array/list of costs
-            
+
         Returns:
             MatchingResult with optimal assignments
         """
@@ -165,12 +165,12 @@ class PinSwapper:
     """
     Main class for pin optimization.
     """
-    
+
     def __init__(self, board: Board):
         self.board = board
         self.detector = SwapGroupDetector(board)
         self.matcher = BipartiteMatcher()
-        
+
     def optimize(self, component_ref: str, config: 'SwapConfig' = None) -> SwapResult:
         """
         Optimize pins for a specific component.

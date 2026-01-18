@@ -7,12 +7,11 @@ the unified Board abstraction.
 Requires pcbnew (KiCad's Python API) to be available.
 """
 
-from pathlib import Path
-from typing import Optional, Dict, List
-import re
 import logging
+from pathlib import Path
+from typing import Dict, List
 
-from .abstraction import Board, Component, Net, Pad, Layer, BoardOutline, RefDesText
+from .abstraction import Board, BoardOutline, Component, Layer, Net, Pad, RefDesText
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +24,13 @@ try:
     # Suppress wx debug messages (e.g., "Adding duplicate image handler")
     # This must be done before importing wx or pcbnew
     import os
-    os.environ.setdefault('WX_DEBUG', '0')
+
+    os.environ.setdefault("WX_DEBUG", "0")
 
     # Also try to suppress via wx.Log if available
     try:
         import wx
+
         # Disable wx logging to suppress debug spam
         wx.Log.EnableLogging(False)
 
@@ -50,10 +51,166 @@ try:
         pass
 
     import pcbnew
+
     PCBNEW_AVAILABLE = True
+
+    # Detect KiCad version for API compatibility
+    KICAD_VERSION = None
+    KICAD_MAJOR = 0
+    try:
+        version_str = pcbnew.Version()
+        KICAD_VERSION = version_str
+        # Parse major version (e.g., "9.0.0" -> 9, "8.0.5" -> 8)
+        parts = version_str.split(".")
+        if parts:
+            KICAD_MAJOR = int(parts[0])
+    except (AttributeError, ValueError):
+        # Version() not available or unparseable
+        pass
 
 except ImportError:
     PCBNEW_AVAILABLE = False
+    KICAD_VERSION = None
+    KICAD_MAJOR = 0
+
+
+# =============================================================================
+# KiCad API Compatibility Layer
+# =============================================================================
+# These wrapper functions handle API differences between KiCad versions,
+# reducing brittle try/except blocks throughout the codebase.
+
+
+def _kicad_get_text_angle_degrees(text_item) -> float:
+    """Get text angle in degrees, handling API differences.
+
+    KiCad 8+: GetTextAngleDegrees()
+    KiCad 7: GetTextAngle().AsDegrees()
+    Older: GetTextAngle() returns tenths of degrees
+    """
+    if not PCBNEW_AVAILABLE:
+        return 0.0
+    try:
+        return text_item.GetTextAngleDegrees()
+    except AttributeError:
+        pass
+    try:
+        angle = text_item.GetTextAngle()
+        if hasattr(angle, "AsDegrees"):
+            return angle.AsDegrees()
+        # Older versions return tenths of degrees
+        return float(angle) / 10.0
+    except (AttributeError, TypeError):
+        return 0.0
+
+
+def _kicad_get_reference_field(fp):
+    """Get reference field from footprint, handling API differences.
+
+    KiCad 8+: fp.Reference()
+    KiCad 7: fp.GetField(0)
+    """
+    if not PCBNEW_AVAILABLE:
+        return None
+    try:
+        return fp.Reference()
+    except AttributeError:
+        pass
+    try:
+        return fp.GetField(0)
+    except (AttributeError, RuntimeError, IndexError):
+        return None
+
+
+def _kicad_get_value_field(fp):
+    """Get value field from footprint, handling API differences.
+
+    KiCad 8+: fp.Value()
+    KiCad 7: fp.GetField(1)
+    """
+    if not PCBNEW_AVAILABLE:
+        return None
+    try:
+        return fp.Value()
+    except AttributeError:
+        pass
+    try:
+        return fp.GetField(1)
+    except (AttributeError, RuntimeError, IndexError):
+        return None
+
+
+def _kicad_set_layer_count(board, count: int):
+    """Set copper layer count on board, handling API differences."""
+    if not PCBNEW_AVAILABLE:
+        return
+    try:
+        board.SetCopperLayerCount(count)
+    except AttributeError:
+        logger.warning("SetCopperLayerCount not available in this KiCad version")
+
+
+def _kicad_get_design_settings(board):
+    """Get design settings from board."""
+    if not PCBNEW_AVAILABLE:
+        return None
+    return board.GetDesignSettings()
+
+
+def _kicad_set_track_width(ds, width_mm: float):
+    """Set track width in design settings, handling API differences."""
+    if not PCBNEW_AVAILABLE or ds is None:
+        return
+    width_nm = pcbnew.FromMM(width_mm)
+    try:
+        ds.SetCurrentTrackWidth(width_nm)
+    except (AttributeError, RuntimeError):
+        try:
+            ds.m_TrackMinWidth = width_nm
+        except AttributeError:
+            pass
+
+
+def _kicad_set_clearance(ds, clearance_mm: float):
+    """Set minimum clearance in design settings, handling API differences."""
+    if not PCBNEW_AVAILABLE or ds is None:
+        return
+    clearance_nm = pcbnew.FromMM(clearance_mm)
+    try:
+        ds.SetMinClearance(clearance_nm)
+    except (AttributeError, RuntimeError):
+        try:
+            ds.m_MinClearance = clearance_nm
+        except AttributeError:
+            pass
+
+
+def _kicad_set_via_drill(ds, drill_mm: float):
+    """Set via drill size in design settings, handling API differences."""
+    if not PCBNEW_AVAILABLE or ds is None:
+        return
+    drill_nm = pcbnew.FromMM(drill_mm)
+    try:
+        ds.SetCurrentViaDrill(drill_nm)
+    except (AttributeError, RuntimeError):
+        try:
+            ds.m_ViasMinDrill = drill_nm
+        except AttributeError:
+            pass
+
+
+def _kicad_set_via_size(ds, size_mm: float):
+    """Set via pad size in design settings, handling API differences."""
+    if not PCBNEW_AVAILABLE or ds is None:
+        return
+    size_nm = pcbnew.FromMM(size_mm)
+    try:
+        ds.SetCurrentViaSize(size_nm)
+    except (AttributeError, RuntimeError):
+        try:
+            ds.m_ViasMinSize = size_nm
+        except AttributeError:
+            pass
 
 
 def check_pcbnew():
@@ -76,7 +233,9 @@ def check_pcbnew():
             example = f"  {python_path}\n  # or check your KiCad installation directory"
         else:
             python_path = "KiCad's Python interpreter"
-            example = "  # Check your KiCad installation directory for the Python interpreter"
+            example = (
+                "  # Check your KiCad installation directory for the Python interpreter"
+            )
 
         raise ImportError(
             f"pcbnew module not found in current Python environment ({sys.executable}).\n"
@@ -187,12 +346,13 @@ def save_kicad_board(board: Board, path: Path):
         # Load from source file if output doesn't exist but source does
         kicad_board = pcbnew.LoadBoard(str(board.source_file))
     else:
-        # Create new board (basic setup)
+        # Create new board with proper layer stack and design rules
         kicad_board = pcbnew.BOARD()
-        # TODO: Set up layer stack, design rules, etc.
+        _setup_new_board(kicad_board, board)
 
     # Update component positions
     import math
+
     for fp in kicad_board.GetFootprints():
         ref = fp.GetReference()
         if ref in board.components:
@@ -218,10 +378,9 @@ def save_kicad_board(board: Board, path: Path):
             kicad_y = comp.y - rotated_offset_y
 
             # Update position
-            fp.SetPosition(pcbnew.VECTOR2I(
-                pcbnew.FromMM(kicad_x),
-                pcbnew.FromMM(kicad_y)
-            ))
+            fp.SetPosition(
+                pcbnew.VECTOR2I(pcbnew.FromMM(kicad_x), pcbnew.FromMM(kicad_y))
+            )
             # Update rotation
             fp.SetOrientationDegrees(comp.rotation)
             # Update layer if changed
@@ -244,6 +403,53 @@ def save_kicad_board(board: Board, path: Path):
     pcbnew.SaveBoard(str(path), kicad_board)
 
 
+def _setup_new_board(kicad_board, board: Board):
+    """Configure layer stack and design rules for a new KiCad board.
+
+    Sets up:
+    - Copper layer count from board.layer_count
+    - Default trace width from board.default_trace_width
+    - Default clearance from board.default_clearance
+    - Default via dimensions from board.default_via_drill/diameter
+    - Board outline from board.outline
+
+    Args:
+        kicad_board: New pcbnew.BOARD() instance to configure
+        board: Board abstraction with desired settings
+    """
+    # Set copper layer count (must be even: 2, 4, 6, etc.)
+    layer_count = max(2, board.layer_count)
+    if layer_count % 2 != 0:
+        layer_count += 1  # Round up to even number
+    _kicad_set_layer_count(kicad_board, layer_count)
+    logger.debug(f"Set copper layer count to {layer_count}")
+
+    # Configure design rules using compatibility wrappers
+    ds = _kicad_get_design_settings(kicad_board)
+
+    if board.default_trace_width > 0:
+        _kicad_set_track_width(ds, board.default_trace_width)
+
+    if board.default_clearance > 0:
+        _kicad_set_clearance(ds, board.default_clearance)
+
+    if board.default_via_drill > 0:
+        _kicad_set_via_drill(ds, board.default_via_drill)
+
+    if board.default_via_diameter > 0:
+        _kicad_set_via_size(ds, board.default_via_diameter)
+
+    # Set board outline if available
+    if board.outline and board.outline.has_outline:
+        _update_edge_cuts_outline(kicad_board, board.outline)
+
+    logger.info(
+        f"Configured new board: {layer_count} layers, "
+        f"trace={board.default_trace_width}mm, "
+        f"clearance={board.default_clearance}mm"
+    )
+
+
 def _update_edge_cuts_outline(kicad_board, outline: BoardOutline):
     """Update or create Edge.Cuts outline on the KiCad board.
 
@@ -260,7 +466,7 @@ def _update_edge_cuts_outline(kicad_board, outline: BoardOutline):
     """
     # Only update if this outline was auto-generated or compacted
     # This prevents overwriting carefully designed board shapes
-    if not getattr(outline, 'auto_generated', False):
+    if not getattr(outline, "auto_generated", False):
         return
 
     # Get outline polygon - either explicit polygon or rectangular
@@ -281,7 +487,7 @@ def _update_edge_cuts_outline(kicad_board, outline: BoardOutline):
     for drawing in kicad_board.GetDrawings():
         if drawing.GetLayer() == pcbnew.Edge_Cuts:
             # Only remove simple line segments (PCB_SHAPE with SEGMENT type)
-            if hasattr(drawing, 'GetShape'):
+            if hasattr(drawing, "GetShape"):
                 shape_type = drawing.GetShape()
                 # pcbnew.S_SEGMENT = line, pcbnew.S_RECT = rectangle
                 if shape_type in (pcbnew.S_SEGMENT, pcbnew.S_RECT):
@@ -299,14 +505,8 @@ def _update_edge_cuts_outline(kicad_board, outline: BoardOutline):
         line = pcbnew.PCB_SHAPE(kicad_board)
         line.SetShape(pcbnew.S_SEGMENT)
         line.SetLayer(pcbnew.Edge_Cuts)
-        line.SetStart(pcbnew.VECTOR2I(
-            pcbnew.FromMM(p1[0]),
-            pcbnew.FromMM(p1[1])
-        ))
-        line.SetEnd(pcbnew.VECTOR2I(
-            pcbnew.FromMM(p2[0]),
-            pcbnew.FromMM(p2[1])
-        ))
+        line.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(p1[0]), pcbnew.FromMM(p1[1])))
+        line.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(p2[0]), pcbnew.FromMM(p2[1])))
         # Standard Edge.Cuts line width (0.1mm)
         line.SetWidth(pcbnew.FromMM(0.1))
         kicad_board.Add(line)
@@ -314,8 +514,10 @@ def _update_edge_cuts_outline(kicad_board, outline: BoardOutline):
     logger.debug(
         "Created Edge.Cuts outline: %d segments, bounds (%.1f, %.1f) to (%.1f, %.1f)",
         len(polygon),
-        outline.origin_x, outline.origin_y,
-        outline.origin_x + outline.width, outline.origin_y + outline.height
+        outline.origin_x,
+        outline.origin_y,
+        outline.origin_x + outline.width,
+        outline.origin_y + outline.height,
     )
 
 
@@ -324,7 +526,7 @@ def save_routed_traces(
     segments: List,
     vias: List,
     net_names: Dict[int, str],
-    layer_count: int = 2
+    layer_count: int = 2,
 ):
     """Add routed traces and vias to a KiCad PCB file.
 
@@ -364,10 +566,14 @@ def save_routed_traces(
             layer_constant_name = f"In{inner_num}_Cu"
             try:
                 layer_constant = getattr(pcbnew, layer_constant_name)
-                layer_map[i + 2] = layer_constant  # Map indices 2, 3, 4, ... to In1, In2, In3, ...
+                layer_map[i + 2] = (
+                    layer_constant  # Map indices 2, 3, 4, ... to In1, In2, In3, ...
+                )
             except AttributeError:
-                logger.warning(f"Layer constant {layer_constant_name} not found in pcbnew. "
-                              f"Board may have more layers than supported by this KiCad version.")
+                logger.warning(
+                    f"Layer constant {layer_constant_name} not found in pcbnew. "
+                    f"Board may have more layers than supported by this KiCad version."
+                )
 
     # Build net code lookup from existing board
     net_code_map = {}
@@ -382,14 +588,12 @@ def save_routed_traces(
         track = pcbnew.PCB_TRACK(kicad_board)
 
         # Set start and end points
-        track.SetStart(pcbnew.VECTOR2I(
-            pcbnew.FromMM(seg.start[0]),
-            pcbnew.FromMM(seg.start[1])
-        ))
-        track.SetEnd(pcbnew.VECTOR2I(
-            pcbnew.FromMM(seg.end[0]),
-            pcbnew.FromMM(seg.end[1])
-        ))
+        track.SetStart(
+            pcbnew.VECTOR2I(pcbnew.FromMM(seg.start[0]), pcbnew.FromMM(seg.start[1]))
+        )
+        track.SetEnd(
+            pcbnew.VECTOR2I(pcbnew.FromMM(seg.end[0]), pcbnew.FromMM(seg.end[1]))
+        )
 
         # Set layer
         kicad_layer = layer_map.get(seg.layer, pcbnew.F_Cu)
@@ -413,10 +617,9 @@ def save_routed_traces(
         kicad_via = pcbnew.PCB_VIA(kicad_board)
 
         # Set position
-        kicad_via.SetPosition(pcbnew.VECTOR2I(
-            pcbnew.FromMM(via.x),
-            pcbnew.FromMM(via.y)
-        ))
+        kicad_via.SetPosition(
+            pcbnew.VECTOR2I(pcbnew.FromMM(via.x), pcbnew.FromMM(via.y))
+        )
 
         # Set via type and size
         kicad_via.SetViaType(pcbnew.VIATYPE_THROUGH)
@@ -435,9 +638,7 @@ def save_routed_traces(
     # Save the updated board
     pcbnew.SaveBoard(str(path), kicad_board)
 
-    logger.info(
-        f"Saved routing to {path}: {trace_count} traces, {via_count} vias"
-    )
+    logger.info(f"Saved routing to {path}: {trace_count} traces, {via_count} vias")
 
 
 def _update_ref_des_text(fp, comp: Component, kicad_x: float, kicad_y: float):
@@ -462,7 +663,9 @@ def _update_ref_des_text(fp, comp: Component, kicad_x: float, kicad_y: float):
         try:
             ref_field = fp.GetField(0)
         except (AttributeError, RuntimeError, Exception) as e:
-            logger.warning("Could not get reference field for %s: %s", comp.reference, e)
+            logger.warning(
+                "Could not get reference field for %s: %s", comp.reference, e
+            )
             return
 
     if not ref_field:
@@ -486,10 +689,9 @@ def _update_ref_des_text(fp, comp: Component, kicad_x: float, kicad_y: float):
         text_y = kicad_y + board_rel_y
 
         # Update text position
-        ref_field.SetPosition(pcbnew.VECTOR2I(
-            pcbnew.FromMM(text_x),
-            pcbnew.FromMM(text_y)
-        ))
+        ref_field.SetPosition(
+            pcbnew.VECTOR2I(pcbnew.FromMM(text_x), pcbnew.FromMM(text_y))
+        )
 
         # Update text rotation
         text_abs_rotation = (ref_text.rotation + comp.rotation) % 360
@@ -497,18 +699,23 @@ def _update_ref_des_text(fp, comp: Component, kicad_x: float, kicad_y: float):
             ref_field.SetTextAngleDegrees(text_abs_rotation)
         except AttributeError:
             try:
-                ref_field.SetTextAngle(pcbnew.EDA_ANGLE(text_abs_rotation, pcbnew.DEGREES_T))
+                ref_field.SetTextAngle(
+                    pcbnew.EDA_ANGLE(text_abs_rotation, pcbnew.DEGREES_T)
+                )
             except (AttributeError, RuntimeError) as e:
                 logger.debug("Could not set text angle for %s: %s", comp.reference, e)
 
         # Update text size if significantly different
         try:
             current_size = pcbnew.ToMM(ref_field.GetTextSize().y)
-            if abs(current_size - ref_text.size) > 0.05:  # Only update if > 0.05mm difference
-                ref_field.SetTextSize(pcbnew.VECTOR2I(
-                    pcbnew.FromMM(ref_text.size),
-                    pcbnew.FromMM(ref_text.size)
-                ))
+            if (
+                abs(current_size - ref_text.size) > 0.05
+            ):  # Only update if > 0.05mm difference
+                ref_field.SetTextSize(
+                    pcbnew.VECTOR2I(
+                        pcbnew.FromMM(ref_text.size), pcbnew.FromMM(ref_text.size)
+                    )
+                )
         except (AttributeError, RuntimeError) as e:
             logger.debug("Could not set text size for %s: %s", comp.reference, e)
 
@@ -521,7 +728,11 @@ def _update_ref_des_text(fp, comp: Component, kicad_x: float, kicad_y: float):
 
         # Update layer
         try:
-            target_layer = pcbnew.B_SilkS if ref_text.layer == Layer.BOTTOM_SILK else pcbnew.F_SilkS
+            target_layer = (
+                pcbnew.B_SilkS
+                if ref_text.layer == Layer.BOTTOM_SILK
+                else pcbnew.F_SilkS
+            )
             if ref_field.GetLayer() != target_layer:
                 ref_field.SetLayer(target_layer)
         except (AttributeError, RuntimeError) as e:
@@ -608,10 +819,12 @@ def _extract_polygon_outline(kicad_board) -> tuple:
                 # Line segment
                 start = drawing.GetStart()
                 end = drawing.GetEnd()
-                segments.append((
-                    (pcbnew.ToMM(start.x), pcbnew.ToMM(start.y)),
-                    (pcbnew.ToMM(end.x), pcbnew.ToMM(end.y))
-                ))
+                segments.append(
+                    (
+                        (pcbnew.ToMM(start.x), pcbnew.ToMM(start.y)),
+                        (pcbnew.ToMM(end.x), pcbnew.ToMM(end.y)),
+                    )
+                )
 
             elif shape == pcbnew.SHAPE_T_ARC:
                 # Arc - convert to line segments for simplicity
@@ -914,9 +1127,9 @@ def _footprint_to_component(fp) -> Component:
 
     # Check DNP (Do Not Populate) flag - KiCad 9+
     dnp = False
-    if hasattr(fp, 'IsDNP'):
+    if hasattr(fp, "IsDNP"):
         dnp = fp.IsDNP()
-    elif hasattr(fp, 'IsExcludedFromBOM'):
+    elif hasattr(fp, "IsExcludedFromBOM"):
         # Fallback for older KiCad versions
         dnp = fp.IsExcludedFromBOM()
 
@@ -940,7 +1153,9 @@ def _footprint_to_component(fp) -> Component:
     _extract_footprint_properties(fp, component)
 
     # Extract reference designator text positioning
-    component.ref_des_text = _extract_ref_des_text(fp, pos, rotation, offset_x, offset_y)
+    component.ref_des_text = _extract_ref_des_text(
+        fp, pos, rotation, offset_x, offset_y
+    )
 
     # Extract pads (pass rotation and centroid offset for coordinate transformation)
     # The centroid offset is needed so pad positions are relative to the centroid
@@ -963,11 +1178,18 @@ def _extract_footprint_properties(fp, component: Component):
         # KiCad 9+: Use GetFields() to iterate over all fields
         # Standard fields are: Reference, Value, Datasheet, Description
         # Custom fields include: atopile_address, LCSC, Manufacturer, etc.
-        if hasattr(fp, 'GetFields'):
+        if hasattr(fp, "GetFields"):
             for field in fp.GetFields():
                 name = str(field.GetName())
                 # Skip standard fields that are already handled elsewhere
-                if name in ('Reference', 'Value', 'Footprint', 'Datasheet', 'Description', ''):
+                if name in (
+                    "Reference",
+                    "Value",
+                    "Footprint",
+                    "Datasheet",
+                    "Description",
+                    "",
+                ):
                     continue
                 # Use GetText() which is reliable across KiCad versions
                 value = str(field.GetText())
@@ -975,33 +1197,39 @@ def _extract_footprint_properties(fp, component: Component):
                     component.properties[name] = value
 
         # Direct lookup for atopile_address using GetFieldByName (KiCad 9+)
-        if 'atopile_address' not in component.properties:
-            if hasattr(fp, 'GetFieldByName'):
-                field = fp.GetFieldByName('atopile_address')
+        if "atopile_address" not in component.properties:
+            if hasattr(fp, "GetFieldByName"):
+                field = fp.GetFieldByName("atopile_address")
                 if field:
                     value = str(field.GetText())
                     if value:
-                        component.properties['atopile_address'] = value
+                        component.properties["atopile_address"] = value
             # Fallback for older KiCad versions
-            elif hasattr(fp, 'HasFieldByName') and fp.HasFieldByName('atopile_address'):
-                if hasattr(fp, 'GetField'):
-                    field = fp.GetField('atopile_address')
+            elif hasattr(fp, "HasFieldByName") and fp.HasFieldByName("atopile_address"):
+                if hasattr(fp, "GetField"):
+                    field = fp.GetField("atopile_address")
                     if field:
                         value = str(field.GetText())
                         if value:
-                            component.properties['atopile_address'] = value
+                            component.properties["atopile_address"] = value
 
     except Exception as e:
         # Property extraction is non-critical - log exception type and message for debugging
         logger.debug(
             "Failed to extract properties from %s: %s: %s",
-            component.reference, type(e).__name__, e
+            component.reference,
+            type(e).__name__,
+            e,
         )
 
 
-def _extract_ref_des_text(fp, fp_pos, fp_rotation: float,
-                          centroid_offset_x: float = 0.0,
-                          centroid_offset_y: float = 0.0) -> RefDesText:
+def _extract_ref_des_text(
+    fp,
+    fp_pos,
+    fp_rotation: float,
+    centroid_offset_x: float = 0.0,
+    centroid_offset_y: float = 0.0,
+) -> RefDesText:
     """Extract reference designator text positioning from KiCad footprint.
 
     Args:
@@ -1020,17 +1248,8 @@ def _extract_ref_des_text(fp, fp_pos, fp_rotation: float,
     """
     import math
 
-    # Get the reference field (contains text position, size, etc.)
-    try:
-        ref_field = fp.Reference()
-    except AttributeError:
-        # Fallback for older KiCad versions
-        try:
-            ref_field = fp.GetField(0)  # Field 0 is typically Reference
-        except (AttributeError, RuntimeError, Exception) as e:
-            logger.debug("Could not get reference field: %s", e)
-            return RefDesText()  # Return defaults if we can't get the field
-
+    # Get the reference field using compatibility wrapper
+    ref_field = _kicad_get_reference_field(fp)
     if not ref_field:
         return RefDesText()
 
@@ -1056,15 +1275,8 @@ def _extract_ref_des_text(fp, fp_pos, fp_rotation: float,
         offset_x = local_x - centroid_offset_x
         offset_y = local_y - centroid_offset_y
 
-        # Get text rotation relative to footprint
-        try:
-            text_abs_rotation = ref_field.GetTextAngleDegrees()
-        except AttributeError:
-            try:
-                text_abs_rotation = ref_field.GetTextAngle().AsDegrees()
-            except (AttributeError, RuntimeError):
-                text_abs_rotation = 0.0
-
+        # Get text rotation relative to footprint using compatibility wrapper
+        text_abs_rotation = _kicad_get_text_angle_degrees(ref_field)
         text_local_rotation = (text_abs_rotation - fp_rotation) % 360
 
         # Get text size
@@ -1111,8 +1323,9 @@ def _extract_ref_des_text(fp, fp_pos, fp_rotation: float,
         return RefDesText()  # Return defaults
 
 
-def _estimate_unrotated_dimensions(fp, bbox_width: float, bbox_height: float,
-                                   rotation: float) -> tuple:
+def _estimate_unrotated_dimensions(
+    fp, bbox_width: float, bbox_height: float, rotation: float
+) -> tuple:
     """Estimate unrotated component dimensions and centroid offset.
 
     Uses pad extents when available, otherwise reverse-calculates from
@@ -1129,8 +1342,8 @@ def _estimate_unrotated_dimensions(fp, bbox_width: float, bbox_height: float,
     pads = list(fp.Pads())
     if pads:
         # Calculate pad extents in local coordinates
-        min_x = min_y = float('inf')
-        max_x = max_y = float('-inf')
+        min_x = min_y = float("inf")
+        max_x = max_y = float("-inf")
 
         fp_pos = fp.GetPosition()
         rad = math.radians(-rotation)
@@ -1173,7 +1386,7 @@ def _estimate_unrotated_dimensions(fp, bbox_width: float, bbox_height: float,
             min_y = min(min_y, local_y - pad_half_h)
             max_y = max(max_y, local_y + pad_half_h)
 
-        if min_x != float('inf'):
+        if min_x != float("inf"):
             # Add margin for component body beyond pads
             # Use a proportional margin based on component size rather than fixed 0.5mm
             # This avoids over-inflating small components while still accounting for
@@ -1224,8 +1437,13 @@ def _map_pad_layer(kicad_pad) -> Layer:
     return Layer.TOP_COPPER
 
 
-def _pad_to_pad(kicad_pad, fp_pos, fp_rotation: float,
-                centroid_offset_x: float = 0.0, centroid_offset_y: float = 0.0) -> Pad:
+def _pad_to_pad(
+    kicad_pad,
+    fp_pos,
+    fp_rotation: float,
+    centroid_offset_x: float = 0.0,
+    centroid_offset_y: float = 0.0,
+) -> Pad:
     """Convert KiCad pad to Pad.
 
     Args:
@@ -1358,26 +1576,29 @@ def _extract_net(net_name, net_item, kicad_board, pad_net_map: dict = None) -> N
 
     # Determine if power/ground net
     name_upper = net_name_str.upper()
-    if any(pwr in name_upper for pwr in ['VCC', 'VDD', 'V3V3', 'V5V', '3V3', '5V', 'VBAT', 'VIN']):
+    if any(
+        pwr in name_upper
+        for pwr in ["VCC", "VDD", "V3V3", "V5V", "3V3", "5V", "VBAT", "VIN"]
+    ):
         net.is_power = True
-    if any(gnd in name_upper for gnd in ['GND', 'VSS', 'GROUND', 'AGND', 'DGND']):
+    if any(gnd in name_upper for gnd in ["GND", "VSS", "GROUND", "AGND", "DGND"]):
         net.is_ground = True
 
     # Check for differential pairs - mark both + and - nets
     # Positive nets
-    if name_upper.endswith('+'):
+    if name_upper.endswith("+"):
         net.is_differential = True
-        net.diff_pair_net = net_name_str[:-1] + '-'
-    elif name_upper.endswith('_P'):
+        net.diff_pair_net = net_name_str[:-1] + "-"
+    elif name_upper.endswith("_P"):
         net.is_differential = True
-        net.diff_pair_net = net_name_str[:-2] + '_N'
+        net.diff_pair_net = net_name_str[:-2] + "_N"
     # Negative nets - also mark these as differential
-    elif name_upper.endswith('-'):
+    elif name_upper.endswith("-"):
         net.is_differential = True
-        net.diff_pair_net = net_name_str[:-1] + '+'
-    elif name_upper.endswith('_N'):
+        net.diff_pair_net = net_name_str[:-1] + "+"
+    elif name_upper.endswith("_N"):
         net.is_differential = True
-        net.diff_pair_net = net_name_str[:-2] + '_P'
+        net.diff_pair_net = net_name_str[:-2] + "_P"
 
     # Add pad connections - use pre-built lookup if available (O(1) per net)
     # Otherwise fall back to scanning all pads (O(footprints × pads) per net)
@@ -1387,7 +1608,10 @@ def _extract_net(net_name, net_item, kicad_board, pad_net_map: dict = None) -> N
     else:
         # Legacy path - only used when called from external code without pad_net_map
         # This is O(footprints × pads) per net, so prefer passing pad_net_map
-        logger.debug("Using legacy pad scan for net %s (consider passing pad_net_map)", net_name_str)
+        logger.debug(
+            "Using legacy pad scan for net %s (consider passing pad_net_map)",
+            net_name_str,
+        )
         for fp in kicad_board.GetFootprints():
             ref = str(fp.GetReference())
             for pad in fp.Pads():
@@ -1400,8 +1624,8 @@ def _extract_net(net_name, net_item, kicad_board, pad_net_map: dict = None) -> N
 
 def get_kicad_python_path() -> str:
     """Get the path to KiCad's Python interpreter."""
-    import sys
     import os
+    import sys
 
     # Common KiCad Python paths
     paths = [

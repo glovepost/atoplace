@@ -12,10 +12,10 @@ This maximizes routing efficiency by:
 3. Spreading routing load across available layers
 """
 
-import math
 import logging
+import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ class PinRing:
         pad_numbers: Set of pad numbers in this ring
         pin_count: Number of pins in this ring
     """
+
     index: int
     pad_numbers: Set[str] = field(default_factory=set)
 
@@ -49,6 +50,7 @@ class LayerMapping:
         layer_to_pads: Dict mapping layer index to set of pad numbers
         ring_to_layer: Dict mapping ring index to layer index
     """
+
     pad_to_layer: Dict[str, int] = field(default_factory=dict)
     layer_to_pads: Dict[int, Set[str]] = field(default_factory=dict)
     ring_to_layer: Dict[int, int] = field(default_factory=dict)
@@ -151,10 +153,12 @@ class LayerAssigner:
         rings = []
         for grid_dist in sorted(rings_dict.keys(), reverse=True):
             inverted_idx = max_ring - grid_dist
-            rings.append(PinRing(
-                index=inverted_idx,
-                pad_numbers=rings_dict[grid_dist],
-            ))
+            rings.append(
+                PinRing(
+                    index=inverted_idx,
+                    pad_numbers=rings_dict[grid_dist],
+                )
+            )
 
         # Sort by ring index (outermost first)
         rings.sort(key=lambda r: r.index)
@@ -293,9 +297,7 @@ class StackupInfo:
             if layer_count >= 6:
                 self.via_types["buried"] = (1, layer_count - 2)
 
-    def get_via_for_layers(
-        self, start_layer: int, end_layer: int
-    ) -> Optional[str]:
+    def get_via_for_layers(self, start_layer: int, end_layer: int) -> Optional[str]:
         """Find a via type that connects the given layers.
 
         Args:

@@ -23,31 +23,31 @@ Usage:
     swapper.export_constraints("constraints.xdc", format="xdc")
 """
 
-from .detector import (
-    SwapGroupDetector,
-    SwapGroup,
-    SwapGroupType,
-    SwappablePin,
+from .constraints import (
+    ConstraintFormat,
+    ConstraintGenerator,
+    ConstraintUpdate,
 )
 from .crossing import (
     CrossingCounter,
     CrossingResult,
     RatsnestEdge,
 )
+from .detector import (
+    SwapGroup,
+    SwapGroupDetector,
+    SwapGroupType,
+    SwappablePin,
+)
 from .optimizer import (
     BipartiteMatcher,
     MatchingResult,
     SwapAssignment,
 )
-from .constraints import (
-    ConstraintGenerator,
-    ConstraintFormat,
-    ConstraintUpdate,
-)
 from .swapper import (
     PinSwapper,
-    SwapResult,
     SwapConfig,
+    SwapResult,
 )
 
 __all__ = [

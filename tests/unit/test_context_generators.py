@@ -5,11 +5,15 @@ Tests the Microscope (micro), MacroContext (macro), and VisionContext (vision)
 context generators used by the MCP server.
 """
 
-import pytest
 import json
 
+from atoplace.mcp.context.macro import (
+    BoardSummary,
+    MacroContext,
+    ModuleMap,
+    SemanticGrid,
+)
 from atoplace.mcp.context.micro import Microscope, MicroscopeData
-from atoplace.mcp.context.macro import MacroContext, BoardSummary, SemanticGrid, ModuleMap
 from atoplace.mcp.context.vision import VisionContext
 
 

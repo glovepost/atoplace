@@ -9,8 +9,8 @@ __version__ = "0.1.0"
 __author__ = "AtoPlace Team"
 
 from .board.abstraction import Board, Component, Net
-from .validation.confidence import ConfidenceReport, ConfidenceScorer
 from .dfm.profiles import DFMProfile, get_profile
+from .validation.confidence import ConfidenceReport, ConfidenceScorer
 
 __all__ = [
     "Board",

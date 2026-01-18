@@ -1,11 +1,11 @@
 """Tests for natural language parsing."""
 
 import pytest
+
 from atoplace.nlp.constraint_parser import ConstraintParser, ParseConfidence
 from atoplace.placement.constraints import (
-    ProximityConstraint,
     EdgeConstraint,
-    GroupingConstraint,
+    ProximityConstraint,
 )
 
 

@@ -1,15 +1,15 @@
 """Tests for atopile integration adapter."""
 
 import pytest
-from pathlib import Path
+
+from atoplace.board.abstraction import Board, Component
 from atoplace.board.atopile_adapter import (
-    AtopileProjectLoader,
     AtopileModuleParser,
+    AtopileProjectLoader,
     ComponentMetadata,
     ModuleHierarchy,
     detect_board_source,
 )
-from atoplace.board.abstraction import Board, Component
 
 
 @pytest.fixture
@@ -165,7 +165,9 @@ class TestAtopileProjectLoader:
         loader = AtopileProjectLoader(mock_atopile_project)
         board_path = loader.get_board_path("default")
 
-        expected = mock_atopile_project / "elec" / "layout" / "default" / "sensor.kicad_pcb"
+        expected = (
+            mock_atopile_project / "elec" / "layout" / "default" / "sensor.kicad_pcb"
+        )
         assert board_path == expected
 
     def test_load_lock_file(self, mock_atopile_project):
@@ -284,7 +286,9 @@ class TestDetectBoardSource:
     def test_detect_atopile_project(self, mock_atopile_project):
         """Should detect atopile project directory."""
         # Create a mock board file so the path exists
-        board_path = mock_atopile_project / "elec" / "layout" / "default" / "sensor.kicad_pcb"
+        board_path = (
+            mock_atopile_project / "elec" / "layout" / "default" / "sensor.kicad_pcb"
+        )
         board_path.parent.mkdir(parents=True, exist_ok=True)
         board_path.write_text("(kicad_pcb)")
 

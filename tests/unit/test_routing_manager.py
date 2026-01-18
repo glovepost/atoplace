@@ -8,9 +8,9 @@ Tests cover:
 - RoutingPhase and NetPriority enums
 """
 
+from unittest.mock import Mock, patch
+
 import pytest
-from typing import List, Dict
-from unittest.mock import Mock, patch, MagicMock
 
 from atoplace.board.abstraction import (
     Board,
@@ -19,21 +19,21 @@ from atoplace.board.abstraction import (
     Net,
     Pad,
 )
+from atoplace.dfm.profiles import DFMProfile
+from atoplace.routing.fanout import FanoutStrategy
 from atoplace.routing.manager import (
+    DiffPair,
+    NetPriority,
     RoutingManager,
     RoutingManagerConfig,
     RoutingManagerResult,
     RoutingPhase,
-    NetPriority,
-    DiffPair,
 )
-from atoplace.routing.fanout import FanoutStrategy
-from atoplace.dfm.profiles import DFMProfile
-
 
 # =============================================================================
 # Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def simple_board() -> Board:
@@ -162,6 +162,7 @@ def manager_config() -> RoutingManagerConfig:
 # Enum Tests
 # =============================================================================
 
+
 class TestRoutingPhase:
     """Test RoutingPhase enum."""
 
@@ -198,6 +199,7 @@ class TestNetPriority:
 # DiffPair Tests
 # =============================================================================
 
+
 class TestDiffPair:
     """Test DiffPair dataclass."""
 
@@ -227,6 +229,7 @@ class TestDiffPair:
 # =============================================================================
 # Configuration Tests
 # =============================================================================
+
 
 class TestRoutingManagerConfig:
     """Test RoutingManagerConfig dataclass."""
@@ -275,6 +278,7 @@ class TestRoutingManagerConfig:
 # Result Tests
 # =============================================================================
 
+
 class TestRoutingManagerResult:
     """Test RoutingManagerResult dataclass."""
 
@@ -295,7 +299,7 @@ class TestRoutingManagerResult:
             results={"NET1": Mock()},
             fanout_results={"U1": Mock()},
             unrouted_nets=["NET2", "NET3"],
-            stats={"total_nets": 10, "routed_nets": 7}
+            stats={"total_nets": 10, "routed_nets": 7},
         )
 
         assert result.success is False
@@ -306,10 +310,7 @@ class TestRoutingManagerResult:
 
     def test_success_false_with_unrouted(self):
         """Test that success is false when there are unrouted nets."""
-        result = RoutingManagerResult(
-            success=False,
-            unrouted_nets=["GND", "VCC"]
-        )
+        result = RoutingManagerResult(success=False, unrouted_nets=["GND", "VCC"])
 
         assert result.success is False
         assert len(result.unrouted_nets) == 2
@@ -318,6 +319,7 @@ class TestRoutingManagerResult:
 # =============================================================================
 # Initialization Tests
 # =============================================================================
+
 
 class TestRoutingManagerInit:
     """Test RoutingManager initialization."""
@@ -367,6 +369,7 @@ class TestRoutingManagerInit:
 # Integration Tests (with mocking)
 # =============================================================================
 
+
 class TestRoutingManagerRun:
     """Test RoutingManager.run() method."""
 
@@ -379,7 +382,7 @@ class TestRoutingManagerRun:
         manager = RoutingManager(simple_board, dfm_profile, config=config)
 
         # Mock the general phase to avoid full routing
-        with patch.object(manager, '_run_general_phase'):
+        with patch.object(manager, "_run_general_phase"):
             manager.run()
 
         # Should have identified nets with 2+ connections
@@ -396,7 +399,7 @@ class TestRoutingManagerRun:
         manager = RoutingManager(simple_board, dfm_profile, config=config)
 
         # Mock the general phase to avoid full routing
-        with patch.object(manager, '_run_general_phase'):
+        with patch.object(manager, "_run_general_phase"):
             result = manager.run()
 
         assert isinstance(result, RoutingManagerResult)
@@ -412,8 +415,8 @@ class TestRoutingManagerRun:
         )
         manager = RoutingManager(simple_board, dfm_profile, config=config)
 
-        with patch.object(manager, '_run_fanout_phase') as mock_fanout:
-            with patch.object(manager, '_run_general_phase'):
+        with patch.object(manager, "_run_fanout_phase") as mock_fanout:
+            with patch.object(manager, "_run_general_phase"):
                 manager.run()
 
         # Fanout should not have been called
@@ -427,8 +430,8 @@ class TestRoutingManagerRun:
         )
         manager = RoutingManager(simple_board, dfm_profile, config=config)
 
-        with patch.object(manager, '_run_fanout_phase') as mock_fanout:
-            with patch.object(manager, '_run_general_phase'):
+        with patch.object(manager, "_run_fanout_phase") as mock_fanout:
+            with patch.object(manager, "_run_general_phase"):
                 manager.run()
 
         # Fanout should have been called

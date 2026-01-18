@@ -4,10 +4,10 @@ Creates a self-contained HTML file that connects to the streaming server
 and displays placement visualization in real-time with full UI features.
 """
 
-from pathlib import Path
-from typing import Dict, Tuple
 import json
 import logging
+from pathlib import Path
+from typing import Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +40,11 @@ def generate_stream_viewer_html(
     Returns:
         HTML content string
     """
+    from .viewer_javascript import (
+        generate_canvas_render_javascript,
+        generate_viewer_javascript,
+    )
     from .viewer_template import generate_viewer_html_template
-    from .viewer_javascript import generate_viewer_javascript, generate_canvas_render_javascript
 
     min_x, min_y, max_x, max_y = board_bounds
     static_props = static_props or {}
@@ -51,40 +54,41 @@ def generate_stream_viewer_html(
     # ComponentStaticProps dataclass needs to be converted to dict
     serializable_props = {}
     for ref, props in static_props.items():
-        if hasattr(props, '__dict__'):
+        if hasattr(props, "__dict__"):
             # Dataclass - convert to dict
             serializable_props[ref] = {
-                'width': props.width,
-                'height': props.height,
-                'pads': props.pads if isinstance(props.pads, list) else list(props.pads),
+                "width": props.width,
+                "height": props.height,
+                "pads": (
+                    props.pads if isinstance(props.pads, list) else list(props.pads)
+                ),
             }
         elif isinstance(props, dict):
             serializable_props[ref] = props
         else:
-            serializable_props[ref] = {'width': 1, 'height': 1, 'pads': []}
+            serializable_props[ref] = {"width": 1, "height": 1, "pads": []}
     static_props = serializable_props
 
     # Calculate canvas dimensions
     board_width = max_x - min_x
     board_height = max_y - min_y
-    canvas_scale = min(1000 / board_width, 800 / board_height) if board_width > 0 and board_height > 0 else 10.0
+    canvas_scale = (
+        min(1000 / board_width, 800 / board_height)
+        if board_width > 0 and board_height > 0
+        else 10.0
+    )
     canvas_width = int(board_width * canvas_scale + 100)
     canvas_height = int(board_height * canvas_scale + 100)
 
     # Board bounds for JavaScript
-    board_bounds_dict = {
-        'minX': min_x,
-        'minY': min_y,
-        'maxX': max_x,
-        'maxY': max_y
-    }
+    board_bounds_dict = {"minX": min_x, "minY": min_y, "maxX": max_x, "maxY": max_y}
 
     # Generate canvases content
     static_content = f'<canvas id="staticCanvas" width="{canvas_width}" height="{canvas_height}"></canvas>'
     dynamic_content = f'<canvas id="dynamicCanvas" width="{canvas_width}" height="{canvas_height}"></canvas>'
 
     # Generate JavaScript code for streaming
-    javascript_code = f'''
+    javascript_code = f"""
 // ============================================================================
 // Streaming Configuration
 // ============================================================================
@@ -192,7 +196,7 @@ connect();
 
 // Initialize module visibility
 initializeModuleVisibility();
-'''
+"""
 
     # Generate HTML using template
     html_content = generate_viewer_html_template(
@@ -202,7 +206,7 @@ initializeModuleVisibility();
         javascript_code=javascript_code,
         module_types=module_colors,
         total_frames=None,  # Streaming, so no fixed total
-        is_streaming=True
+        is_streaming=True,
     )
 
     # Save to file if path provided

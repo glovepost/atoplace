@@ -8,33 +8,34 @@ interpretation for complex/ambiguous inputs.
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Tuple, Callable
 from enum import Enum
+from typing import Callable, Dict, List, Optional, Tuple
 
 from ..board.abstraction import Board
+from ..patterns import get_patterns
 from ..placement.constraints import (
+    ConstraintType,
+    EdgeConstraint,
+    FixedConstraint,
+    GroupingConstraint,
     PlacementConstraint,
     ProximityConstraint,
-    EdgeConstraint,
-    ZoneConstraint,
-    GroupingConstraint,
     SeparationConstraint,
-    FixedConstraint,
-    ConstraintType,
 )
-from ..patterns import get_patterns
 
 
 class ParseConfidence(Enum):
     """Confidence levels for parsed constraints."""
-    HIGH = "high"       # Regex match, unambiguous
-    MEDIUM = "medium"   # LLM parsed, likely correct
-    LOW = "low"         # LLM parsed, uncertain
+
+    HIGH = "high"  # Regex match, unambiguous
+    MEDIUM = "medium"  # LLM parsed, likely correct
+    LOW = "low"  # LLM parsed, uncertain
 
 
 @dataclass
 class ParsedConstraint:
     """A constraint parsed from natural language."""
+
     constraint: PlacementConstraint
     confidence: ParseConfidence
     source_text: str
@@ -44,6 +45,7 @@ class ParsedConstraint:
 @dataclass
 class ParseResult:
     """Result of parsing natural language input."""
+
     constraints: List[ParsedConstraint]
     unrecognized_text: str = ""
     warnings: List[str] = field(default_factory=list)
@@ -64,7 +66,9 @@ class ConstraintParser:
     # Pattern definitions: (regex, constraint_type, extractor_function)
     PATTERNS: List[Tuple[str, ConstraintType, Callable]] = []
 
-    def __init__(self, board: Optional[Board] = None, patterns_config: Optional[str] = None):
+    def __init__(
+        self, board: Optional[Board] = None, patterns_config: Optional[str] = None
+    ):
         """
         Initialize parser.
 
@@ -95,7 +99,6 @@ class ConstraintParser:
                 ConstraintType.PROXIMITY,
                 self._extract_proximity_with_distance,
             ),
-
             # Edge placement constraints
             (
                 r"(\w+)\s+(?:on|at)\s+(?:the\s+)?(left|right|top|bottom)\s+edge",
@@ -112,14 +115,12 @@ class ConstraintParser:
                 ConstraintType.EDGE_PLACEMENT,
                 self._extract_edge_reverse,
             ),
-
             # Rotation constraints (captured but handled differently)
             (
                 r"rotate\s+(\w+)\s+(\d+)\s*(?:degrees?|deg|°)?",
                 ConstraintType.ORIENTATION,
                 self._extract_rotation,
             ),
-
             # Grouping constraints
             (
                 r"group\s+(.+?)\s+together",
@@ -131,7 +132,6 @@ class ConstraintParser:
                 ConstraintType.GROUPING,
                 self._extract_grouping,
             ),
-
             # Separation constraints
             (
                 r"(?:keep|separate)\s+(.+?)\s+(?:and|from)\s+(.+?)\s+(?:separate|apart)",
@@ -143,7 +143,6 @@ class ConstraintParser:
                 ConstraintType.SEPARATION,
                 self._extract_separation,
             ),
-
             # Fixed position constraints
             (
                 r"fix\s+(\w+)\s+at\s+\(?\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)?",
@@ -187,10 +186,10 @@ class ConstraintParser:
                 # 4. new match fully contained by existing: s <= start and end <= e
                 start, end = match.span()
                 if any(
-                    (s <= start < e) or  # start inside existing
-                    (s < end <= e) or    # end inside existing
-                    (start <= s and e <= end) or  # new contains existing
-                    (s <= start and end <= e)     # existing contains new
+                    (s <= start < e)  # start inside existing
+                    or (s < end <= e)  # end inside existing
+                    or (start <= s and e <= end)  # new contains existing
+                    or (s <= start and end <= e)  # existing contains new
                     for s, e in processed_spans
                 ):
                     continue
@@ -206,11 +205,13 @@ class ConstraintParser:
                             if not valid:
                                 continue
 
-                        constraints.append(ParsedConstraint(
-                            constraint=constraint,
-                            confidence=ParseConfidence.HIGH,
-                            source_text=match.group(0),
-                        ))
+                        constraints.append(
+                            ParsedConstraint(
+                                constraint=constraint,
+                                confidence=ParseConfidence.HIGH,
+                                source_text=match.group(0),
+                            )
+                        )
                         processed_spans.append((start, end))
                 except Exception as e:
                     warnings.append(f"Error parsing '{match.group(0)}': {e}")
@@ -253,12 +254,17 @@ class ConstraintParser:
         if constraints:
             lines.append(f"Extracted {len(constraints)} constraint(s):")
             for pc in result.constraints:
-                conf_str = {"high": "", "medium": " (medium confidence)",
-                           "low": " (low confidence)"}
-                lines.append(f"  - {pc.constraint.description}{conf_str[pc.confidence.value]}")
+                conf_str = {
+                    "high": "",
+                    "medium": " (medium confidence)",
+                    "low": " (low confidence)",
+                }
+                lines.append(
+                    f"  - {pc.constraint.description}{conf_str[pc.confidence.value]}"
+                )
 
         if result.unrecognized_text:
-            lines.append(f"\nUnrecognized text: \"{result.unrecognized_text}\"")
+            lines.append(f'\nUnrecognized text: "{result.unrecognized_text}"')
             lines.append("Try rephrasing or use more specific component references.")
 
         if result.warnings:
@@ -284,8 +290,9 @@ class ConstraintParser:
             source_text=match.group(0),
         )
 
-    def _extract_proximity_with_distance(self, match: re.Match
-                                          ) -> Optional[PlacementConstraint]:
+    def _extract_proximity_with_distance(
+        self, match: re.Match
+    ) -> Optional[PlacementConstraint]:
         """Extract proximity constraint with specific distance."""
         target = match.group(1).upper()
         distance = float(match.group(2)) if match.group(2) else 5.0
@@ -399,14 +406,22 @@ class ConstraintParser:
         # "all capacitors" -> find all C* components
         if "all" in text.lower():
             if "capacitor" in text.lower() and self.board:
-                components = [c.reference for c in self.board.get_components_by_prefix('C')]
+                components = [
+                    c.reference for c in self.board.get_components_by_prefix("C")
+                ]
             elif "resistor" in text.lower() and self.board:
-                components = [c.reference for c in self.board.get_components_by_prefix('R')]
+                components = [
+                    c.reference for c in self.board.get_components_by_prefix("R")
+                ]
             elif "inductor" in text.lower() and self.board:
-                components = [c.reference for c in self.board.get_components_by_prefix('L')]
+                components = [
+                    c.reference for c in self.board.get_components_by_prefix("L")
+                ]
             elif "decoupling" in text.lower() and self.board:
                 # Decoupling caps are typically small value caps near ICs
-                components = [c.reference for c in self.board.get_components_by_prefix('C')]
+                components = [
+                    c.reference for c in self.board.get_components_by_prefix("C")
+                ]
 
         # Handle "analog" / "digital" zones - resolve to actual components
         elif "analog" in text.lower():
@@ -417,7 +432,7 @@ class ConstraintParser:
         # Handle explicit list like "C1, C2, C3" or "C1 and C2"
         else:
             # Look for component references
-            refs = re.findall(r'\b([A-Z]+\d+)\b', text.upper())
+            refs = re.findall(r"\b([A-Z]+\d+)\b", text.upper())
             components = refs
 
         return components
@@ -443,7 +458,7 @@ class ConstraintParser:
         # If no specific analog components found, return components near analog ICs
         if not analog_refs:
             # Fall back to all 'U' components that might be analog
-            analog_refs = [ref for ref in self.board.components if ref.startswith('U')]
+            analog_refs = [ref for ref in self.board.components if ref.startswith("U")]
 
         return analog_refs
 
@@ -467,12 +482,13 @@ class ConstraintParser:
 
         # If no specific digital components found, fall back
         if not digital_refs:
-            digital_refs = [ref for ref in self.board.components if ref.startswith('U')]
+            digital_refs = [ref for ref in self.board.components if ref.startswith("U")]
 
         return digital_refs
 
-    def _validate_constraint(self, constraint: PlacementConstraint
-                              ) -> Tuple[bool, Optional[str]]:
+    def _validate_constraint(
+        self, constraint: PlacementConstraint
+    ) -> Tuple[bool, Optional[str]]:
         """Validate that constraint references exist in board."""
         if not self.board:
             return (True, None)
@@ -508,17 +524,12 @@ class ModificationHandler:
 
     MODIFICATION_PATTERNS = [
         # Move with target: "move C1 closer to U1" or "move C1 away from U1"
-        (r"move\s+(\w+)\s+(closer\s+to|away\s+from)\s+(\w+)",
-         "move_relative"),
+        (r"move\s+(\w+)\s+(closer\s+to|away\s+from)\s+(\w+)", "move_relative"),
         # Move directional: "move C1 left/right/up/down"
-        (r"move\s+(\w+)\s+(left|right|up|down)",
-         "move"),
-        (r"rotate\s+(\w+)\s+(\d+)\s*(?:degrees?)?",
-         "rotate"),
-        (r"swap\s+(\w+)\s+(?:and|with)\s+(\w+)",
-         "swap"),
-        (r"flip\s+(\w+)",
-         "flip"),
+        (r"move\s+(\w+)\s+(left|right|up|down)", "move"),
+        (r"rotate\s+(\w+)\s+(\d+)\s*(?:degrees?)?", "rotate"),
+        (r"swap\s+(\w+)\s+(?:and|with)\s+(\w+)", "swap"),
+        (r"flip\s+(\w+)", "flip"),
     ]
 
     def __init__(self, board: Board):
@@ -535,8 +546,9 @@ class ModificationHandler:
 
         return None
 
-    def _extract_modification(self, mod_type: str, match: re.Match,
-                               full_text: str) -> Dict:
+    def _extract_modification(
+        self, mod_type: str, match: re.Match, full_text: str
+    ) -> Dict:
         """Extract modification details from match."""
         if mod_type == "move":
             # Simple directional move: left/right/up/down
@@ -597,6 +609,7 @@ class ModificationHandler:
             if comp:
                 # Flip layer
                 from ..board.abstraction import Layer
+
                 if comp.layer == Layer.TOP_COPPER:
                     comp.layer = Layer.BOTTOM_COPPER
                 else:
@@ -638,7 +651,7 @@ class ModificationHandler:
                     # Move 20% of move_amount away from target
                     dx = comp.x - target.x
                     dy = comp.y - target.y
-                    dist = (dx*dx + dy*dy) ** 0.5
+                    dist = (dx * dx + dy * dy) ** 0.5
                     if dist > 0.1:
                         comp.x += (dx / dist) * move_amount
                         comp.y += (dy / dist) * move_amount

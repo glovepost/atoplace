@@ -5,17 +5,16 @@ Loads the dogtracker default.kicad_pcb and generates routing visualization
 to verify the SVG delta viewer works with real PCB data.
 """
 
-from pathlib import Path
 import random
+from pathlib import Path
 
 from atoplace.board.abstraction import Board
+from atoplace.routing.spatial_index import Obstacle
 from atoplace.routing.visualizer import (
-    RouteVisualizer,
     RouteSegment,
     Via,
     create_visualizer_from_board,
 )
-from atoplace.routing.spatial_index import Obstacle
 
 
 def test_routing_visualization_with_dogtracker():
@@ -57,15 +56,17 @@ def test_routing_visualization_with_dogtracker():
     for ref, comp in board.components.items():
         bbox = comp.get_bounding_box()
         # Component body as obstacle
-        obstacles.append(Obstacle(
-            min_x=bbox[0],
-            min_y=bbox[1],
-            max_x=bbox[2],
-            max_y=bbox[3],
-            layer=0 if comp.layer == "F.Cu" else 1,
-            obstacle_type="component",
-            ref=ref
-        ))
+        obstacles.append(
+            Obstacle(
+                min_x=bbox[0],
+                min_y=bbox[1],
+                max_x=bbox[2],
+                max_y=bbox[3],
+                layer=0 if comp.layer == "F.Cu" else 1,
+                obstacle_type="component",
+                ref=ref,
+            )
+        )
 
         # Component pads
         for pad in comp.pads:
@@ -87,7 +88,7 @@ def test_routing_visualization_with_dogtracker():
                 layer=0 if comp.layer == "F.Cu" else 1,
                 net_id=net_id,
                 obstacle_type="pad",
-                ref=f"{ref}.{pad.number}"
+                ref=f"{ref}.{pad.number}",
             )
             pads.append(pad_obs)
 
@@ -99,7 +100,11 @@ def test_routing_visualization_with_dogtracker():
 
     # Generate simulated routing data
     # Pick nets with 2+ pads to route
-    routable_nets = [(name, pads_list) for name, pads_list in pads_by_net.items() if len(pads_list) >= 2]
+    routable_nets = [
+        (name, pads_list)
+        for name, pads_list in pads_by_net.items()
+        if len(pads_list) >= 2
+    ]
     routable_nets = routable_nets[:8]  # Limit to 8 nets
 
     print(f"  Routable nets (2+ pads): {len(routable_nets)}")
@@ -109,10 +114,7 @@ def test_routing_visualization_with_dogtracker():
 
     # Frame 1: Initial state
     visualizer.capture_frame(
-        obstacles=obstacles,
-        pads=pads,
-        label="Initial board state",
-        current_net=""
+        obstacles=obstacles, pads=pads, label="Initial board state", current_net=""
     )
 
     # Generate simulated routing for each net
@@ -162,7 +164,7 @@ def test_routing_visualization_with_dogtracker():
             frontier_nodes=frontier,
             current_path=path,
             label=f"Routing {net_name}",
-            current_net=net_name
+            current_net=net_name,
         )
 
         # Create trace segments for this net
@@ -176,34 +178,36 @@ def test_routing_visualization_with_dogtracker():
                 end=(mid_x, start_y),
                 layer=0,
                 width=0.25,
-                net_id=net_id
+                net_id=net_id,
             ),
             RouteSegment(
                 start=(mid_x, start_y),
                 end=(mid_x, end_y),
                 layer=0,
                 width=0.25,
-                net_id=net_id
+                net_id=net_id,
             ),
             RouteSegment(
                 start=(mid_x, end_y),
                 end=(end_x, end_y),
                 layer=0,
                 width=0.25,
-                net_id=net_id
+                net_id=net_id,
             ),
         ]
         traces.extend(new_traces)
 
         # Add a via for every other net
         if i % 2 == 1:
-            vias.append(Via(
-                x=mid_x,
-                y=(start_y + end_y) / 2,
-                drill_diameter=0.3,
-                pad_diameter=0.6,
-                net_id=net_id
-            ))
+            vias.append(
+                Via(
+                    x=mid_x,
+                    y=(start_y + end_y) / 2,
+                    drill_diameter=0.3,
+                    pad_diameter=0.6,
+                    net_id=net_id,
+                )
+            )
 
         # Frame: Net completed
         visualizer.capture_frame(
@@ -212,7 +216,7 @@ def test_routing_visualization_with_dogtracker():
             completed_traces=traces.copy(),
             completed_vias=vias.copy(),
             label=f"{net_name} complete",
-            current_net=net_name
+            current_net=net_name,
         )
 
     # Final frame
@@ -221,7 +225,7 @@ def test_routing_visualization_with_dogtracker():
         pads=pads,
         completed_traces=traces,
         completed_vias=vias,
-        label="All routing complete"
+        label="All routing complete",
     )
 
     print(f"\nCaptured {len(visualizer.frames)} frames")
@@ -249,5 +253,5 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Test complete!")
     print("=" * 60)
-    print(f"\nOpen the visualization:")
+    print("\nOpen the visualization:")
     print(f"  open {output_path}")

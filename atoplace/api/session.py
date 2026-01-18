@@ -5,11 +5,9 @@ Manages board state persistence including load/save/undo functionality.
 Tracks "dirty" state to trigger re-running legalization/routing when needed.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass, field
-from copy import deepcopy
-import json
+from typing import Any, Dict, List, Optional
 
 from ..board.abstraction import Board
 
@@ -17,6 +15,7 @@ from ..board.abstraction import Board
 @dataclass
 class ComponentState:
     """Snapshot of a component's position state."""
+
     x: float
     y: float
     rotation: float
@@ -26,6 +25,7 @@ class ComponentState:
 @dataclass
 class BoardSnapshot:
     """Complete snapshot of board state for undo/redo."""
+
     component_states: Dict[str, ComponentState]
     description: str = ""
 
@@ -128,7 +128,7 @@ class Session:
         if path is None:
             if self.source_path:
                 stem = self.source_path.stem
-                if not stem.endswith('.placed'):
+                if not stem.endswith(".placed"):
                     stem = f"{stem}.placed"
                 path = self.source_path.parent / f"{stem}.kicad_pcb"
             else:
@@ -206,10 +206,7 @@ class Session:
         states = {}
         for ref, comp in self.board.components.items():
             states[ref] = ComponentState(
-                x=comp.x,
-                y=comp.y,
-                rotation=comp.rotation,
-                locked=comp.locked
+                x=comp.x, y=comp.y, rotation=comp.rotation, locked=comp.locked
             )
         return BoardSnapshot(component_states=states, description=description)
 

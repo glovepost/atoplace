@@ -10,11 +10,11 @@ from __future__ import annotations
 import atexit
 import io
 import logging
+import math
 import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
-import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -33,7 +33,6 @@ from rich.progress import (
 from rich.prompt import Prompt
 from rich.rule import Rule
 from rich.table import Table
-
 
 app = typer.Typer(
     add_completion=False,
@@ -89,8 +88,10 @@ def _configure_logging(
     log_dir: Path,
     console: Console,
 ) -> Path:
-    log_path = log_file if log_file else log_dir / (
-        f"atoplace-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+    log_path = (
+        log_file
+        if log_file
+        else log_dir / (f"atoplace-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log")
     )
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -158,8 +159,8 @@ def _render_module_summary(console: Console, modules) -> None:
         if module.components:
             mtype = module.module_type.value
             module_type_counts[mtype] = module_type_counts.get(mtype, 0) + 1
-            module_type_components[mtype] = (
-                module_type_components.get(mtype, 0) + len(module.components)
+            module_type_components[mtype] = module_type_components.get(mtype, 0) + len(
+                module.components
             )
 
     if not module_type_counts:
@@ -230,7 +231,9 @@ def _render_drc_summary(console: Console, drc) -> None:
 
 
 def _render_pre_route_summary(console: Console, pre_validator) -> None:
-    console.print(Panel(pre_validator.get_summary(), title="Pre-Route", border_style="magenta"))
+    console.print(
+        Panel(pre_validator.get_summary(), title="Pre-Route", border_style="magenta")
+    )
 
 
 def check_pcbnew() -> bool:
@@ -290,11 +293,15 @@ def load_board_from_path(
                 lock = loader.get_lock(build_name)
                 if lock:
                     locked_count = len(lock.get_locked_refs())
-                    emit(f"  Lock file: [bold]{len(lock.components)}[/bold] positions ({locked_count} locked)")
+                    emit(
+                        f"  Lock file: [bold]{len(lock.components)}[/bold] positions ({locked_count} locked)"
+                    )
                 else:
                     emit("  Lock file: [dim]not found[/dim]")
 
-            board = loader.load_board(build_name, apply_lock=apply_lock, only_locked=only_locked)
+            board = loader.load_board(
+                build_name, apply_lock=apply_lock, only_locked=only_locked
+            )
             return board, board_path, True, loader
 
         except ValueError as exc:
@@ -304,7 +311,9 @@ def load_board_from_path(
     if not path.exists():
         project_root = AtopileProjectLoader.find_project_root(path)
         if project_root:
-            return load_board_from_path(str(project_root), build, console, apply_lock, only_locked)
+            return load_board_from_path(
+                str(project_root), build, console, apply_lock, only_locked
+            )
 
         emit(f"[red]Error:[/red] Path not found: {path}")
         return None, None, False, None
@@ -330,11 +339,15 @@ def load_board_from_path(
                         lock = loader.get_lock(build_name)
                         if lock:
                             locked_count = len(lock.get_locked_refs())
-                            emit(f"  Lock file: [bold]{len(lock.components)}[/bold] positions ({locked_count} locked)")
+                            emit(
+                                f"  Lock file: [bold]{len(lock.components)}[/bold] positions ({locked_count} locked)"
+                            )
                         else:
                             emit("  Lock file: [dim]not found[/dim]")
 
-                    board = loader.load_board(build_name, apply_lock=apply_lock, only_locked=only_locked)
+                    board = loader.load_board(
+                        build_name, apply_lock=apply_lock, only_locked=only_locked
+                    )
                     return board, path, True, loader
             except ValueError:
                 pass
@@ -373,7 +386,9 @@ def load_board_from_path(
     return None, None, False, None
 
 
-def _generate_full_validation_report(report, pre_validator, drc, pre_route_passed, drc_passed):
+def _generate_full_validation_report(
+    report, pre_validator, drc, pre_route_passed, drc_passed
+):
     """Generate comprehensive validation report including all checks."""
     lines = [
         "# Validation Report",
@@ -461,6 +476,7 @@ def _get_version() -> str:
     """Get package version from metadata."""
     try:
         from importlib.metadata import version
+
         return version("atoplace")
     except Exception:
         return "0.1.0"  # Fallback for development
@@ -566,14 +582,15 @@ def place(
 ):
     """Run placement optimization."""
     import asyncio
+
     from .board.kicad_adapter import save_kicad_board
+    from .dfm.profiles import get_profile, get_profile_for_layers
+    from .nlp.constraint_parser import ConstraintParser
     from .placement.force_directed import ForceDirectedRefiner, RefinementConfig
-    from .placement.legalizer import PlacementLegalizer, LegalizerConfig
+    from .placement.legalizer import LegalizerConfig, PlacementLegalizer
     from .placement.module_detector import ModuleDetector
     from .placement.visualizer import PlacementVisualizer
-    from .nlp.constraint_parser import ConstraintParser
     from .validation.confidence import ConfidenceScorer
-    from .dfm.profiles import get_profile, get_profile_for_layers
 
     # Import streaming visualizer if needed
     if stream:
@@ -669,7 +686,9 @@ def place(
                 port=stream_port,
                 max_fps=10.0,
             )
-            visualizer = streaming_viz.visualizer  # Use underlying visualizer for captures
+            visualizer = (
+                streaming_viz.visualizer
+            )  # Use underlying visualizer for captures
             console.print(
                 Panel(
                     f"[cyan]Streaming enabled[/cyan]\n\n"
@@ -792,7 +811,7 @@ def place(
             processed_pairs = set()
             for names in roots.values():
                 for i, left in enumerate(names):
-                    for right in names[i + 1:]:
+                    for right in names[i + 1 :]:
                         pair_key = tuple(sorted((left, right)))
                         if pair_key in processed_pairs:
                             continue
@@ -824,6 +843,7 @@ def place(
             EdgeConstraint,
             ProximityConstraint,
         )
+
         hint_constraints: List[object] = []
 
         # Identify anchor modules/components for hints
@@ -852,7 +872,9 @@ def place(
                     EdgeConstraint(
                         component_ref=primary_ref,
                         edge=edge,
-                        offset=max(dfm_profile.min_trace_to_edge, dfm_profile.min_spacing * 1.5),
+                        offset=max(
+                            dfm_profile.min_trace_to_edge, dfm_profile.min_spacing * 1.5
+                        ),
                         priority="required" if edge_hint == "required" else "preferred",
                         description=f"Place {primary_ref} near {edge} edge",
                     )
@@ -919,7 +941,8 @@ def place(
 
     console.print(Rule("Refinement", style="cyan"))
     refiner = ForceDirectedRefiner(
-        board_obj, config,
+        board_obj,
+        config,
         visualizer=visualizer,
         modules=module_map,
     )
@@ -930,8 +953,8 @@ def place(
 
     # Streaming refinement - run server in background thread
     if stream and streaming_viz:
-        import threading
         import queue
+        import threading
 
         # Queue for frames to stream
         frame_queue = queue.Queue(maxsize=100)
@@ -942,7 +965,9 @@ def place(
             """Run WebSocket server and stream frames from queue."""
             try:
                 await streaming_viz.start_streaming(generate_viewer=True)
-                await streaming_viz.send_status("info", "Starting placement optimization")
+                await streaming_viz.send_status(
+                    "info", "Starting placement optimization"
+                )
                 server_ready.set()
 
                 while not stop_event.is_set():
@@ -1052,7 +1077,9 @@ def place(
     refinement_table.add_row("Energy", f"{result.total_energy:.2f}")
     if config.snap_to_grid:
         refinement_table.add_row("Grid", f"{config.grid_size:.2f} mm")
-    console.print(Panel(refinement_table, title="Refinement Summary", border_style="green"))
+    console.print(
+        Panel(refinement_table, title="Refinement Summary", border_style="green")
+    )
 
     logger.debug(
         "Refinement result: converged=%s iterations=%d energy=%.3f",
@@ -1118,7 +1145,11 @@ def place(
     with console.status("Repositioning reference designators..."):
         repositioned = board_obj.reposition_ref_des_text(
             clearance=0.2,
-            pad_clearance=dfm_profile.min_silk_to_pad if hasattr(dfm_profile, 'min_silk_to_pad') else 0.15
+            pad_clearance=(
+                dfm_profile.min_silk_to_pad
+                if hasattr(dfm_profile, "min_silk_to_pad")
+                else 0.15
+            ),
         )
     if repositioned > 0:
         console.print(f"  Repositioned {repositioned} reference designators")
@@ -1153,9 +1184,7 @@ def place(
                     )
                 )
             else:
-                console.print(
-                    Panel("Failed to save lock file", border_style="yellow")
-                )
+                console.print(Panel("Failed to save lock file", border_style="yellow"))
 
     # Export visualization if enabled (using SVG delta for best quality/performance)
     if visualizer:
@@ -1193,10 +1222,10 @@ def validate(
     ),
 ):
     """Validate board placement."""
-    from .validation.confidence import ConfidenceScorer
-    from .validation.pre_route import PreRouteValidator
-    from .validation.drc import DRCChecker
     from .dfm.profiles import get_profile, get_profile_for_layers
+    from .validation.confidence import ConfidenceScorer
+    from .validation.drc import DRCChecker
+    from .validation.pre_route import PreRouteValidator
 
     context = _get_context(ctx)
     console = context.console
@@ -1256,7 +1285,10 @@ def fanout(
     ctx: typer.Context,
     board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
     component: Optional[str] = typer.Option(
-        None, "-c", "--component", help="Specific component to fanout (e.g., U1). If not specified, auto-detects BGAs."
+        None,
+        "-c",
+        "--component",
+        help="Specific component to fanout (e.g., U1). If not specified, auto-detects BGAs.",
     ),
     output: Optional[Path] = typer.Option(
         None, "-o", "--output", help="Output file (default: overwrites input)."
@@ -1268,15 +1300,17 @@ def fanout(
         None, "--build", help="Atopile build name (default: default)."
     ),
     strategy: str = typer.Option(
-        "auto", "--strategy", "-s",
-        help="Fanout strategy: 'auto' (detect from pitch), 'dogbone', or 'vip'."
+        "auto",
+        "--strategy",
+        "-s",
+        help="Fanout strategy: 'auto' (detect from pitch), 'dogbone', or 'vip'.",
     ),
     no_escape: bool = typer.Option(
-        False, "--no-escape", help="Skip escape routing (only generate vias and pad-to-via traces)."
+        False,
+        "--no-escape",
+        help="Skip escape routing (only generate vias and pad-to-via traces).",
     ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Don't save fanout to file."
-    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Don't save fanout to file."),
 ):
     """Generate BGA/FPGA fanout patterns.
 
@@ -1290,8 +1324,8 @@ def fanout(
         atoplace fanout board.kicad_pcb --component U1
         atoplace fanout board.kicad_pcb --strategy dogbone
     """
-    from .routing.fanout import FanoutGenerator, FanoutStrategy
     from .dfm.profiles import get_profile, get_profile_for_layers
+    from .routing.fanout import FanoutGenerator, FanoutStrategy
 
     context: CLIContext = ctx.obj
     console = context.console
@@ -1309,6 +1343,7 @@ def fanout(
             dfm_profile = get_profile(dfm)
         except ValueError as e:
             from .dfm.profiles import list_profiles
+
             console.print(f"[red]Error:[/] {e}")
             console.print(f"Available profiles: {', '.join(list_profiles())}")
             raise typer.Exit(code=1)
@@ -1359,7 +1394,9 @@ def fanout(
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         console=console,
     ) as progress:
-        task = progress.add_task("Generating fanout...", total=len(components_to_fanout))
+        task = progress.add_task(
+            "Generating fanout...", total=len(components_to_fanout)
+        )
 
         for ref in components_to_fanout:
             result = generator.fanout_component(
@@ -1431,9 +1468,13 @@ def fanout(
 
         # For now, we'll need to extend the KiCad adapter to save fanout
         # This is a placeholder - actual implementation depends on KiCad API
-        console.print(f"\n[yellow]Note:[/] Fanout visualization generated. "
-                     f"KiCad file saving for fanout vias/traces not yet implemented.")
-        console.print(f"Generated {len(all_vias)} vias and {len(all_traces)} traces for review.")
+        console.print(
+            "\n[yellow]Note:[/] Fanout visualization generated. "
+            "KiCad file saving for fanout vias/traces not yet implemented."
+        )
+        console.print(
+            f"Generated {len(all_vias)} vias and {len(all_traces)} traces for review."
+        )
 
     elif dry_run:
         console.print("[yellow]Dry run - fanout not saved[/]")
@@ -1448,25 +1489,33 @@ def pinswap(
     ctx: typer.Context,
     board: Path = typer.Argument(..., help="KiCad PCB file or atopile project dir."),
     component: Optional[str] = typer.Option(
-        None, "-c", "--component", help="Specific component to optimize (e.g., U1). If not specified, optimizes all."
+        None,
+        "-c",
+        "--component",
+        help="Specific component to optimize (e.g., U1). If not specified, optimizes all.",
     ),
     output: Optional[Path] = typer.Option(
         None, "-o", "--output", help="Output file for constraint updates."
     ),
     format: str = typer.Option(
-        "xdc", "--format", "-f",
-        help="Constraint output format: 'xdc' (Xilinx), 'qsf' (Intel), 'tcl', 'csv', 'json'."
+        "xdc",
+        "--format",
+        "-f",
+        help="Constraint output format: 'xdc' (Xilinx), 'qsf' (Intel), 'tcl', 'csv', 'json'.",
     ),
     build: Optional[str] = typer.Option(
         None, "--build", help="Atopile build name (default: default)."
     ),
     min_improvement: float = typer.Option(
-        5.0, "--min-improvement",
-        help="Minimum improvement percentage to apply swaps. Default: 5.0"
+        5.0,
+        "--min-improvement",
+        help="Minimum improvement percentage to apply swaps. Default: 5.0",
     ),
     analyze_only: bool = typer.Option(
-        False, "--analyze", "-a",
-        help="Only analyze swap potential, don't apply changes."
+        False,
+        "--analyze",
+        "-a",
+        help="Only analyze swap potential, don't apply changes.",
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Don't save constraint file or modify board."
@@ -1485,7 +1534,7 @@ def pinswap(
         atoplace pinswap board.kicad_pcb -c U1 --format xdc
         atoplace pinswap board.kicad_pcb -o constraints.xdc
     """
-    from .routing.pinswapper import PinSwapper, SwapConfig, ConstraintFormat
+    from .routing.pinswapper import ConstraintFormat, PinSwapper, SwapConfig
 
     context: CLIContext = ctx.obj
     console = context.console
@@ -1561,7 +1610,9 @@ def pinswap(
                 )
 
             console.print(table)
-            console.print(f"Current crossings: [cyan]{analysis['current_crossings']}[/]")
+            console.print(
+                f"Current crossings: [cyan]{analysis['current_crossings']}[/]"
+            )
             console.print()
 
         if analyze_only:
@@ -1590,8 +1641,16 @@ def pinswap(
         if result.success:
             total_swaps += result.total_swaps
             crossing_delta = result.original_crossings - result.final_crossings
-            crossing_pct = f"{result.crossing_improvement:.1f}%" if result.original_crossings > 0 else "N/A"
-            wire_pct = f"{result.wire_improvement:.1f}%" if result.original_wire_length > 0 else "N/A"
+            crossing_pct = (
+                f"{result.crossing_improvement:.1f}%"
+                if result.original_crossings > 0
+                else "N/A"
+            )
+            wire_pct = (
+                f"{result.wire_improvement:.1f}%"
+                if result.original_wire_length > 0
+                else "N/A"
+            )
             status = "[green]OK[/]"
         else:
             crossing_delta = 0
@@ -1603,7 +1662,11 @@ def pinswap(
             ref,
             str(result.groups_detected),
             str(result.total_swaps),
-            f"-{crossing_delta} ({crossing_pct})" if crossing_delta > 0 else crossing_pct,
+            (
+                f"-{crossing_delta} ({crossing_pct})"
+                if crossing_delta > 0
+                else crossing_pct
+            ),
             wire_pct,
             status,
         )
@@ -1612,8 +1675,12 @@ def pinswap(
 
     # Get crossing analysis
     crossing_result = swapper.get_crossing_analysis()
-    console.print(f"\nTotal ratsnest crossings: [cyan]{crossing_result.total_crossings}[/]")
-    console.print(f"Crossing density: [cyan]{crossing_result.crossing_density:.2f}[/] crossings/edge")
+    console.print(
+        f"\nTotal ratsnest crossings: [cyan]{crossing_result.total_crossings}[/]"
+    )
+    console.print(
+        f"Crossing density: [cyan]{crossing_result.crossing_density:.2f}[/] crossings/edge"
+    )
 
     # Summary
     console.print(f"\n[bold]Total swaps performed:[/bold] {total_swaps}")
@@ -1650,11 +1717,11 @@ def report(
     ),
 ):
     """Generate a detailed report for a board."""
+    from .dfm.profiles import get_profile, get_profile_for_layers
     from .placement.module_detector import ModuleDetector
     from .validation.confidence import ConfidenceScorer
-    from .validation.pre_route import PreRouteValidator
     from .validation.drc import DRCChecker
-    from .dfm.profiles import get_profile, get_profile_for_layers
+    from .validation.pre_route import PreRouteValidator
 
     context = _get_context(ctx)
     console = context.console
@@ -1779,6 +1846,7 @@ def mcp_serve(
         )
         try:
             from .mcp.launcher import main as launcher_main
+
             launcher_main()
         except ImportError as e:
             console.print(
@@ -1805,7 +1873,7 @@ def mcp_serve(
         )
 
     try:
-        from .mcp.server import mcp, MCP_AVAILABLE, configure_session
+        from .mcp.server import MCP_AVAILABLE, configure_session, mcp
 
         if not MCP_AVAILABLE:
             console.print(
@@ -1847,11 +1915,11 @@ def interactive(
 ):
     """Run interactive constraint session."""
     from .board.kicad_adapter import save_kicad_board
+    from .dfm.profiles import get_profile, get_profile_for_layers
     from .nlp.constraint_parser import ConstraintParser, ModificationHandler
     from .placement.force_directed import ForceDirectedRefiner, RefinementConfig
-    from .placement.legalizer import PlacementLegalizer, LegalizerConfig
+    from .placement.legalizer import LegalizerConfig, PlacementLegalizer
     from .validation.confidence import ConfidenceScorer
-    from .dfm.profiles import get_profile, get_profile_for_layers
 
     context = _get_context(ctx)
     console = context.console
@@ -2020,9 +2088,13 @@ Modification examples:
                         )
                     )
                 else:
-                    console.print(Panel("Could not apply modification", border_style="red"))
+                    console.print(
+                        Panel("Could not apply modification", border_style="red")
+                    )
             else:
-                console.print(Panel(f"Could not parse: {user_input}", border_style="red"))
+                console.print(
+                    Panel(f"Could not parse: {user_input}", border_style="red")
+                )
 
     console.print(Panel(f"Debug log: {context.log_path}", border_style="blue"))
 
@@ -2044,22 +2116,30 @@ def route(
         False, "--visualize", "-v", help="Generate routing visualization."
     ),
     diff_pair: Optional[List[str]] = typer.Option(
-        None, "--diff-pair", "-d",
-        help="Diff pair in format NAME:POS_NET:NEG_NET. Can specify multiple."
+        None,
+        "--diff-pair",
+        "-d",
+        help="Diff pair in format NAME:POS_NET:NEG_NET. Can specify multiple.",
     ),
     critical_net: Optional[List[str]] = typer.Option(
-        None, "--critical", "-c",
-        help="Net name to route with high priority. Can specify multiple."
+        None,
+        "--critical",
+        "-c",
+        help="Net name to route with high priority. Can specify multiple.",
     ),
     detect_diff_pairs: bool = typer.Option(
-        False, "--detect-diff-pairs", help="Auto-detect differential pairs from net names."
+        False,
+        "--detect-diff-pairs",
+        help="Auto-detect differential pairs from net names.",
     ),
     skip_fanout: bool = typer.Option(
         False, "--skip-fanout", help="Skip BGA fanout phase."
     ),
     greedy: float = typer.Option(
-        2.0, "--greedy", "-g",
-        help="A* greedy multiplier (1=optimal, 2-3=fast). Default: 2.0"
+        2.0,
+        "--greedy",
+        "-g",
+        help="A* greedy multiplier (1=optimal, 2-3=fast). Default: 2.0",
     ),
     grid: float = typer.Option(
         0.1, "--grid", help="Routing grid size in mm. Default: 0.1"
@@ -2085,8 +2165,13 @@ def route(
         atoplace route board.kicad_pcb --greedy 2.5 --grid 0.05
         atoplace route board.kicad_pcb -o routed_board.kicad_pcb --dry-run
     """
-    from .routing import RoutingManager, RoutingManagerConfig, DiffPairDetector, RouterConfig
     from .dfm.profiles import get_profile, get_profile_for_layers
+    from .routing import (
+        DiffPairDetector,
+        RouterConfig,
+        RoutingManager,
+        RoutingManagerConfig,
+    )
 
     context = _get_context(ctx)
     console = context.console
@@ -2102,6 +2187,7 @@ def route(
             dfm_profile = get_profile(dfm)
         except ValueError as exc:
             from .dfm.profiles import list_profiles
+
             console.print(
                 Panel(
                     f"[red]Invalid DFM profile[/red]: {exc}\n"
@@ -2145,7 +2231,9 @@ def route(
         detected_pairs = detector.detect()
 
         if detected_pairs:
-            table = Table(title=f"Detected {len(detected_pairs)} Diff Pairs", box=box.SIMPLE)
+            table = Table(
+                title=f"Detected {len(detected_pairs)} Diff Pairs", box=box.SIMPLE
+            )
             table.add_column("Name")
             table.add_column("Positive")
             table.add_column("Negative")
@@ -2153,7 +2241,9 @@ def route(
 
             for pair in detected_pairs:
                 manager.add_diff_pair(pair.name, pair.positive_net, pair.negative_net)
-                table.add_row(pair.name, pair.positive_net, pair.negative_net, pair.pattern.value)
+                table.add_row(
+                    pair.name, pair.positive_net, pair.negative_net, pair.pattern.value
+                )
 
             console.print(table)
         else:
@@ -2166,7 +2256,9 @@ def route(
             if len(parts) >= 3:
                 name, pos_net, neg_net = parts[0], parts[1], parts[2]
                 manager.add_diff_pair(name, pos_net, neg_net)
-                console.print(f"[green]Added diff pair:[/green] {name} ({pos_net}/{neg_net})")
+                console.print(
+                    f"[green]Added diff pair:[/green] {name} ({pos_net}/{neg_net})"
+                )
             else:
                 console.print(f"[red]Invalid diff pair format:[/red] {dp_str}")
 
@@ -2189,7 +2281,9 @@ def route(
         task = progress.add_task("Routing...", total=100)
 
         def progress_callback(phase: str, pct: float):
-            progress.update(task, completed=int(pct * 100), description=f"[cyan]{phase}[/cyan]")
+            progress.update(
+                task, completed=int(pct * 100), description=f"[cyan]{phase}[/cyan]"
+            )
 
         manager.set_progress_callback(progress_callback)
         result = manager.route_all()
@@ -2204,7 +2298,9 @@ def route(
 
     table.add_row("Total Nets", str(result.total_nets))
     table.add_row("Routed", f"[green]{result.routed_nets}[/green]")
-    table.add_row("Failed", f"[red]{result.failed_nets}[/red]" if result.failed_nets > 0 else "0")
+    table.add_row(
+        "Failed", f"[red]{result.failed_nets}[/red]" if result.failed_nets > 0 else "0"
+    )
     table.add_row("Completion", f"{result.completion_rate:.1f}%")
     table.add_row("Total Length", f"{result.total_length:.1f} mm")
     table.add_row("Total Vias", str(result.total_vias))
@@ -2240,8 +2336,9 @@ def route(
 
     # Save routed traces to KiCad file
     if result.routed_nets > 0 and not dry_run:
-        from .board.kicad_adapter import save_routed_traces
         import shutil
+
+        from .board.kicad_adapter import save_routed_traces
 
         # Collect all successful traces and vias from routing results
         all_segments = []
@@ -2273,19 +2370,21 @@ def route(
                 all_segments,
                 all_vias,
                 net_id_to_name,
-                board_obj.layer_count
+                board_obj.layer_count,
             )
-            console.print(Panel(
-                f"Saved {len(all_segments)} traces, {len(all_vias)} vias to {output_path}",
-                border_style="green"
-            ))
+            console.print(
+                Panel(
+                    f"Saved {len(all_segments)} traces, {len(all_vias)} vias to {output_path}",
+                    border_style="green",
+                )
+            )
         except Exception as e:
             console.print(f"[red]Failed to save traces:[/] {e}")
             console.print(
                 Panel(
                     "[yellow]Note:[/yellow] Routing completed but trace saving failed. "
                     "Use the visualization output to review routing.",
-                    border_style="yellow"
+                    border_style="yellow",
                 )
             )
     elif dry_run and result.routed_nets > 0:

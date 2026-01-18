@@ -4,10 +4,9 @@ Tests for the AtoPlace Session API.
 Tests session state management, undo/redo, and dirty tracking.
 """
 
-import pytest
 from pathlib import Path
 
-from atoplace.api.session import Session, BoardSnapshot, ComponentState
+from atoplace.api.session import BoardSnapshot, Session
 
 
 class TestSessionBasics:
@@ -50,7 +49,9 @@ class TestCheckpoint:
         """Checkpoint should clear redo stack."""
         session = Session()
         session.board = test_board
-        session._redo_stack.append(BoardSnapshot(component_states={}, description="test"))
+        session._redo_stack.append(
+            BoardSnapshot(component_states={}, description="test")
+        )
 
         session.checkpoint("Test checkpoint")
 

@@ -10,19 +10,18 @@ Run with:
     Versions/Current/bin/python3 -m atoplace.mcp.bridge
 """
 
-import sys
-import os
-import signal
 import logging
+import signal
+import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [BRIDGE] %(levelname)s: %(message)s",
-    datefmt="%H:%M:%S"
+    datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
@@ -31,9 +30,11 @@ logger = logging.getLogger(__name__)
 # Session State (mirror of api/session.py but Python 3.9 compatible)
 # =============================================================================
 
+
 @dataclass
 class ComponentState:
     """Snapshot of a component's position state."""
+
     x: float
     y: float
     rotation: float
@@ -43,6 +44,7 @@ class ComponentState:
 @dataclass
 class BoardSnapshot:
     """Complete snapshot of board state for undo/redo."""
+
     component_states: Dict[str, ComponentState]
     description: str = ""
 
@@ -71,6 +73,7 @@ class BridgeSession:
     def load(self, path: Path):
         """Load a board from KiCad file."""
         from ..board.abstraction import Board
+
         self.board = Board.from_kicad(path)
         self.source_path = path
         self._undo_stack.clear()
@@ -88,7 +91,7 @@ class BridgeSession:
         if path is None:
             if self.source_path:
                 stem = self.source_path.stem
-                if not stem.endswith('.placed'):
+                if not stem.endswith(".placed"):
                     stem = stem + ".placed"
                 path = self.source_path.parent / (stem + ".kicad_pcb")
             else:
@@ -136,10 +139,7 @@ class BridgeSession:
         states = {}
         for ref, comp in self.board.components.items():
             states[ref] = ComponentState(
-                x=comp.x,
-                y=comp.y,
-                rotation=comp.rotation,
-                locked=comp.locked
+                x=comp.x, y=comp.y, rotation=comp.rotation, locked=comp.locked
             )
         return BoardSnapshot(component_states=states, description=description)
 
@@ -177,6 +177,7 @@ class BridgeSession:
 # =============================================================================
 # Bridge Handler
 # =============================================================================
+
 
 class KiCadBridge:
     """
@@ -230,7 +231,7 @@ class KiCadBridge:
         x: float = None,
         y: float = None,
         rotation: float = None,
-        locked: bool = None
+        locked: bool = None,
     ) -> Dict[str, Any]:
         """Update a component's position/rotation/lock state."""
         if not self.session.is_loaded:
@@ -240,7 +241,7 @@ class KiCadBridge:
         if not comp:
             return {"success": False, "message": "Component not found: " + ref}
 
-        if comp.locked and not (locked is False):
+        if comp.locked and locked is not False:
             return {"success": False, "message": "Component is locked: " + ref}
 
         modified = False
@@ -297,7 +298,11 @@ class KiCadBridge:
         if modified_refs:
             self.session.mark_modified(modified_refs)
 
-        return {"success": True, "results": results, "modified_count": len(modified_refs)}
+        return {
+            "success": True,
+            "results": results,
+            "modified_count": len(modified_refs),
+        }
 
     def handle_checkpoint(self, description: str = "") -> Dict[str, Any]:
         """Create an undo checkpoint."""
@@ -309,7 +314,10 @@ class KiCadBridge:
         from .ipc import serialize_board
 
         success = self.session.undo()
-        result = {"success": success, "action": "undone" if success else "nothing_to_undo"}
+        result = {
+            "success": success,
+            "action": "undone" if success else "nothing_to_undo",
+        }
 
         if success and self.session.board:
             result["board"] = serialize_board(self.session.board)
@@ -321,7 +329,10 @@ class KiCadBridge:
         from .ipc import serialize_board
 
         success = self.session.redo()
-        result = {"success": success, "action": "redone" if success else "nothing_to_redo"}
+        result = {
+            "success": success,
+            "action": "redone" if success else "nothing_to_redo",
+        }
 
         if success and self.session.board:
             result["board"] = serialize_board(self.session.board)
@@ -341,9 +352,10 @@ class KiCadBridge:
 # Main Entry Point
 # =============================================================================
 
+
 def run_bridge(socket_path: str = None):
     """Run the KiCad bridge server."""
-    from .ipc import IPCServer, DEFAULT_SOCKET_PATH
+    from .ipc import DEFAULT_SOCKET_PATH, IPCServer
 
     socket_path = socket_path or DEFAULT_SOCKET_PATH
     bridge = KiCadBridge()
@@ -387,15 +399,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="AtoPlace KiCad Bridge - Provides pcbnew access to MCP server"
     )
+    parser.add_argument("--socket", "-s", default=None, help="Unix socket path for IPC")
     parser.add_argument(
-        "--socket", "-s",
-        default=None,
-        help="Unix socket path for IPC"
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose logging"
+        "--verbose", "-v", action="store_true", help="Enable verbose logging"
     )
 
     args = parser.parse_args()

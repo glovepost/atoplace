@@ -19,7 +19,7 @@ def generate_viewer_html_template(
     javascript_code: str,
     module_types: Optional[Dict[str, str]] = None,
     total_frames: Optional[int] = None,
-    is_streaming: bool = False
+    is_streaming: bool = False,
 ) -> str:
     """Generate HTML with KiCad-style UI matching placement_debug.html.
 
@@ -43,20 +43,24 @@ def generate_viewer_html_template(
     # Generate module legend items
     module_legend_html = ""
     for module_name, color in module_types.items():
-        safe_id = module_name.replace('.', '-').replace(' ', '-')
-        module_legend_html += f'''
+        safe_id = module_name.replace(".", "-").replace(" ", "-")
+        module_legend_html += f"""
                 <div class="layer-item">
                     <input type="checkbox" class="layer-checkbox" id="show-module-{safe_id}" checked onchange="updateModuleVisibility()">
                     <span class="color-swatch" style="background: {color};"></span>
                     <span class="layer-name">{module_name}</span>
-                </div>'''
+                </div>"""
 
     # Frame count display
-    frame_display = f'<span id="frame-num">0</span> / {total_frames}' if total_frames else '<span id="frame-num">0</span>'
+    frame_display = (
+        f'<span id="frame-num">0</span> / {total_frames}'
+        if total_frames
+        else '<span id="frame-num">0</span>'
+    )
     if is_streaming:
         frame_display = '<span id="frame-num">Live</span>'
 
-    html = f'''<!DOCTYPE html>
+    html = f"""<!DOCTYPE html>
 <html>
 <head>
     <title>{title}</title>
@@ -303,6 +307,6 @@ def generate_viewer_html_template(
     }});
     </script>
 </body>
-</html>'''
+</html>"""
 
     return html

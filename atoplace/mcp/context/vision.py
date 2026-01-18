@@ -5,10 +5,10 @@ Generates visual representations of board regions for multimodal LLM understandi
 Produces annotated SVG/PNG images with dimensions and component labels.
 """
 
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
-from pathlib import Path
 import math
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Tuple
 
 from ...board.abstraction import Board, Component
 
@@ -16,6 +16,7 @@ from ...board.abstraction import Board, Component
 @dataclass
 class ViewportSpec:
     """Specification for a viewport region."""
+
     center_x: float
     center_y: float
     width: float
@@ -26,6 +27,7 @@ class ViewportSpec:
 @dataclass
 class AnnotatedImage:
     """Result of vision context generation."""
+
     svg_content: str
     viewport: ViewportSpec
     component_count: int
@@ -65,7 +67,7 @@ class VisionContext:
         padding: float = 5.0,
         show_dimensions: bool = True,
         show_ratsnest: bool = True,
-        image_width: int = 400
+        image_width: int = 400,
     ) -> AnnotatedImage:
         """
         Render a specific region defined by component references.
@@ -81,7 +83,9 @@ class VisionContext:
             AnnotatedImage with SVG content
         """
         # Get components
-        components = [self.board.components[r] for r in refs if r in self.board.components]
+        components = [
+            self.board.components[r] for r in refs if r in self.board.components
+        ]
 
         if not components:
             return self._empty_image()
@@ -100,7 +104,7 @@ class VisionContext:
             center_y=(min_y + max_y) / 2,
             width=max_x - min_x,
             height=max_y - min_y,
-            padding=padding
+            padding=padding,
         )
 
         # Calculate scale
@@ -175,13 +179,13 @@ class VisionContext:
         if show_dimensions and len(components) >= 2:
             self._render_dimensions(svg_parts, components, tx, ty, ts, annotations)
 
-        svg_parts.append('</svg>')
+        svg_parts.append("</svg>")
 
         return AnnotatedImage(
-            svg_content='\n'.join(svg_parts),
+            svg_content="\n".join(svg_parts),
             viewport=viewport,
             component_count=len(components),
-            annotations=annotations
+            annotations=annotations,
         )
 
     def render_full_board(self, image_width: int = 800) -> AnnotatedImage:
@@ -193,19 +197,21 @@ class VisionContext:
         """Save annotated image to SVG file."""
         path.write_text(image.svg_content)
 
-    def _get_bounding_box(self, components: List[Component]) -> Tuple[float, float, float, float]:
+    def _get_bounding_box(
+        self, components: List[Component]
+    ) -> Tuple[float, float, float, float]:
         """Calculate bounding box of components."""
-        min_x = float('inf')
-        min_y = float('inf')
-        max_x = float('-inf')
-        max_y = float('-inf')
+        min_x = float("inf")
+        min_y = float("inf")
+        max_x = float("-inf")
+        max_y = float("-inf")
 
         for comp in components:
             w, h = self._get_rotated_size(comp)
-            min_x = min(min_x, comp.x - w/2)
-            min_y = min(min_y, comp.y - h/2)
-            max_x = max(max_x, comp.x + w/2)
-            max_y = max(max_y, comp.y + h/2)
+            min_x = min(min_x, comp.x - w / 2)
+            min_y = min(min_y, comp.y - h / 2)
+            max_x = max(max_x, comp.x + w / 2)
+            max_y = max(max_y, comp.y + h / 2)
 
         return min_x, min_y, max_x, max_y
 
@@ -215,17 +221,14 @@ class VisionContext:
         bbox = comp.get_bounding_box()
         return (bbox[2] - bbox[0], bbox[3] - bbox[1])  # (width, height)
 
-    def _render_component(self, svg_parts: List[str], comp: Component,
-                          tx, ty, ts):
+    def _render_component(self, svg_parts: List[str], comp: Component, tx, ty, ts):
         """Render a single component."""
         cx, cy = tx(comp.x), ty(comp.y)
         w, h = self._get_rotated_size(comp)
-        hw, hh = ts(w/2), ts(h/2)
+        hw, hh = ts(w / 2), ts(h / 2)
 
         # Component body (rotated rectangle)
-        svg_parts.append(
-            f'<g transform="rotate({-comp.rotation} {cx} {cy})">'
-        )
+        svg_parts.append(f'<g transform="rotate({-comp.rotation} {cx} {cy})">')
 
         # Body
         svg_parts.append(
@@ -240,8 +243,8 @@ class VisionContext:
             # Transform pad position (accounting for component rotation)
             pad_x, pad_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
             px, py = tx(pad_x), ty(pad_y)
-            pw = max(ts(pad.width/2), 2)
-            ph = max(ts(pad.height/2), 2)
+            pw = max(ts(pad.width / 2), 2)
+            ph = max(ts(pad.height / 2), 2)
 
             svg_parts.append(
                 f'<rect x="{px - pw}" y="{py - ph}" '
@@ -249,7 +252,7 @@ class VisionContext:
                 f'fill="{self.COLORS["pad"]}" rx="1"/>'
             )
 
-        svg_parts.append('</g>')
+        svg_parts.append("</g>")
 
         # Reference label (outside rotation group)
         font_size = max(8, min(12, ts(min(w, h) * 0.4)))
@@ -257,11 +260,12 @@ class VisionContext:
             f'<text x="{cx}" y="{cy - hh - 5}" '
             f'font-family="monospace" font-size="{font_size}" '
             f'fill="{self.COLORS["annotation"]}" text-anchor="middle">'
-            f'{comp.reference}</text>'
+            f"{comp.reference}</text>"
         )
 
-    def _render_ratsnest(self, svg_parts: List[str], components: List[Component],
-                         tx, ty):
+    def _render_ratsnest(
+        self, svg_parts: List[str], components: List[Component], tx, ty
+    ):
         """Render ratsnest connections between components."""
         comp_refs = {c.reference for c in components}
 
@@ -277,17 +281,23 @@ class VisionContext:
 
                 # Find other pads on same net within our component set
                 for other_comp_ref, other_pad_num in net.connections:
-                    if (other_comp_ref and
-                        other_comp_ref != comp.reference and
-                        other_comp_ref in comp_refs):
+                    if (
+                        other_comp_ref
+                        and other_comp_ref != comp.reference
+                        and other_comp_ref in comp_refs
+                    ):
 
                         other_comp = self.board.components.get(other_comp_ref)
                         if other_comp:
                             # Find the pad on the other component
                             other_pad = other_comp.get_pad_by_number(other_pad_num)
                             if other_pad:
-                                pad1_x, pad1_y = pad.absolute_position(comp.x, comp.y, comp.rotation)
-                                pad2_x, pad2_y = other_pad.absolute_position(other_comp.x, other_comp.y, other_comp.rotation)
+                                pad1_x, pad1_y = pad.absolute_position(
+                                    comp.x, comp.y, comp.rotation
+                                )
+                                pad2_x, pad2_y = other_pad.absolute_position(
+                                    other_comp.x, other_comp.y, other_comp.rotation
+                                )
                                 x1 = tx(pad1_x)
                                 y1 = ty(pad1_y)
                                 x2 = tx(pad2_x)
@@ -300,24 +310,31 @@ class VisionContext:
                                     f'stroke-width="0.5" opacity="0.5"/>'
                                 )
 
-    def _render_dimensions(self, svg_parts: List[str], components: List[Component],
-                           tx, ty, ts, annotations: List[str]):
+    def _render_dimensions(
+        self,
+        svg_parts: List[str],
+        components: List[Component],
+        tx,
+        ty,
+        ts,
+        annotations: List[str],
+    ):
         """Render dimension annotations between components."""
         if len(components) < 2:
             return
 
         # Find closest pair
-        min_gap = float('inf')
+        min_gap = float("inf")
         closest_pair = None
 
         for i, c1 in enumerate(components):
-            for c2 in components[i+1:]:
+            for c2 in components[i + 1 :]:
                 gap = self._calculate_gap(c1, c2)
                 if gap < min_gap:
                     min_gap = gap
                     closest_pair = (c1, c2)
 
-        if closest_pair and min_gap < float('inf'):
+        if closest_pair and min_gap < float("inf"):
             c1, c2 = closest_pair
 
             # Draw dimension line
@@ -352,10 +369,12 @@ class VisionContext:
                 f'<text x="{mx}" y="{my + 4}" '
                 f'font-family="monospace" font-size="10" '
                 f'fill="{self.COLORS["dimension"]}" text-anchor="middle">'
-                f'{gap_text}</text>'
+                f"{gap_text}</text>"
             )
 
-            annotations.append(f"Gap between {c1.reference} and {c2.reference}: {min_gap:.2f}mm")
+            annotations.append(
+                f"Gap between {c1.reference} and {c2.reference}: {min_gap:.2f}mm"
+            )
 
     def _calculate_gap(self, c1: Component, c2: Component) -> float:
         """Calculate edge-to-edge gap between two components."""
@@ -363,8 +382,8 @@ class VisionContext:
         w2, h2 = self._get_rotated_size(c2)
 
         # Calculate separation in X and Y
-        dx = abs(c1.x - c2.x) - (w1/2 + w2/2)
-        dy = abs(c1.y - c2.y) - (h1/2 + h2/2)
+        dx = abs(c1.x - c2.x) - (w1 / 2 + w2 / 2)
+        dy = abs(c1.y - c2.y) - (h1 / 2 + h2 / 2)
 
         # If they overlap in both dimensions, gap is negative
         if dx < 0 and dy < 0:
@@ -381,13 +400,13 @@ class VisionContext:
 
     def _empty_image(self) -> AnnotatedImage:
         """Return empty placeholder image."""
-        svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+        svg = """<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
             <rect width="100%" height="100%" fill="#1a1a2e"/>
             <text x="100" y="50" fill="#888" text-anchor="middle">No components</text>
-        </svg>'''
+        </svg>"""
         return AnnotatedImage(
             svg_content=svg,
             viewport=ViewportSpec(0, 0, 0, 0),
             component_count=0,
-            annotations=[]
+            annotations=[],
         )

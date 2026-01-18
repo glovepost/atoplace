@@ -16,48 +16,60 @@ The launcher auto-detects KiCad Python on macOS/Linux/Windows.
 Override with KICAD_PYTHON environment variable if needed.
 """
 
-from .server import mcp, main, session
-
 # Context generators
 from .context import (
+    BoardSummary,
+    MacroContext,
     Microscope,
     MicroscopeData,
-    MacroContext,
-    BoardSummary,
-    SemanticGrid,
     ModuleMap,
+    SemanticGrid,
     VisionContext,
 )
+from .server import main, mcp, session
+
 
 # IPC components (lazy import to avoid Python 3.9 issues)
 def get_ipc_client():
     """Get IPC client class."""
     from .ipc import IPCClient
+
     return IPCClient
+
 
 def get_ipc_session():
     """Get IPC session class."""
     from .ipc_session import IPCSession
+
     return IPCSession
+
 
 def get_kipy_session():
     """Get KiPy session class for live KiCad IPC (KiCad 9+)."""
     from .kipy_session import KiPySession
+
     return KiPySession
 
+
 # Backend selection
-from .backends import BackendMode, get_backend_mode, create_session as create_backend_session
+from .backends import BackendMode, get_backend_mode
+from .backends import create_session as create_backend_session
+
 
 # DRC (lazy import)
 def get_drc_runner():
     """Get DRC runner instance."""
     from .drc import get_drc_runner as _get_runner
+
     return _get_runner()
+
 
 def get_drc_fixer():
     """Get DRC fixer class."""
     from .drc import DRCFixer
+
     return DRCFixer
+
 
 __all__ = [
     # Server

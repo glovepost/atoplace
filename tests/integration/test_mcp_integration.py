@@ -14,12 +14,13 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from atoplace.board import Board, Component, Net, Pad
 from atoplace.mcp import server
-from atoplace.board import Board, Component, Pad, Net
 
 
 class TestSession:
     """Mock MCP session for testing."""
+
     def __init__(self):
         self.board = self._create_test_board()
 
@@ -36,7 +37,7 @@ class TestSession:
         u1.value = "STM32F103"
         u1.layer = "F.Cu"
         for i in range(4):
-            u1.pads.append(Pad(f"{i+1}", 48.0 + i*0.8, 45.0, 0.3, 0.6))
+            u1.pads.append(Pad(f"{i+1}", 48.0 + i * 0.8, 45.0, 0.3, 0.6))
 
         # Resistors
         r1 = Component("R1", "Resistor", "0603")
@@ -71,7 +72,7 @@ class TestSession:
         j1.value = "USB4105"
         j1.layer = "F.Cu"
         for i in range(4):
-            j1.pads.append(Pad(f"{i+1}", 8.0 + i*1.0, 50.0, 0.6, 1.5))
+            j1.pads.append(Pad(f"{i+1}", 8.0 + i * 1.0, 50.0, 0.6, 1.5))
 
         # LED
         d1 = Component("D1", "LED", "0603")
@@ -109,11 +110,7 @@ def run_tests():
     # Set up mock session
     server.session = TestSession()
 
-    results = {
-        "passed": 0,
-        "failed": 0,
-        "errors": []
-    }
+    results = {"passed": 0, "failed": 0, "errors": []}
 
     # Category 1: Board Loading & Inspection
     print("Category 1: Board Loading & Inspection")
@@ -124,7 +121,10 @@ def run_tests():
         ("inspect_region", lambda: server.inspect_region(["U1", "R1"])),
         ("find_components (by ref)", lambda: server.find_components("R", "ref")),
         ("find_components (by value)", lambda: server.find_components("10k", "value")),
-        ("find_components (by footprint)", lambda: server.find_components("0603", "footprint")),
+        (
+            "find_components (by footprint)",
+            lambda: server.find_components("0603", "footprint"),
+        ),
         ("check_overlaps (all)", lambda: server.check_overlaps()),
         ("check_overlaps (subset)", lambda: server.check_overlaps(["U1", "R1"])),
         ("get_unplaced_components", lambda: server.get_unplaced_components()),
@@ -162,9 +162,15 @@ def run_tests():
         ("place_next_to", lambda: server.place_next_to("D1", "R2", "right", 2.0)),
         ("align_components", lambda: server.align_components(["R1", "R2", "C1"], "x")),
         ("distribute_evenly", lambda: server.distribute_evenly(["R1", "R2", "C1"])),
-        ("stack_components", lambda: server.stack_components(["R1", "R2", "C1"], "down", 2.0)),
+        (
+            "stack_components",
+            lambda: server.stack_components(["R1", "R2", "C1"], "down", 2.0),
+        ),
         ("lock_components", lambda: server.lock_components(["U1"])),
-        ("arrange_pattern (grid)", lambda: server.arrange_pattern(["R1", "R2", "C1", "D1"], "grid", cols=2)),
+        (
+            "arrange_pattern (grid)",
+            lambda: server.arrange_pattern(["R1", "R2", "C1", "D1"], "grid", cols=2),
+        ),
         ("cluster_around", lambda: server.cluster_around("U1", ["C1", "R1"])),
     ]
 
@@ -250,9 +256,18 @@ def run_tests():
     print("-" * 80)
 
     tests = [
-        ("parse_constraint (proximity)", lambda: server.parse_constraint("Keep C1 close to U1")),
-        ("parse_constraint (edge)", lambda: server.parse_constraint("USB connector on left edge")),
-        ("parse_constraint (zone)", lambda: server.parse_constraint("Keep RF in top-left")),
+        (
+            "parse_constraint (proximity)",
+            lambda: server.parse_constraint("Keep C1 close to U1"),
+        ),
+        (
+            "parse_constraint (edge)",
+            lambda: server.parse_constraint("USB connector on left edge"),
+        ),
+        (
+            "parse_constraint (zone)",
+            lambda: server.parse_constraint("Keep RF in top-left"),
+        ),
     ]
 
     for test_name, test_func in tests:
@@ -320,11 +335,15 @@ def run_tests():
             print(f"  - {error}")
         print()
 
-    success_rate = (results['passed'] / (results['passed'] + results['failed'])) * 100 if (results['passed'] + results['failed']) > 0 else 0
+    success_rate = (
+        (results["passed"] / (results["passed"] + results["failed"])) * 100
+        if (results["passed"] + results["failed"]) > 0
+        else 0
+    )
     print(f"Success Rate: {success_rate:.1f}%")
     print()
 
-    return results['failed'] == 0
+    return results["failed"] == 0
 
 
 if __name__ == "__main__":

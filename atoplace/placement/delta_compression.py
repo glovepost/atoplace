@@ -10,9 +10,9 @@ Memory savings: ~90% for typical placement runs where 10-20% of components
 move each iteration.
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional, Set
 import logging
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class ComponentDelta:
 
     Only stores fields that changed. If a field is None, it hasn't changed.
     """
+
     x: Optional[float] = None
     y: Optional[float] = None
     rotation: Optional[float] = None
@@ -46,6 +47,7 @@ class FrameDelta:
 
     To reconstruct full frame state, apply this delta to the previous frame.
     """
+
     index: int
     label: str
     iteration: int = 0
@@ -81,7 +83,9 @@ class DeltaCompressor:
     Maintains state of the previous frame to compute deltas efficiently.
     """
 
-    def __init__(self, position_threshold: float = 0.001, rotation_threshold: float = 0.01):
+    def __init__(
+        self, position_threshold: float = 0.001, rotation_threshold: float = 0.01
+    ):
         """Initialize compressor.
 
         Args:
@@ -181,10 +185,14 @@ class DeltaCompressor:
         self.total_frames += 1
         self.total_deltas += len(changed_components)
         self.total_full_state_size += len(components) * 3  # 3 floats per component
-        self.total_delta_size += len(changed_components) * 3  # Average 3 fields per delta
+        self.total_delta_size += (
+            len(changed_components) * 3
+        )  # Average 3 fields per delta
 
         if index % 100 == 0 and index > 0:
-            compression_ratio = (1 - self.total_delta_size / max(1, self.total_full_state_size)) * 100
+            compression_ratio = (
+                1 - self.total_delta_size / max(1, self.total_full_state_size)
+            ) * 100
             logger.debug(
                 f"Delta compression stats: {self.total_frames} frames, "
                 f"{self.total_deltas} total deltas, "
@@ -293,7 +301,9 @@ def estimate_compression_ratio(
 
     # Delta size: frame_0 (full) + remaining frames (only moved components)
     delta_size = num_components * 3  # Frame 0
-    delta_size += (num_frames - 1) * num_components * avg_moved_per_frame * 3  # Delta frames
+    delta_size += (
+        (num_frames - 1) * num_components * avg_moved_per_frame * 3
+    )  # Delta frames
 
     compression_ratio = 1.0 - (delta_size / full_size)
     return compression_ratio

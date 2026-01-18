@@ -15,14 +15,15 @@ print(f"Loading real board: {board_path}")
 
 # Load the board
 from atoplace.board import Board
+
 board = Board.from_kicad(str(board_path))
 
 print(f"Board loaded: {len(board.components)} components, {len(board.nets)} nets")
 
 # Run placement optimization with visualization
 from atoplace.placement.force_directed import ForceDirectedRefiner, RefinementConfig
-from atoplace.placement.visualizer import PlacementVisualizer
 from atoplace.placement.module_detector import ModuleDetector
+from atoplace.placement.visualizer import PlacementVisualizer
 
 print("\nDetecting modules...")
 detector = ModuleDetector(board)
@@ -57,7 +58,7 @@ refiner._viz_interval = 1
 
 result = refiner.refine()
 
-print(f"\nOptimization complete:")
+print("\nOptimization complete:")
 print(f"  Final energy: {result.total_energy:.2f}")
 print(f"  Converged: {result.converged}")
 print(f"  Iterations: {result.iteration}")
@@ -71,4 +72,5 @@ print(f"\nCanvas visualization exported to: {html_path}")
 print("Opening in browser...")
 
 import subprocess
+
 subprocess.run(["open", str(html_path)])

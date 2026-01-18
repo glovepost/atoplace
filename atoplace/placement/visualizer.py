@@ -9,18 +9,17 @@ Generates interactive HTML reports showing:
 - Step-by-step algorithm playback
 """
 
-import math
 import json
+import logging
+import math
 import re
 import warnings
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Set
 from pathlib import Path
-import logging
+from typing import Dict, List, Optional, Set, Tuple
 
 from ..visualization_color_manager import get_color_manager
 from .delta_compression import DeltaCompressor, FrameDelta
-from .canvas_renderer import CanvasRenderer, generate_delta_playback_js
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +31,15 @@ class ComponentStaticProps:
     Stored once per component to avoid duplication across frames.
     Memory optimization: ~70% reduction for 100-component, 500-frame runs.
     """
+
     width: float
     height: float
     # Pad geometry: list of (x_offset, y_offset, width, height, pad_rotation, net_name)
     # Offsets are relative to component centroid
     # pad_rotation is the pad's own rotation relative to the component (degrees)
-    pads: List[Tuple[float, float, float, float, float, str]] = field(default_factory=list)
+    pads: List[Tuple[float, float, float, float, float, str]] = field(
+        default_factory=list
+    )
 
 
 @dataclass
@@ -47,6 +49,7 @@ class PlacementFrame:
     Memory-optimized design: Only stores mutable state (position, rotation) per frame.
     Static properties (dimensions, pad geometry) are stored once in PlacementVisualizer.
     """
+
     index: int
     label: str
     iteration: int = 0
@@ -150,7 +153,10 @@ def get_pad_color(net_name: str) -> str:
         return "#2c3e50"
     if "i2c" in name or any(token in ("scl", "sda") for token in tokens):
         return "#1abc9c"
-    if "spi" in name or any(token in ("sck", "sclk", "mosi", "miso", "cs", "csn", "ncs", "ss") for token in tokens):
+    if "spi" in name or any(
+        token in ("sck", "sclk", "mosi", "miso", "cs", "csn", "ncs", "ss")
+        for token in tokens
+    ):
         return "#f1c40f"
     if any(token.startswith("uart") or token.startswith("usart") for token in tokens):
         return "#8e44ad"
@@ -307,8 +313,10 @@ class PlacementVisualizer:
                 px_rel = pad.x
                 py_rel = pad.y
                 # Include pad's own rotation (relative to component)
-                pad_rot = getattr(pad, 'rotation', 0.0) or 0.0
-                pad_geom.append((px_rel, py_rel, pad.width, pad.height, pad_rot, pad.net or ""))
+                pad_rot = getattr(pad, "rotation", 0.0) or 0.0
+                pad_geom.append(
+                    (px_rel, py_rel, pad.width, pad.height, pad_rot, pad.net or "")
+                )
 
             self.static_props[ref] = ComponentStaticProps(
                 width=comp.width,
@@ -316,7 +324,9 @@ class PlacementVisualizer:
                 pads=pad_geom,
             )
 
-        logger.debug(f"Extracted static properties for {len(self.static_props)} components")
+        logger.debug(
+            f"Extracted static properties for {len(self.static_props)} components"
+        )
 
     def _calculate_wire_length(
         self, components: Dict[str, Tuple[float, float, float]]
@@ -429,7 +439,9 @@ class PlacementVisualizer:
             )
             self.delta_frames.append(delta_frame)
 
-        logger.debug(f"Captured placement frame {self.frame_count}: {label} (wire_length={wire_length:.1f}mm)")
+        logger.debug(
+            f"Captured placement frame {self.frame_count}: {label} (wire_length={wire_length:.1f}mm)"
+        )
 
     def capture_from_board(
         self,
@@ -551,7 +563,7 @@ class PlacementVisualizer:
         ]
 
         # Background
-        svg_parts.append(f'<rect width="100%" height="100%" fill="#1a1a2e"/>')
+        svg_parts.append('<rect width="100%" height="100%" fill="#1a1a2e"/>')
 
         # Board outline - render actual polygon if available, otherwise rectangle
         if self.board and self.board.outline:
@@ -614,7 +626,12 @@ class PlacementVisualizer:
         # Group components by module type
         groups: Dict[str, List[str]] = {}
         for ref, module_type in frame.modules.items():
-            if ref in frame.components and module_type and module_type != "default" and module_type != "unknown":
+            if (
+                ref in frame.components
+                and module_type
+                and module_type != "default"
+                and module_type != "unknown"
+            ):
                 if module_type not in groups:
                     groups[module_type] = []
                 groups[module_type].append(ref)
@@ -625,10 +642,10 @@ class PlacementVisualizer:
                 continue
 
             # Calculate bounding box of all components in this group
-            group_min_x = float('inf')
-            group_min_y = float('inf')
-            group_max_x = float('-inf')
-            group_max_y = float('-inf')
+            group_min_x = float("inf")
+            group_min_y = float("inf")
+            group_max_x = float("-inf")
+            group_max_y = float("-inf")
 
             for ref in refs:
                 if ref not in frame.components or ref not in self.static_props:
@@ -643,7 +660,7 @@ class PlacementVisualizer:
                 group_max_x = max(group_max_x, x + hw)
                 group_max_y = max(group_max_y, y + hh)
 
-            if group_min_x < float('inf'):
+            if group_min_x < float("inf"):
                 # Add padding around the group
                 group_padding = 1.5  # mm
                 group_min_x -= group_padding
@@ -670,7 +687,7 @@ class PlacementVisualizer:
                     f'font-family="monospace" font-size="10" font-weight="bold" '
                     f'fill="{color}" text-anchor="middle" '
                     f'class="module-group group-label module-{_sanitize_module_name(module_type)}">'
-                    f'{module_type}</text>'
+                    f"{module_type}</text>"
                 )
 
         # Render overlapping pairs highlight
@@ -754,12 +771,13 @@ class PlacementVisualizer:
             if self.board and ref in self.board.components:
                 comp_obj = self.board.components[ref]
                 from ..board.abstraction import Layer
+
                 if comp_obj.layer == Layer.BOTTOM_COPPER:
                     layer_class = "comp-bottom"
 
             # Component body (rotated rectangle)
             cx, cy = tx(x), ty(y)
-            hw, hh = ts(w/2), ts(h/2)
+            hw, hh = ts(w / 2), ts(h / 2)
 
             # Apply rotation transform with layer class and module type
             module_class = f"module-{_sanitize_module_name(module_type)}"
@@ -776,7 +794,7 @@ class PlacementVisualizer:
                 f'stroke="{stroke_color}" stroke-width="{stroke_width}"/>'
             )
 
-            svg_parts.append('</g>')
+            svg_parts.append("</g>")
 
             # Reference label - placed outside component to avoid overlap
             font_size = max(7, min(11, ts(min(w, h) * 0.35)))
@@ -806,7 +824,7 @@ class PlacementVisualizer:
                 f'font-family="monospace" font-size="{font_size}" '
                 f'fill="#dddddd" text-anchor="{anchor}" dominant-baseline="middle" '
                 f'class="ref-label {layer_class} {module_class}" data-ref="{ref}">'
-                f'{ref}</text>'
+                f"{ref}</text>"
             )
 
         # Render pads (computed from static props + component position)
@@ -822,25 +840,31 @@ class PlacementVisualizer:
             pad_module_class = f"module-{_sanitize_module_name(pad_module_type)}"
 
             # Determine layer class for this component's pads
-            pad_layer_class = f"comp-top pad-element {pad_module_class}"  # Default to top
+            pad_layer_class = (
+                f"comp-top pad-element {pad_module_class}"  # Default to top
+            )
             if self.board and ref in self.board.components:
                 comp_obj = self.board.components[ref]
                 from ..board.abstraction import Layer
+
                 if comp_obj.layer == Layer.BOTTOM_COPPER:
                     pad_layer_class = f"comp-bottom pad-element {pad_module_class}"
 
             # Transform pads to board coordinates
             import math as m
+
             cos_r = m.cos(m.radians(rotation))
             sin_r = m.sin(m.radians(rotation))
 
-            for pad_index, (px_rel, py_rel, pw, ph, pad_rot, net) in enumerate(static.pads):
+            for pad_index, (px_rel, py_rel, pw, ph, pad_rot, net) in enumerate(
+                static.pads
+            ):
                 # Apply rotation and translation for pad position
                 px = x + (px_rel * cos_r - py_rel * sin_r)
                 py = y + (px_rel * sin_r + py_rel * cos_r)
 
                 pcx, pcy = tx(px), ty(py)
-                phw, phh = ts(pw/2), ts(ph/2)
+                phw, phh = ts(pw / 2), ts(ph / 2)
 
                 # Total rotation = component rotation + pad's own rotation
                 # The pad shape should rotate with the component
@@ -910,18 +934,23 @@ class PlacementVisualizer:
                 )
 
         # Arrow marker definitions for each force type (for future use)
-        svg_parts.insert(1, '''
+        svg_parts.insert(
+            1,
+            """
         <defs>
             <marker id="arrow-repulsion" markerWidth="10" markerHeight="10"
                     refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
                 <path d="M0,0 L0,6 L9,3 z" fill="#ffffff"/>
             </marker>
         </defs>
-        ''')
+        """,
+        )
 
         # Board name and dimensions label above the board outline (like group labels)
         if self.board:
-            board_name = self.board.name or (self.board.source_file.stem if self.board.source_file else "Board")
+            board_name = self.board.name or (
+                self.board.source_file.stem if self.board.source_file else "Board"
+            )
             board_width_mm = self.max_x - self.min_x - 10  # Subtract margin
             board_height_mm = self.max_y - self.min_y - 10
             if self.board.outline and self.board.outline.has_outline:
@@ -936,20 +965,20 @@ class PlacementVisualizer:
                 f'<text x="{label_x}" y="{label_y}" '
                 f'font-family="sans-serif" font-size="11" font-weight="bold" '
                 f'fill="#888888" text-anchor="start">'
-                f'{board_name}'
+                f"{board_name}"
                 f'<tspan dx="8" font-family="monospace" font-size="9" font-weight="normal" fill="#666666">'
-                f'{board_width_mm:.1f} x {board_height_mm:.1f} mm</tspan>'
-                f'</text>'
+                f"{board_width_mm:.1f} x {board_height_mm:.1f} mm</tspan>"
+                f"</text>"
             )
 
-        svg_parts.append('</svg>')
+        svg_parts.append("</svg>")
 
-        return '\n'.join(svg_parts)
+        return "\n".join(svg_parts)
 
     def export_html_report(
         self,
         filename: str = "placement_debug.html",
-        output_dir: str = "placement_debug"
+        output_dir: str = "placement_debug",
     ) -> Path:
         """Export interactive HTML report with all frames.
 
@@ -969,7 +998,7 @@ class PlacementVisualizer:
             "export_html_report() is deprecated. Use export_svg_delta_html() instead "
             "for 90% smaller files and better performance.",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -981,32 +1010,41 @@ class PlacementVisualizer:
         for frame in self.frames:
             svg = self.render_frame_svg(frame)
             # Escape for JavaScript
-            svg_escaped = svg.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '')
+            svg_escaped = (
+                svg.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "")
+            )
 
             # Extract component positions for trail rendering
-            comp_positions = {ref: (x, y) for ref, (x, y, *_) in frame.components.items()}
+            comp_positions = {
+                ref: (x, y) for ref, (x, y, *_) in frame.components.items()
+            }
 
-            frames_js.append({
-                'index': frame.index,
-                'label': frame.label,
-                'phase': frame.phase,
-                'iteration': frame.iteration,
-                'energy': frame.energy,
-                'max_move': frame.max_move,
-                'overlap_count': frame.overlap_count,
-                'wire_length': frame.total_wire_length,
-                'svg': svg_escaped,
-                'positions': comp_positions,
-            })
+            frames_js.append(
+                {
+                    "index": frame.index,
+                    "label": frame.label,
+                    "phase": frame.phase,
+                    "iteration": frame.iteration,
+                    "energy": frame.energy,
+                    "max_move": frame.max_move,
+                    "overlap_count": frame.overlap_count,
+                    "wire_length": frame.total_wire_length,
+                    "svg": svg_escaped,
+                    "positions": comp_positions,
+                }
+            )
 
         # Build frames JavaScript array
         import json
+
         frames_json = "[\n"
         for f in frames_js:
-            positions_json = json.dumps(f['positions'])
+            positions_json = json.dumps(f["positions"])
             frames_json += f"  {{'index': {f['index']}, 'label': '{f['label']}', "
             frames_json += f"'phase': '{f['phase']}', 'iteration': {f['iteration']}, "
-            frames_json += f"'energy': {f['energy']:.4f}, 'max_move': {f['max_move']:.6f}, "
+            frames_json += (
+                f"'energy': {f['energy']:.4f}, 'max_move': {f['max_move']:.6f}, "
+            )
             frames_json += f"'overlap_count': {f['overlap_count']}, "
             frames_json += f"'wire_length': {f['wire_length']:.2f}, "
             frames_json += f"'positions': {positions_json}, "
@@ -1024,14 +1062,14 @@ class PlacementVisualizer:
         for module_type in unique_modules:
             color = get_module_color(module_type)
             safe_id = module_type.replace("_", "-")
-            module_legend_items += f'''
+            module_legend_items += f"""
                 <div class="layer-item">
                     <input type="checkbox" class="layer-checkbox" id="show-module-{safe_id}" checked onchange="updateModuleVisibility()">
                     <span class="color-swatch" style="background: {color};"></span>
                     <span class="layer-name">{module_type}</span>
-                </div>'''
+                </div>"""
 
-        html_content = f'''<!DOCTYPE html>
+        html_content = f"""<!DOCTYPE html>
 <html>
 <head>
     <title>Placement Visualization Debug</title>
@@ -2311,7 +2349,7 @@ class PlacementVisualizer:
     </script>
 </body>
 </html>
-'''
+"""
 
         html_path.write_text(html_content)
         logger.info(f"Exported placement visualization to {html_path}")
@@ -2321,7 +2359,7 @@ class PlacementVisualizer:
     def export_canvas_html(
         self,
         filename: str = "placement_canvas.html",
-        output_dir: str = "placement_debug"
+        output_dir: str = "placement_debug",
     ) -> Path:
         """Export Canvas-based HTML with delta compression (high performance).
 
@@ -2358,13 +2396,18 @@ class PlacementVisualizer:
             "export_canvas_html() is deprecated. Use export_svg_delta_html() instead "
             "for vector quality at any zoom level.",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
+        )
+        from .viewer_javascript import (
+            generate_canvas_render_javascript,
+            generate_viewer_javascript,
         )
         from .viewer_template import generate_viewer_html_template
-        from .viewer_javascript import generate_viewer_javascript, generate_canvas_render_javascript
 
         if not self.delta_frames:
-            logger.warning("No delta frames available. Make sure use_delta_compression=True.")
+            logger.warning(
+                "No delta frames available. Make sure use_delta_compression=True."
+            )
             return None
 
         output_path = Path(output_dir)
@@ -2391,32 +2434,34 @@ class PlacementVisualizer:
                 changed_components[ref] = {
                     "x": delta.x,
                     "y": delta.y,
-                    "rotation": delta.rotation
+                    "rotation": delta.rotation,
                 }
 
-            delta_frames_json.append({
-                "index": df.index,
-                "label": df.label,
-                "iteration": df.iteration,
-                "phase": df.phase,
-                "changed_components": changed_components,
-                "changed_modules": df.changed_modules,
-                "forces": df.forces,
-                "overlaps": df.overlaps,
-                "movement": df.movement,
-                "connections": df.connections,
-                "energy": df.energy,
-                "max_move": df.max_move,
-                "overlap_count": df.overlap_count,
-                "total_wire_length": df.total_wire_length,
-            })
+            delta_frames_json.append(
+                {
+                    "index": df.index,
+                    "label": df.label,
+                    "iteration": df.iteration,
+                    "phase": df.phase,
+                    "changed_components": changed_components,
+                    "changed_modules": df.changed_modules,
+                    "forces": df.forces,
+                    "overlaps": df.overlaps,
+                    "movement": df.movement,
+                    "connections": df.connections,
+                    "energy": df.energy,
+                    "max_move": df.max_move,
+                    "overlap_count": df.overlap_count,
+                    "total_wire_length": df.total_wire_length,
+                }
+            )
 
         # Calculate compression statistics
-        num_components = len(self.static_props)
         num_frames = len(self.delta_frames)
         compression_ratio = (
-            1 - self.delta_compressor.total_delta_size /
-            max(1, self.delta_compressor.total_full_state_size)
+            1
+            - self.delta_compressor.total_delta_size
+            / max(1, self.delta_compressor.total_full_state_size)
         ) * 100
 
         # Convert static_props to JSON-serializable format
@@ -2429,41 +2474,50 @@ class PlacementVisualizer:
                 static_props_json[ref] = {
                     "width": props.width,
                     "height": props.height,
-                    "pads": props.pads
+                    "pads": props.pads,
                 }
 
         # Extract component layer information for layer filtering
         component_layers = {}
         if self.board:
             from ..board.abstraction import Layer
+
             for ref, comp in self.board.components.items():
                 if comp.layer == Layer.TOP_COPPER:
-                    component_layers[ref] = 'top'
+                    component_layers[ref] = "top"
                 elif comp.layer == Layer.BOTTOM_COPPER:
-                    component_layers[ref] = 'bottom'
+                    component_layers[ref] = "bottom"
                 else:
-                    component_layers[ref] = 'top'  # Default to top
+                    component_layers[ref] = "top"  # Default to top
 
         # Board bounds and outline for Canvas setup
         board_bounds = {
-            'minX': self.min_x,
-            'minY': self.min_y,
-            'maxX': self.max_x,
-            'maxY': self.max_y
+            "minX": self.min_x,
+            "minY": self.min_y,
+            "maxX": self.max_x,
+            "maxY": self.max_y,
         }
 
         # Extract board outline polygon if available
         board_outline = None
         if self.board and self.board.outline and self.board.outline.polygon:
             board_outline = {
-                'polygon': list(self.board.outline.polygon),
-                'holes': [list(hole) for hole in self.board.outline.holes] if self.board.outline.holes else []
+                "polygon": list(self.board.outline.polygon),
+                "holes": (
+                    [list(hole) for hole in self.board.outline.holes]
+                    if self.board.outline.holes
+                    else []
+                ),
             }
 
         # Calculate canvas dimensions
         board_width = self.max_x - self.min_x
         board_height = self.max_y - self.min_y
-        canvas_scale = min(1000 / board_width, 800 / board_height) if board_width > 0 and board_height > 0 else 10.0
+        canvas_scale = (
+            min(1000 / board_width, 800 / board_height)
+            if board_width > 0 and board_height > 0
+            else 10.0
+        )
         canvas_width = int(board_width * canvas_scale + 100)
         canvas_height = int(board_height * canvas_scale + 100)
 
@@ -2472,7 +2526,7 @@ class PlacementVisualizer:
         dynamic_content = f'<canvas id="dynamicCanvas" width="{canvas_width}" height="{canvas_height}"></canvas>'
 
         # Generate JavaScript code
-        javascript_code = f'''
+        javascript_code = f"""
 // ============================================================================
 // Data and Configuration
 // ============================================================================
@@ -2521,7 +2575,7 @@ deltaFrames.forEach((delta, index) => {{
 {generate_viewer_javascript(has_energy_graph=True, has_layer_controls=True, is_streaming=False)}
 
 {generate_canvas_render_javascript()}
-'''
+"""
 
         # Generate HTML using new template
         html_content = generate_viewer_html_template(
@@ -2531,7 +2585,7 @@ deltaFrames.forEach((delta, index) => {{
             javascript_code=javascript_code,
             module_types=module_colors,
             total_frames=num_frames,
-            is_streaming=False
+            is_streaming=False,
         )
 
         html_path.write_text(html_content)
@@ -2545,7 +2599,7 @@ deltaFrames.forEach((delta, index) => {{
     def export_svg_delta_html(
         self,
         filename: str = "placement_svg_delta.html",
-        output_dir: str = "placement_debug"
+        output_dir: str = "placement_debug",
     ) -> Path:
         """Export SVG-based HTML with delta updates (crisp quality, good performance).
 
@@ -2575,11 +2629,13 @@ deltaFrames.forEach((delta, index) => {{
         Returns:
             Path to generated HTML file
         """
-        from .viewer_template import generate_viewer_html_template
         from .svg_delta_viewer import generate_svg_delta_viewer_js
+        from .viewer_template import generate_viewer_html_template
 
         if not self.delta_frames:
-            logger.warning("No delta frames available. Make sure use_delta_compression=True.")
+            logger.warning(
+                "No delta frames available. Make sure use_delta_compression=True."
+            )
             return None
 
         output_path = Path(output_dir)
@@ -2613,27 +2669,30 @@ deltaFrames.forEach((delta, index) => {{
             for ref, delta in df.changed_components.items():
                 changed_components[ref] = [delta.x, delta.y, delta.rotation]
 
-            delta_frames_json.append({
-                "index": df.index,
-                "label": df.label,
-                "iteration": df.iteration,
-                "phase": df.phase,
-                "changed_components": changed_components,
-                "changed_modules": df.changed_modules,
-                "forces": df.forces,
-                "overlaps": df.overlaps,
-                "energy": df.energy,
-                "max_move": df.max_move,
-                "overlap_count": df.overlap_count,
-                "wire_length": df.total_wire_length,
-            })
+            delta_frames_json.append(
+                {
+                    "index": df.index,
+                    "label": df.label,
+                    "iteration": df.iteration,
+                    "phase": df.phase,
+                    "changed_components": changed_components,
+                    "changed_modules": df.changed_modules,
+                    "forces": df.forces,
+                    "overlaps": df.overlaps,
+                    "energy": df.energy,
+                    "max_move": df.max_move,
+                    "overlap_count": df.overlap_count,
+                    "wire_length": df.total_wire_length,
+                }
+            )
 
         # Calculate compression statistics
         num_components = len(self.static_props)
         num_frames = len(self.delta_frames)
         compression_ratio = (
-            1 - self.delta_compressor.total_delta_size /
-            max(1, self.delta_compressor.total_full_state_size)
+            1
+            - self.delta_compressor.total_delta_size
+            / max(1, self.delta_compressor.total_full_state_size)
         ) * 100
 
         # Convert static_props to JSON-serializable format
@@ -2646,20 +2705,21 @@ deltaFrames.forEach((delta, index) => {{
                 static_props_json[ref] = {
                     "width": props.width,
                     "height": props.height,
-                    "pads": props.pads
+                    "pads": props.pads,
                 }
 
         # Extract component layer information
         component_layers = {}
         if self.board:
             from ..board.abstraction import Layer
+
             for ref, comp in self.board.components.items():
                 if comp.layer == Layer.TOP_COPPER:
-                    component_layers[ref] = 'top'
+                    component_layers[ref] = "top"
                 elif comp.layer == Layer.BOTTOM_COPPER:
-                    component_layers[ref] = 'bottom'
+                    component_layers[ref] = "bottom"
                 else:
-                    component_layers[ref] = 'top'
+                    component_layers[ref] = "top"
 
         # Build netlist mapping: net name -> list of [ref, pad_index]
         netlist = {}
@@ -2676,9 +2736,6 @@ deltaFrames.forEach((delta, index) => {{
             # Sort pads for deterministic output
             for net_name in sorted(netlist.keys()):
                 netlist[net_name] = sorted(netlist[net_name])
-
-        # Escape initial SVG for JavaScript embedding
-        svg_escaped = initial_svg.replace('\\', '\\\\').replace("'", "\\'").replace('\n', ' ')
 
         # Static content: Initial SVG
         static_content = f"<div id='svg-container'>{initial_svg}</div>"
@@ -2700,11 +2757,11 @@ deltaFrames.forEach((delta, index) => {{
             "maxX": self.max_x,
             "maxY": self.max_y,
             "scale": scale,
-            "padding": padding
+            "padding": padding,
         }
 
         # Generate JavaScript code
-        javascript_code = f'''
+        javascript_code = f"""
 // ============================================================================
 // Data and Configuration
 // ============================================================================
@@ -2725,7 +2782,7 @@ console.log(`  Frames: {num_frames}`);
 console.log(`  Compression: {compression_ratio:.1f}%`);
 
 {generate_svg_delta_viewer_js()}
-'''
+"""
 
         # Generate HTML using template
         html_content = generate_viewer_html_template(
@@ -2735,7 +2792,7 @@ console.log(`  Compression: {compression_ratio:.1f}%`);
             javascript_code=javascript_code,
             module_types=module_colors,
             total_frames=num_frames,
-            is_streaming=False
+            is_streaming=False,
         )
 
         html_path.write_text(html_content)

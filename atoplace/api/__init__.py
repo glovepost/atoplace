@@ -8,7 +8,7 @@ Modules:
 - session: State management with undo/redo support
 """
 
-from .actions import LayoutActions, ActionResult
+from .actions import ActionResult, LayoutActions
 from .session import Session
 
 __all__ = [

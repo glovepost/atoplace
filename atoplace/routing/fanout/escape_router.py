@@ -10,8 +10,8 @@ The escape router uses a vector field approach:
 4. Generate trace segments for valid paths
 """
 
-import math
 import logging
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
@@ -23,15 +23,16 @@ logger = logging.getLogger(__name__)
 
 class EscapeDirection(Enum):
     """Primary escape direction from BGA."""
-    NORTH = "north"      # Escape upward (negative Y)
-    SOUTH = "south"      # Escape downward (positive Y)
-    EAST = "east"        # Escape rightward (positive X)
-    WEST = "west"        # Escape leftward (negative X)
-    NE = "northeast"     # Diagonal escape
+
+    NORTH = "north"  # Escape upward (negative Y)
+    SOUTH = "south"  # Escape downward (positive Y)
+    EAST = "east"  # Escape rightward (positive X)
+    WEST = "west"  # Escape leftward (negative X)
+    NE = "northeast"  # Diagonal escape
     NW = "northwest"
     SE = "southeast"
     SW = "southwest"
-    RADIAL = "radial"    # Direct outward from center
+    RADIAL = "radial"  # Direct outward from center
 
 
 @dataclass
@@ -47,6 +48,7 @@ class EscapeResult:
         direction: Primary escape direction used
         failure_reason: If failed, reason for failure
     """
+
     success: bool
     traces: List[FanoutTrace] = field(default_factory=list)
     end_point: Optional[Tuple[float, float]] = None
@@ -221,7 +223,8 @@ class EscapeRouter:
         # Add vias as obstacles
         for via in vias:
             grid.add_obstacle(
-                via.x, via.y,
+                via.x,
+                via.y,
                 via.pad_diameter / 2 + self.clearance,
                 layer=-1,  # Vias block all layers
                 net_name=via.net_name,
@@ -229,9 +232,7 @@ class EscapeRouter:
 
         # Route each via
         for via in vias:
-            result = self._route_single_escape(
-                via, cx, cy, courtyard_bounds, grid
-            )
+            result = self._route_single_escape(via, cx, cy, courtyard_bounds, grid)
             if via.pad_number:
                 results[via.pad_number] = result
 
@@ -261,20 +262,19 @@ class EscapeRouter:
         direction = self._get_escape_direction(via.x, via.y, cx, cy)
 
         # Calculate target point (outside courtyard with margin)
-        target = self._get_escape_target(
-            via.x, via.y, direction, courtyard_bounds
-        )
+        target = self._get_escape_target(via.x, via.y, direction, courtyard_bounds)
 
         if target is None:
             return EscapeResult(
-                success=False,
-                failure_reason="Could not determine escape target"
+                success=False, failure_reason="Could not determine escape target"
             )
 
         target_x, target_y = target
 
         # Try direct path first
-        if self._path_is_clear(via.x, via.y, target_x, target_y, via.end_layer, via.net_name, grid):
+        if self._path_is_clear(
+            via.x, via.y, target_x, target_y, via.end_layer, via.net_name, grid
+        ):
             trace = FanoutTrace(
                 start=(via.x, via.y),
                 end=(target_x, target_y),
@@ -282,7 +282,7 @@ class EscapeRouter:
                 layer=via.end_layer,
                 net_name=via.net_name,
             )
-            length = math.sqrt((target_x - via.x)**2 + (target_y - via.y)**2)
+            length = math.sqrt((target_x - via.x) ** 2 + (target_y - via.y) ** 2)
             return EscapeResult(
                 success=True,
                 traces=[trace],
@@ -302,7 +302,9 @@ class EscapeRouter:
                 continue
 
             target_x, target_y = alt_target
-            if self._path_is_clear(via.x, via.y, target_x, target_y, via.end_layer, via.net_name, grid):
+            if self._path_is_clear(
+                via.x, via.y, target_x, target_y, via.end_layer, via.net_name, grid
+            ):
                 trace = FanoutTrace(
                     start=(via.x, via.y),
                     end=(target_x, target_y),
@@ -310,7 +312,7 @@ class EscapeRouter:
                     layer=via.end_layer,
                     net_name=via.net_name,
                 )
-                length = math.sqrt((target_x - via.x)**2 + (target_y - via.y)**2)
+                length = math.sqrt((target_x - via.x) ** 2 + (target_y - via.y) ** 2)
                 return EscapeResult(
                     success=True,
                     traces=[trace],
@@ -321,16 +323,14 @@ class EscapeRouter:
                 )
 
         # Try L-shaped path as last resort
-        l_result = self._try_l_shaped_escape(
-            via, cx, cy, courtyard_bounds, grid
-        )
+        l_result = self._try_l_shaped_escape(via, cx, cy, courtyard_bounds, grid)
         if l_result.success:
             return l_result
 
         return EscapeResult(
             success=False,
             layer=via.end_layer,
-            failure_reason="No clear escape path found"
+            failure_reason="No clear escape path found",
         )
 
     def _get_escape_direction(
@@ -345,19 +345,19 @@ class EscapeRouter:
 
         # Map angle to direction
         # Using 8 cardinal + diagonal directions
-        if -math.pi/8 <= angle < math.pi/8:
+        if -math.pi / 8 <= angle < math.pi / 8:
             return EscapeDirection.EAST
-        elif math.pi/8 <= angle < 3*math.pi/8:
+        elif math.pi / 8 <= angle < 3 * math.pi / 8:
             return EscapeDirection.SE
-        elif 3*math.pi/8 <= angle < 5*math.pi/8:
+        elif 3 * math.pi / 8 <= angle < 5 * math.pi / 8:
             return EscapeDirection.SOUTH
-        elif 5*math.pi/8 <= angle < 7*math.pi/8:
+        elif 5 * math.pi / 8 <= angle < 7 * math.pi / 8:
             return EscapeDirection.SW
-        elif angle >= 7*math.pi/8 or angle < -7*math.pi/8:
+        elif angle >= 7 * math.pi / 8 or angle < -7 * math.pi / 8:
             return EscapeDirection.WEST
-        elif -7*math.pi/8 <= angle < -5*math.pi/8:
+        elif -7 * math.pi / 8 <= angle < -5 * math.pi / 8:
             return EscapeDirection.NW
-        elif -5*math.pi/8 <= angle < -3*math.pi/8:
+        elif -5 * math.pi / 8 <= angle < -3 * math.pi / 8:
             return EscapeDirection.NORTH
         else:  # -3*math.pi/8 <= angle < -math.pi/8
             return EscapeDirection.NE
@@ -368,10 +368,14 @@ class EscapeRouter:
         """Get alternate escape directions to try."""
         # Adjacent directions
         dir_order = [
-            EscapeDirection.NORTH, EscapeDirection.NE,
-            EscapeDirection.EAST, EscapeDirection.SE,
-            EscapeDirection.SOUTH, EscapeDirection.SW,
-            EscapeDirection.WEST, EscapeDirection.NW,
+            EscapeDirection.NORTH,
+            EscapeDirection.NE,
+            EscapeDirection.EAST,
+            EscapeDirection.SE,
+            EscapeDirection.SOUTH,
+            EscapeDirection.SW,
+            EscapeDirection.WEST,
+            EscapeDirection.NW,
         ]
         try:
             idx = dir_order.index(primary)
@@ -413,7 +417,7 @@ class EscapeRouter:
             cy = (min_y + max_y) / 2
             dx = x - cx
             dy = y - cy
-            length = math.sqrt(dx*dx + dy*dy)
+            length = math.sqrt(dx * dx + dy * dy)
             if length < 0.001:
                 return None
             dx /= length
@@ -424,7 +428,7 @@ class EscapeRouter:
                 return None
             dx, dy = vec
             # Normalize diagonal vectors
-            length = math.sqrt(dx*dx + dy*dy)
+            length = math.sqrt(dx * dx + dy * dy)
             dx /= length
             dy /= length
 
@@ -436,7 +440,7 @@ class EscapeRouter:
             else:
                 t_x = (min_x - margin - x) / dx
         else:
-            t_x = float('inf')
+            t_x = float("inf")
 
         if abs(dy) > 0.001:
             if dy > 0:
@@ -444,10 +448,10 @@ class EscapeRouter:
             else:
                 t_y = (min_y - margin - y) / dy
         else:
-            t_y = float('inf')
+            t_y = float("inf")
 
         t = min(t_x, t_y)
-        if t <= 0 or t == float('inf'):
+        if t <= 0 or t == float("inf"):
             return None
 
         target_x = x + dx * t
@@ -457,15 +461,17 @@ class EscapeRouter:
 
     def _path_is_clear(
         self,
-        x1: float, y1: float,
-        x2: float, y2: float,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         layer: int,
         net_name: Optional[str],
         grid: ObstacleGrid,
     ) -> bool:
         """Check if a straight path is clear of obstacles."""
         # Sample points along the path
-        length = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        length = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
         if length < 0.001:
             return True
 
@@ -526,8 +532,11 @@ class EscapeRouter:
             final_y = mid_y
 
         # Check both segments
-        if (self._path_is_clear(via.x, via.y, mid_x, mid_y, via.end_layer, via.net_name, grid) and
-            self._path_is_clear(mid_x, mid_y, final_x, final_y, via.end_layer, via.net_name, grid)):
+        if self._path_is_clear(
+            via.x, via.y, mid_x, mid_y, via.end_layer, via.net_name, grid
+        ) and self._path_is_clear(
+            mid_x, mid_y, final_x, final_y, via.end_layer, via.net_name, grid
+        ):
 
             traces = [
                 FanoutTrace(
@@ -545,9 +554,8 @@ class EscapeRouter:
                     net_name=via.net_name,
                 ),
             ]
-            length = (
-                math.sqrt((mid_x - via.x)**2 + (mid_y - via.y)**2) +
-                math.sqrt((final_x - mid_x)**2 + (final_y - mid_y)**2)
+            length = math.sqrt((mid_x - via.x) ** 2 + (mid_y - via.y) ** 2) + math.sqrt(
+                (final_x - mid_x) ** 2 + (final_y - mid_y) ** 2
             )
             return EscapeResult(
                 success=True,
@@ -563,7 +571,7 @@ class EscapeRouter:
         """Add a routed trace as an obstacle."""
         x1, y1 = trace.start
         x2, y2 = trace.end
-        length = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        length = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
         if length < 0.001:
             return
 
@@ -574,7 +582,8 @@ class EscapeRouter:
             x = x1 + t * (x2 - x1)
             y = y1 + t * (y2 - y1)
             grid.add_obstacle(
-                x, y,
+                x,
+                y,
                 self.trace_width / 2 + self.clearance,
                 trace.layer,
                 trace.net_name,

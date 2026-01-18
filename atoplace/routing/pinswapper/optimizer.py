@@ -14,11 +14,16 @@ The cost matrix captures how "expensive" each assignment is based on:
 """
 
 import logging
-from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional
 import math
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from .detector import SwapGroup, SwappablePin
+
+if TYPE_CHECKING:
+    from atoplace.board.abstraction import Board
+
+    from .crossing import CrossingCounter
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +31,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SwapAssignment:
     """A single pin swap assignment."""
-    from_pin: str    # Original pad number
-    to_pin: str      # New pad number
-    net: str         # Net being moved
+
+    from_pin: str  # Original pad number
+    to_pin: str  # New pad number
+    net: str  # Net being moved
     improvement: float  # Estimated improvement (lower is better)
 
     def __repr__(self) -> str:
@@ -38,6 +44,7 @@ class SwapAssignment:
 @dataclass
 class MatchingResult:
     """Result of bipartite matching optimization."""
+
     success: bool
     assignments: List[SwapAssignment] = field(default_factory=list)
 
@@ -80,7 +87,7 @@ class BipartiteMatcher:
     def optimize_group(
         self,
         group: SwapGroup,
-        target_positions: Optional[Dict[str, Tuple[float, float]]] = None
+        target_positions: Optional[Dict[str, Tuple[float, float]]] = None,
     ) -> MatchingResult:
         """
         Find optimal pin assignments for a swap group.
@@ -98,7 +105,7 @@ class BipartiteMatcher:
         if len(connected) < 2:
             return MatchingResult(
                 success=False,
-                failure_reason="Need at least 2 connected pins to optimize"
+                failure_reason="Need at least 2 connected pins to optimize",
             )
 
         # Build target positions for each net
@@ -133,13 +140,11 @@ class BipartiteMatcher:
             original_cost=original_cost,
             optimized_cost=optimized_cost,
             improvement_percent=improvement,
-            swaps_performed=sum(1 for a in assignments if a.from_pin != a.to_pin)
+            swaps_performed=sum(1 for a in assignments if a.from_pin != a.to_pin),
         )
 
     def _calculate_targets(
-        self,
-        group: SwapGroup,
-        connected: List[SwappablePin]
+        self, group: SwapGroup, connected: List[SwappablePin]
     ) -> Dict[str, Tuple[float, float]]:
         """Calculate target positions for each net based on other pads."""
         targets = {}
@@ -185,7 +190,7 @@ class BipartiteMatcher:
         self,
         group: SwapGroup,
         connected: List[SwappablePin],
-        targets: Dict[str, Tuple[float, float]]
+        targets: Dict[str, Tuple[float, float]],
     ) -> List[List[float]]:
         """
         Build cost matrix for assignment problem.
@@ -210,7 +215,7 @@ class BipartiteMatcher:
                 # Distance from destination pin to target
                 dx = dest_pin.x - target[0]
                 dy = dest_pin.y - target[1]
-                distance = math.sqrt(dx*dx + dy*dy)
+                distance = math.sqrt(dx * dx + dy * dy)
 
                 cost_matrix[i][j] = distance
 
@@ -254,7 +259,7 @@ class BipartiteMatcher:
         for i in range(n):
             # Start augmenting path from row i
             links = [-1] * n  # links[j] = previous column in augmenting path
-            mins = [float('inf')] * n  # mins[j] = minimum slack for column j
+            mins = [float("inf")] * n  # mins[j] = minimum slack for column j
             visited = [False] * n
 
             # Initial slack calculation
@@ -268,7 +273,7 @@ class BipartiteMatcher:
 
             while True:
                 # Find minimum slack unvisited column
-                delta = float('inf')
+                delta = float("inf")
                 for j in range(n):
                     if not visited[j] and mins[j] < delta:
                         delta = mins[j]
@@ -318,7 +323,7 @@ class BipartiteMatcher:
         group: SwapGroup,
         connected: List[SwappablePin],
         cost_matrix: List[List[float]],
-        assignment: List[int]
+        assignment: List[int],
     ) -> Tuple[List[SwapAssignment], float, float]:
         """Build swap assignments from Hungarian result."""
         assignments = []
@@ -334,28 +339,33 @@ class BipartiteMatcher:
 
             # New assignment
             new_idx = assignment[i] if i < len(assignment) else i
-            optimized_cost += cost_matrix[i][new_idx] if new_idx < len(cost_matrix[i]) else 0
+            optimized_cost += (
+                cost_matrix[i][new_idx] if new_idx < len(cost_matrix[i]) else 0
+            )
 
             # Get the destination pin
             if new_idx < len(group.pins):
                 dest_pin = group.pins[new_idx]
 
-                improvement = (cost_matrix[i][i] - cost_matrix[i][new_idx]
-                              if i < len(cost_matrix[i]) else 0)
+                improvement = (
+                    cost_matrix[i][i] - cost_matrix[i][new_idx]
+                    if i < len(cost_matrix[i])
+                    else 0
+                )
 
-                assignments.append(SwapAssignment(
-                    from_pin=pin.pad_number,
-                    to_pin=dest_pin.pad_number,
-                    net=pin.net_name,
-                    improvement=improvement
-                ))
+                assignments.append(
+                    SwapAssignment(
+                        from_pin=pin.pad_number,
+                        to_pin=dest_pin.pad_number,
+                        net=pin.net_name,
+                        improvement=improvement,
+                    )
+                )
 
         return assignments, original_cost, optimized_cost
 
     def estimate_improvement(
-        self,
-        group: SwapGroup,
-        crossing_counter: "CrossingCounter" = None
+        self, group: SwapGroup, crossing_counter: "CrossingCounter" = None
     ) -> float:
         """
         Estimate potential improvement from optimizing a group.
@@ -385,14 +395,14 @@ class BipartiteMatcher:
             target = targets[pin.net_name]
             dx = pin.x - target[0]
             dy = pin.y - target[1]
-            current_length += math.sqrt(dx*dx + dy*dy)
+            current_length += math.sqrt(dx * dx + dy * dy)
 
             # Find minimum possible distance to any pin in group
-            min_dist = float('inf')
+            min_dist = float("inf")
             for gpin in group.pins:
                 dx = gpin.x - target[0]
                 dy = gpin.y - target[1]
-                dist = math.sqrt(dx*dx + dy*dy)
+                dist = math.sqrt(dx * dx + dy * dy)
                 min_dist = min(min_dist, dist)
             min_possible += min_dist
 

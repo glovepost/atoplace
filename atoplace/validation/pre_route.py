@@ -5,14 +5,16 @@ Validates board state before attempting autorouting to catch issues early.
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Set, FrozenSet, Optional
-from ..board.abstraction import Board, Component
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+
+from ..board.abstraction import Board
 from ..dfm.profiles import DFMProfile
 
 
 @dataclass
 class PreRouteIssue:
     """An issue found during pre-route validation."""
+
     severity: str  # "error", "warning", "info"
     category: str  # "connectivity", "placement", "footprint"
     message: str
@@ -56,25 +58,29 @@ class PreRouteValidator:
             for pad in comp.pads:
                 if not pad.net:
                     # Some pads (like mounting holes) are expected to be unconnected
-                    if pad.number not in ['', 'MP', 'NC', 'N/C']:
-                        self.issues.append(PreRouteIssue(
-                            severity="warning",
-                            category="connectivity",
-                            message=f"Pad {pad.number} on {ref} has no net assigned",
-                            location=f"{ref}.{pad.number}",
-                        ))
+                    if pad.number not in ["", "MP", "NC", "N/C"]:
+                        self.issues.append(
+                            PreRouteIssue(
+                                severity="warning",
+                                category="connectivity",
+                                message=f"Pad {pad.number} on {ref} has no net assigned",
+                                location=f"{ref}.{pad.number}",
+                            )
+                        )
 
     def _check_single_pad_nets(self):
         """Check for nets connected to only one pad."""
         for net_name, net in self.board.nets.items():
             if len(net.connections) == 1:
                 conn = net.connections[0]
-                self.issues.append(PreRouteIssue(
-                    severity="warning",
-                    category="connectivity",
-                    message=f"Net '{net_name}' has only one connection ({conn[0]}.{conn[1]})",
-                    location=net_name,
-                ))
+                self.issues.append(
+                    PreRouteIssue(
+                        severity="warning",
+                        category="connectivity",
+                        message=f"Net '{net_name}' has only one connection ({conn[0]}.{conn[1]})",
+                        location=net_name,
+                    )
+                )
 
     def _check_missing_footprints(self):
         """Check for components without valid footprints."""
@@ -82,20 +88,24 @@ class PreRouteValidator:
             if comp.dnp:  # Skip Do Not Populate components
                 continue
             if not comp.footprint:
-                self.issues.append(PreRouteIssue(
-                    severity="error",
-                    category="footprint",
-                    message=f"Component {ref} has no footprint assigned",
-                    location=ref,
-                ))
+                self.issues.append(
+                    PreRouteIssue(
+                        severity="error",
+                        category="footprint",
+                        message=f"Component {ref} has no footprint assigned",
+                        location=ref,
+                    )
+                )
 
             if not comp.pads:
-                self.issues.append(PreRouteIssue(
-                    severity="error",
-                    category="footprint",
-                    message=f"Component {ref} has no pads",
-                    location=ref,
-                ))
+                self.issues.append(
+                    PreRouteIssue(
+                        severity="error",
+                        category="footprint",
+                        message=f"Component {ref} has no pads",
+                        location=ref,
+                    )
+                )
 
     def _check_overlapping_pads(self):
         """Check for pads that overlap between different components.
@@ -116,7 +126,7 @@ class PreRouteValidator:
 
         # Calculate grid size based on the smallest pad dimension in the design
         # This ensures fine-pitch components (0.5mm, 0.4mm pitch) are not missed
-        min_pad_dim = float('inf')
+        min_pad_dim = float("inf")
         for ref, comp in self.board.components.items():
             if comp.dnp:  # Skip Do Not Populate components
                 continue
@@ -125,7 +135,7 @@ class PreRouteValidator:
 
         # Grid size should be at least 2x the minimum pad dimension
         # but not too small to avoid performance issues
-        if min_pad_dim == float('inf'):
+        if min_pad_dim == float("inf"):
             grid_size = 0.5  # Default if no pads found
         else:
             grid_size = max(0.2, min(1.0, min_pad_dim * 2))
@@ -133,7 +143,10 @@ class PreRouteValidator:
         # Build spatial index of all pads
         # Store: (ref, pad_num, abs_x, abs_y, half_width, half_height, layer, is_through_hole)
         # where half-dimensions account for pad rotation
-        pad_info: Dict[Tuple[int, int], List[Tuple[str, str, float, float, float, float, str, bool]]] = {}
+        pad_info: Dict[
+            Tuple[int, int],
+            List[Tuple[str, str, float, float, float, float, str, bool]],
+        ] = {}
 
         for ref, comp in self.board.components.items():
             if comp.dnp:  # Skip Do Not Populate components
@@ -155,7 +168,16 @@ class PreRouteValidator:
                 grid_x = math.floor(abs_x / grid_size)
                 grid_y = math.floor(abs_y / grid_size)
 
-                info = (ref, pad.number, abs_x, abs_y, half_w, half_h, pad_layer, is_through_hole)
+                info = (
+                    ref,
+                    pad.number,
+                    abs_x,
+                    abs_y,
+                    half_w,
+                    half_h,
+                    pad_layer,
+                    is_through_hole,
+                )
 
                 # Add to current and neighboring cells for broad-phase collision
                 for dx in [-1, 0, 1]:
@@ -174,7 +196,7 @@ class PreRouteValidator:
 
             for i, pad1 in enumerate(cell_pads):
                 ref1, num1, x1, y1, hw1, hh1, layer1, th1 = pad1
-                for pad2 in cell_pads[i+1:]:
+                for pad2 in cell_pads[i + 1 :]:
                     ref2, num2, x2, y2, hw2, hh2, layer2, th2 = pad2
 
                     # Skip same component - pads within a component can be close
@@ -206,18 +228,15 @@ class PreRouteValidator:
 
                     # Pads overlap if both axes are within required separation
                     if dx < required_dx and dy < required_dy:
-                        # Calculate actual overlap/clearance violation
-                        overlap_x = required_dx - dx
-                        overlap_y = required_dy - dy
-                        overlap = min(overlap_x, overlap_y)
-
-                        self.issues.append(PreRouteIssue(
-                            severity="error",
-                            category="placement",
-                            message=f"Pad clearance violation: {ref1}.{num1} and {ref2}.{num2} "
-                                    f"(clearance: {max(0, min(dx - hw1 - hw2, dy - hh1 - hh2)):.3f}mm < {min_clearance:.3f}mm)",
-                            location=f"({(x1+x2)/2:.2f}, {(y1+y2)/2:.2f})",
-                        ))
+                        self.issues.append(
+                            PreRouteIssue(
+                                severity="error",
+                                category="placement",
+                                message=f"Pad clearance violation: {ref1}.{num1} and {ref2}.{num2} "
+                                f"(clearance: {max(0, min(dx - hw1 - hw2, dy - hh1 - hh2)):.3f}mm < {min_clearance:.3f}mm)",
+                                location=f"({(x1+x2)/2:.2f}, {(y1+y2)/2:.2f})",
+                            )
+                        )
 
     def _check_power_connections(self):
         """Verify power and ground net connectivity."""
@@ -225,7 +244,7 @@ class PreRouteValidator:
         ground_nets = self.board.get_ground_nets()
 
         # Check that ICs have power connections
-        ics = self.board.get_components_by_prefix('U')
+        ics = self.board.get_components_by_prefix("U")
         for ic in ics:
             if ic.dnp:  # Skip Do Not Populate components
                 continue
@@ -235,20 +254,24 @@ class PreRouteValidator:
             has_ground = any(n in [net.name for net in ground_nets] for n in ic_nets)
 
             if not has_power:
-                self.issues.append(PreRouteIssue(
-                    severity="warning",
-                    category="connectivity",
-                    message=f"IC {ic.reference} may be missing power connection",
-                    location=ic.reference,
-                ))
+                self.issues.append(
+                    PreRouteIssue(
+                        severity="warning",
+                        category="connectivity",
+                        message=f"IC {ic.reference} may be missing power connection",
+                        location=ic.reference,
+                    )
+                )
 
             if not has_ground:
-                self.issues.append(PreRouteIssue(
-                    severity="warning",
-                    category="connectivity",
-                    message=f"IC {ic.reference} may be missing ground connection",
-                    location=ic.reference,
-                ))
+                self.issues.append(
+                    PreRouteIssue(
+                        severity="warning",
+                        category="connectivity",
+                        message=f"IC {ic.reference} may be missing ground connection",
+                        location=ic.reference,
+                    )
+                )
 
     def get_summary(self) -> str:
         """Get a summary of validation results including category and location context."""

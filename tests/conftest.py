@@ -5,9 +5,10 @@ Provides reusable board, component, and session fixtures
 for testing MCP server, API actions, and context generators.
 """
 
-import pytest
 from pathlib import Path
-from typing import Dict, List
+from typing import List
+
+import pytest
 
 from atoplace.board.abstraction import (
     Board,
@@ -15,7 +16,6 @@ from atoplace.board.abstraction import (
     Component,
     Net,
     Pad,
-    Layer,
 )
 
 

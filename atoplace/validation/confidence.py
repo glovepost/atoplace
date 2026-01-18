@@ -6,25 +6,26 @@ Based on rules from layout_rules_research.md and industry best practices.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 from enum import Enum
-import math
+from typing import Dict, List, Optional, Tuple
 
-from ..board.abstraction import Board, Component, Net
+from ..board.abstraction import Board
 from ..dfm.profiles import DFMProfile, get_profile
 from ..patterns import get_patterns
 
 
 class Severity(Enum):
     """Severity levels for design flags."""
-    INFO = "info"           # Informational note
-    WARNING = "warning"     # Should be reviewed
-    ERROR = "error"         # Likely problem
-    CRITICAL = "critical"   # Must be fixed
+
+    INFO = "info"  # Informational note
+    WARNING = "warning"  # Should be reviewed
+    ERROR = "error"  # Likely problem
+    CRITICAL = "critical"  # Must be fixed
 
 
 class FlagCategory(Enum):
     """Categories of design flags."""
+
     PLACEMENT = "placement"
     ROUTING = "routing"
     DFM = "dfm"
@@ -36,13 +37,14 @@ class FlagCategory(Enum):
 @dataclass
 class DesignFlag:
     """A flagged issue or note about the design."""
+
     severity: Severity
     category: FlagCategory
-    location: str          # Component ref, net name, or board region
+    location: str  # Component ref, net name, or board region
     message: str
     suggested_action: Optional[str] = None
     confidence: float = 1.0  # How confident we are this is an issue (0-1)
-    rule_source: str = ""    # Where this rule comes from
+    rule_source: str = ""  # Where this rule comes from
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for serialization."""
@@ -60,7 +62,8 @@ class DesignFlag:
 @dataclass
 class ConfidenceReport:
     """Complete confidence assessment for a design."""
-    overall_score: float = 1.0   # 0-1, where 1 = high confidence
+
+    overall_score: float = 1.0  # 0-1, where 1 = high confidence
     flags: List[DesignFlag] = field(default_factory=list)
 
     # Sub-scores
@@ -108,8 +111,12 @@ class ConfidenceReport:
             lines.append("Flags:")
 
             # Sort by severity
-            severity_order = [Severity.CRITICAL, Severity.ERROR,
-                              Severity.WARNING, Severity.INFO]
+            severity_order = [
+                Severity.CRITICAL,
+                Severity.ERROR,
+                Severity.WARNING,
+                Severity.INFO,
+            ]
 
             for severity in severity_order:
                 severity_flags = self.get_flags_by_severity(severity)
@@ -141,8 +148,8 @@ class ConfidenceReport:
             "",
             "## Summary",
             "",
-            f"| Metric | Score |",
-            f"|--------|-------|",
+            "| Metric | Score |",
+            "|--------|-------|",
             f"| Overall | {self.overall_score:.0%} |",
             f"| Placement | {self.placement_score:.0%} |",
             f"| Routing | {self.routing_score:.0%} |",
@@ -158,13 +165,19 @@ class ConfidenceReport:
         ]
 
         if self.flags:
-            lines.extend([
-                "## Issues",
-                "",
-            ])
+            lines.extend(
+                [
+                    "## Issues",
+                    "",
+                ]
+            )
 
-            for severity in [Severity.CRITICAL, Severity.ERROR,
-                             Severity.WARNING, Severity.INFO]:
+            for severity in [
+                Severity.CRITICAL,
+                Severity.ERROR,
+                Severity.WARNING,
+                Severity.INFO,
+            ]:
                 severity_flags = self.get_flags_by_severity(severity)
                 if severity_flags:
                     lines.append(f"### {severity.value.title()}")
@@ -178,12 +191,14 @@ class ConfidenceReport:
                     lines.append("")
 
         if self.human_review_required():
-            lines.extend([
-                "---",
-                "",
-                "> **Note:** This design requires human review before manufacturing.",
-                "",
-            ])
+            lines.extend(
+                [
+                    "---",
+                    "",
+                    "> **Note:** This design requires human review before manufacturing.",
+                    "",
+                ]
+            )
 
         return "\n".join(lines)
 
@@ -200,7 +215,11 @@ class ConfidenceScorer:
     - DFM rule compliance
     """
 
-    def __init__(self, dfm_profile: Optional[DFMProfile] = None, patterns_config: Optional[str] = None):
+    def __init__(
+        self,
+        dfm_profile: Optional[DFMProfile] = None,
+        patterns_config: Optional[str] = None,
+    ):
         """
         Initialize scorer.
 
@@ -258,17 +277,17 @@ class ConfidenceScorer:
 
         total_weight = sum(weights.values())
         report.overall_score = (
-            weights["placement"] * report.placement_score +
-            weights["routing"] * report.routing_score +
-            weights["dfm"] * report.dfm_score +
-            weights["electrical"] * report.electrical_score
+            weights["placement"] * report.placement_score
+            + weights["routing"] * report.routing_score
+            + weights["dfm"] * report.dfm_score
+            + weights["electrical"] * report.electrical_score
         ) / total_weight
 
         # Reduce score for critical/error flags
         critical_count = len(report.get_flags_by_severity(Severity.CRITICAL))
         error_count = len(report.get_flags_by_severity(Severity.ERROR))
 
-        report.overall_score *= (0.5 ** critical_count) * (0.9 ** error_count)
+        report.overall_score *= (0.5**critical_count) * (0.9**error_count)
         report.overall_score = max(0.0, min(1.0, report.overall_score))
 
         return report
@@ -281,22 +300,26 @@ class ConfidenceScorer:
         # Check for overlapping components
         # - check_layers: ensure Top/Bottom components don't falsely conflict
         # - include_pads: ensure pad-inclusive bounding boxes are used for accuracy
-        overlaps = board.find_overlaps(self.dfm_profile.min_spacing, check_layers=True, include_pads=True)
+        overlaps = board.find_overlaps(
+            self.dfm_profile.min_spacing, check_layers=True, include_pads=True
+        )
         for ref1, ref2, dist in overlaps:
             # Skip if either component is DNP
             c1 = board.get_component(ref1)
             c2 = board.get_component(ref2)
             if (c1 and c1.dnp) or (c2 and c2.dnp):
                 continue
-            flags.append(DesignFlag(
-                severity=Severity.CRITICAL,
-                category=FlagCategory.PLACEMENT,
-                location=f"{ref1}/{ref2}",
-                message=f"Components {ref1} and {ref2} overlap or too close ({dist:.2f}mm)",
-                suggested_action="Increase spacing or relocate components",
-                confidence=1.0,
-                rule_source="DFM: Minimum component clearance",
-            ))
+            flags.append(
+                DesignFlag(
+                    severity=Severity.CRITICAL,
+                    category=FlagCategory.PLACEMENT,
+                    location=f"{ref1}/{ref2}",
+                    message=f"Components {ref1} and {ref2} overlap or too close ({dist:.2f}mm)",
+                    suggested_action="Increase spacing or relocate components",
+                    confidence=1.0,
+                    rule_source="DFM: Minimum component clearance",
+                )
+            )
             score = 0.0  # Critical failure
 
         # Check decoupling capacitor placement
@@ -336,7 +359,7 @@ class ConfidenceScorer:
         medium_speed_patterns = self.patterns.medium_speed_ic_patterns
 
         # Find ICs (U* components)
-        ics = board.get_components_by_prefix('U')
+        ics = board.get_components_by_prefix("U")
 
         for ic in ics:
             if ic.dnp:  # Skip Do Not Populate components
@@ -351,28 +374,26 @@ class ConfidenceScorer:
 
             # Set distance thresholds based on IC type
             if is_high_speed:
-                distances = self.patterns.get_decoupling_distances('high_speed')
-                critical_distance = distances['critical']
-                warning_distance = distances['warning']
-                info_distance = distances['info']
+                distances = self.patterns.get_decoupling_distances("high_speed")
+                critical_distance = distances["critical"]
+                warning_distance = distances["warning"]
                 speed_class = "high-speed"
             elif is_medium_speed:
-                distances = self.patterns.get_decoupling_distances('medium_speed')
-                critical_distance = distances['critical']
-                warning_distance = distances['warning']
-                info_distance = distances['info']
+                distances = self.patterns.get_decoupling_distances("medium_speed")
+                critical_distance = distances["critical"]
+                warning_distance = distances["warning"]
                 speed_class = "digital"
             else:
-                distances = self.patterns.get_decoupling_distances('standard')
-                critical_distance = distances['critical']
-                warning_distance = distances['warning']
-                info_distance = distances['info']
+                distances = self.patterns.get_decoupling_distances("standard")
+                critical_distance = distances["critical"]
+                warning_distance = distances["warning"]
                 speed_class = "standard"
 
             # Find connected capacitors
             ic_nets = ic.get_connected_nets()
-            power_nets = [n for n in ic_nets if board.nets.get(n) and
-                          board.nets[n].is_power]
+            power_nets = [
+                n for n in ic_nets if board.nets.get(n) and board.nets[n].is_power
+            ]
 
             if not power_nets:
                 continue
@@ -381,7 +402,7 @@ class ConfidenceScorer:
             # Get ground net names for verification
             ground_net_names = {n.name for n in board.get_ground_nets()}
 
-            min_cap_distance = float('inf')
+            min_cap_distance = float("inf")
             closest_cap = None
 
             for net_name in power_nets:
@@ -390,7 +411,7 @@ class ConfidenceScorer:
                     continue
 
                 for ref in net.get_component_refs():
-                    if ref.startswith('C'):
+                    if ref.startswith("C"):
                         cap = board.get_component(ref)
                         if cap:
                             # Verify this is a decoupling cap (connected to ground)
@@ -411,26 +432,30 @@ class ConfidenceScorer:
             if closest_cap:
                 if min_cap_distance > critical_distance:
                     severity = Severity.WARNING if is_high_speed else Severity.INFO
-                    flags.append(DesignFlag(
-                        severity=severity,
-                        category=FlagCategory.PLACEMENT,
-                        location=ic.reference,
-                        message=f"Decoupling cap {closest_cap.reference} is {min_cap_distance:.1f}mm from {speed_class} IC {ic.reference} (recommended <{critical_distance}mm)",
-                        suggested_action=f"Move {closest_cap.reference} closer to {ic.reference} power pins",
-                        confidence=0.9 if is_high_speed else 0.7,
-                        rule_source="layout_rules: PDN/Decoupling Capacitors",
-                    ))
+                    flags.append(
+                        DesignFlag(
+                            severity=severity,
+                            category=FlagCategory.PLACEMENT,
+                            location=ic.reference,
+                            message=f"Decoupling cap {closest_cap.reference} is {min_cap_distance:.1f}mm from {speed_class} IC {ic.reference} (recommended <{critical_distance}mm)",
+                            suggested_action=f"Move {closest_cap.reference} closer to {ic.reference} power pins",
+                            confidence=0.9 if is_high_speed else 0.7,
+                            rule_source="layout_rules: PDN/Decoupling Capacitors",
+                        )
+                    )
                     score *= 0.95 if is_high_speed else 0.98
                 elif min_cap_distance > warning_distance:
-                    flags.append(DesignFlag(
-                        severity=Severity.INFO,
-                        category=FlagCategory.PLACEMENT,
-                        location=ic.reference,
-                        message=f"Decoupling cap {closest_cap.reference} could be closer to {ic.reference} ({min_cap_distance:.1f}mm)",
-                        suggested_action="Consider moving closer for better high-frequency decoupling",
-                        confidence=0.6,
-                        rule_source="layout_rules: PDN/Decoupling Capacitors",
-                    ))
+                    flags.append(
+                        DesignFlag(
+                            severity=Severity.INFO,
+                            category=FlagCategory.PLACEMENT,
+                            location=ic.reference,
+                            message=f"Decoupling cap {closest_cap.reference} could be closer to {ic.reference} ({min_cap_distance:.1f}mm)",
+                            suggested_action="Consider moving closer for better high-frequency decoupling",
+                            confidence=0.6,
+                            rule_source="layout_rules: PDN/Decoupling Capacitors",
+                        )
+                    )
 
         return flags, score
 
@@ -473,15 +498,17 @@ class ConfidenceScorer:
                     outside_corners.append((cx, cy))
 
             if outside_corners:
-                flags.append(DesignFlag(
-                    severity=Severity.ERROR,
-                    category=FlagCategory.PLACEMENT,
-                    location=ref,
-                    message=f"Component {ref} extends outside board boundary or too close to edge ({len(outside_corners)} corners violate {margin:.2f}mm clearance)",
-                    suggested_action="Move component within board outline",
-                    confidence=1.0,
-                    rule_source="DFM: Board edge clearance",
-                ))
+                flags.append(
+                    DesignFlag(
+                        severity=Severity.ERROR,
+                        category=FlagCategory.PLACEMENT,
+                        location=ref,
+                        message=f"Component {ref} extends outside board boundary or too close to edge ({len(outside_corners)} corners violate {margin:.2f}mm clearance)",
+                        suggested_action="Move component within board outline",
+                        confidence=1.0,
+                        rule_source="DFM: Board edge clearance",
+                    )
+                )
 
         return flags
 
@@ -501,30 +528,170 @@ class ConfidenceScorer:
         utilization = component_area / board_area if board_area > 0 else 0
 
         if utilization > 0.7:
-            flags.append(DesignFlag(
-                severity=Severity.WARNING,
-                category=FlagCategory.PLACEMENT,
-                location="board",
-                message=f"High component density ({utilization:.0%}) may cause routing difficulties",
-                suggested_action="Consider larger board or component reorganization",
-                confidence=0.8,
-                rule_source="DFM: Routability",
-            ))
+            flags.append(
+                DesignFlag(
+                    severity=Severity.WARNING,
+                    category=FlagCategory.PLACEMENT,
+                    location="board",
+                    message=f"High component density ({utilization:.0%}) may cause routing difficulties",
+                    suggested_action="Consider larger board or component reorganization",
+                    confidence=0.8,
+                    rule_source="DFM: Routability",
+                )
+            )
         elif utilization > 0.5:
-            flags.append(DesignFlag(
-                severity=Severity.INFO,
-                category=FlagCategory.PLACEMENT,
-                location="board",
-                message=f"Moderate component density ({utilization:.0%})",
-                confidence=0.6,
-            ))
+            flags.append(
+                DesignFlag(
+                    severity=Severity.INFO,
+                    category=FlagCategory.PLACEMENT,
+                    location="board",
+                    message=f"Moderate component density ({utilization:.0%})",
+                    confidence=0.6,
+                )
+            )
 
         return flags
 
     def _check_routing(self, board: Board) -> Tuple[List[DesignFlag], float]:
-        """Check routing quality (placeholder for post-routing checks)."""
-        # TODO: Implement routing checks when routing is available
-        return [], 1.0
+        """Check routing quality and pre-routing connectivity.
+
+        Validates:
+        - Net connectivity completeness (multi-pad nets)
+        - Differential pair configuration
+        - Design rule compatibility
+        - Signal integrity hints (long nets, high fanout)
+        """
+        flags = []
+        score = 1.0
+
+        # Check differential pair configuration
+        for net_name, net in board.nets.items():
+            if net.is_differential:
+                if not net.diff_pair_net:
+                    flags.append(
+                        DesignFlag(
+                            severity=Severity.WARNING,
+                            category=FlagCategory.ROUTING,
+                            location=net_name,
+                            message=f"Differential net {net_name} missing pair assignment",
+                            suggested_action="Assign diff_pair_net to specify the paired signal",
+                            confidence=0.9,
+                        )
+                    )
+                    score *= 0.95
+                elif net.diff_pair_net not in board.nets:
+                    flags.append(
+                        DesignFlag(
+                            severity=Severity.ERROR,
+                            category=FlagCategory.ROUTING,
+                            location=net_name,
+                            message=f"Differential pair net '{net.diff_pair_net}' not found",
+                            confidence=1.0,
+                        )
+                    )
+                    score *= 0.8
+
+        # Check for high-fanout nets (routing complexity)
+        high_fanout_threshold = 10
+        for net_name, net in board.nets.items():
+            if net.is_power or net.is_ground:
+                continue  # Power/ground naturally have high fanout
+            fanout = len(net.connections)
+            if fanout > high_fanout_threshold:
+                flags.append(
+                    DesignFlag(
+                        severity=Severity.INFO,
+                        category=FlagCategory.ROUTING,
+                        location=net_name,
+                        message=f"High-fanout net ({fanout} connections) may require careful routing",
+                        confidence=0.7,
+                    )
+                )
+
+        # Check trace width specifications against DFM minimums
+        min_trace = self.dfm_profile.min_trace_width
+        for net_name, net in board.nets.items():
+            if net.trace_width and net.trace_width < min_trace:
+                flags.append(
+                    DesignFlag(
+                        severity=Severity.ERROR,
+                        category=FlagCategory.ROUTING,
+                        location=net_name,
+                        message=f"Specified trace width ({net.trace_width}mm) below DFM minimum ({min_trace}mm)",
+                        suggested_action=f"Increase trace width to at least {min_trace}mm",
+                        confidence=1.0,
+                        rule_source=f"DFM: {self.dfm_profile.name}",
+                    )
+                )
+                score *= 0.7
+
+        # Check clearance specifications against DFM minimums
+        min_clearance = self.dfm_profile.min_clearance
+        for net_name, net in board.nets.items():
+            if net.clearance and net.clearance < min_clearance:
+                flags.append(
+                    DesignFlag(
+                        severity=Severity.ERROR,
+                        category=FlagCategory.ROUTING,
+                        location=net_name,
+                        message=f"Specified clearance ({net.clearance}mm) below DFM minimum ({min_clearance}mm)",
+                        suggested_action=f"Increase clearance to at least {min_clearance}mm",
+                        confidence=1.0,
+                        rule_source=f"DFM: {self.dfm_profile.name}",
+                    )
+                )
+                score *= 0.7
+
+        # Check for unconnected nets (single-pad nets may indicate schematic errors)
+        for net_name, net in board.nets.items():
+            if net.is_power or net.is_ground:
+                continue
+            if len(net.connections) == 1:
+                flags.append(
+                    DesignFlag(
+                        severity=Severity.WARNING,
+                        category=FlagCategory.ROUTING,
+                        location=net_name,
+                        message=f"Single-connection net may indicate incomplete schematic",
+                        suggested_action="Verify this net should have only one connection",
+                        confidence=0.6,
+                    )
+                )
+                score *= 0.98
+
+        # Estimate routing complexity based on net count and board area
+        signal_nets = [
+            n for n in board.nets.values() if not n.is_power and not n.is_ground
+        ]
+        total_connections = sum(len(n.connections) for n in signal_nets)
+        if board.outline.has_outline and board.outline.width > 0:
+            board_area = board.outline.width * board.outline.height
+            # Rough metric: connections per cm²
+            density = total_connections / max(1, board_area / 100)  # per cm²
+            if density > 50:
+                flags.append(
+                    DesignFlag(
+                        severity=Severity.WARNING,
+                        category=FlagCategory.ROUTING,
+                        location="board",
+                        message=f"High routing density ({density:.0f} connections/cm²) may require more layers",
+                        confidence=0.6,
+                    )
+                )
+                score *= 0.9
+            elif density > 100:
+                flags.append(
+                    DesignFlag(
+                        severity=Severity.ERROR,
+                        category=FlagCategory.ROUTING,
+                        location="board",
+                        message=f"Very high routing density ({density:.0f} connections/cm²) - consider 4+ layers",
+                        confidence=0.7,
+                    )
+                )
+                score *= 0.8
+
+        return flags, max(0.0, min(1.0, score))
 
     def _check_dfm(self, board: Board) -> Tuple[List[DesignFlag], float]:
         """Check DFM compliance."""
@@ -533,50 +700,58 @@ class ConfidenceScorer:
 
         # Check layer count compatibility
         if board.layer_count not in self.dfm_profile.supported_layers:
-            flags.append(DesignFlag(
-                severity=Severity.ERROR,
-                category=FlagCategory.DFM,
-                location="board",
-                message=f"{board.layer_count}-layer board not supported by {self.dfm_profile.name}",
-                suggested_action=f"Use supported layer count: {self.dfm_profile.supported_layers}",
-                confidence=1.0,
-                rule_source=f"DFM: {self.dfm_profile.name}",
-            ))
+            flags.append(
+                DesignFlag(
+                    severity=Severity.ERROR,
+                    category=FlagCategory.DFM,
+                    location="board",
+                    message=f"{board.layer_count}-layer board not supported by {self.dfm_profile.name}",
+                    suggested_action=f"Use supported layer count: {self.dfm_profile.supported_layers}",
+                    confidence=1.0,
+                    rule_source=f"DFM: {self.dfm_profile.name}",
+                )
+            )
             score *= 0.5
 
         # Check board size - maximum
         if board.outline.width > self.dfm_profile.max_board_size:
-            flags.append(DesignFlag(
-                severity=Severity.ERROR,
-                category=FlagCategory.DFM,
-                location="board",
-                message=f"Board width ({board.outline.width}mm) exceeds maximum ({self.dfm_profile.max_board_size}mm)",
-                confidence=1.0,
-            ))
+            flags.append(
+                DesignFlag(
+                    severity=Severity.ERROR,
+                    category=FlagCategory.DFM,
+                    location="board",
+                    message=f"Board width ({board.outline.width}mm) exceeds maximum ({self.dfm_profile.max_board_size}mm)",
+                    confidence=1.0,
+                )
+            )
             score *= 0.5
 
         if board.outline.height > self.dfm_profile.max_board_size:
-            flags.append(DesignFlag(
-                severity=Severity.ERROR,
-                category=FlagCategory.DFM,
-                location="board",
-                message=f"Board height ({board.outline.height}mm) exceeds maximum ({self.dfm_profile.max_board_size}mm)",
-                confidence=1.0,
-            ))
+            flags.append(
+                DesignFlag(
+                    severity=Severity.ERROR,
+                    category=FlagCategory.DFM,
+                    location="board",
+                    message=f"Board height ({board.outline.height}mm) exceeds maximum ({self.dfm_profile.max_board_size}mm)",
+                    confidence=1.0,
+                )
+            )
             score *= 0.5
 
         # Check board size - minimum
         min_size = self.dfm_profile.min_board_size
         if board.outline.width < min_size or board.outline.height < min_size:
-            flags.append(DesignFlag(
-                severity=Severity.WARNING,
-                category=FlagCategory.DFM,
-                location="board",
-                message=f"Board dimensions ({board.outline.width:.1f}x{board.outline.height:.1f}mm) below minimum ({min_size}mm)",
-                suggested_action=f"Increase board dimensions or verify with fab house",
-                confidence=0.9,
-                rule_source=f"DFM: {self.dfm_profile.name}",
-            ))
+            flags.append(
+                DesignFlag(
+                    severity=Severity.WARNING,
+                    category=FlagCategory.DFM,
+                    location="board",
+                    message=f"Board dimensions ({board.outline.width:.1f}x{board.outline.height:.1f}mm) below minimum ({min_size}mm)",
+                    suggested_action="Increase board dimensions or verify with fab house",
+                    confidence=0.9,
+                    rule_source=f"DFM: {self.dfm_profile.name}",
+                )
+            )
             score *= 0.9
 
         return flags, score
@@ -589,26 +764,30 @@ class ConfidenceScorer:
         # Identify high-speed signals
         hs_nets = self._identify_high_speed_nets(board)
         for net_name in hs_nets:
-            flags.append(DesignFlag(
-                severity=Severity.INFO,
-                category=FlagCategory.ELECTRICAL,
-                location=net_name,
-                message=f"High-speed signal '{net_name}' detected - verify impedance matching",
-                suggested_action="Review trace length matching and impedance control",
-                confidence=0.8,
-                rule_source="layout_rules: Differential Pairs",
-            ))
+            flags.append(
+                DesignFlag(
+                    severity=Severity.INFO,
+                    category=FlagCategory.ELECTRICAL,
+                    location=net_name,
+                    message=f"High-speed signal '{net_name}' detected - verify impedance matching",
+                    suggested_action="Review trace length matching and impedance control",
+                    confidence=0.8,
+                    rule_source="layout_rules: Differential Pairs",
+                )
+            )
 
         # Check for unconnected power nets
         for net_name, net in board.nets.items():
             if net.is_power and len(net.connections) == 0:
-                flags.append(DesignFlag(
-                    severity=Severity.ERROR,
-                    category=FlagCategory.ELECTRICAL,
-                    location=net_name,
-                    message=f"Power net '{net_name}' has no connections",
-                    confidence=1.0,
-                ))
+                flags.append(
+                    DesignFlag(
+                        severity=Severity.ERROR,
+                        category=FlagCategory.ELECTRICAL,
+                        location=net_name,
+                        message=f"Power net '{net_name}' has no connections",
+                        confidence=1.0,
+                    )
+                )
                 score *= 0.8
 
         return flags, score
@@ -639,10 +818,12 @@ class ConfidenceScorer:
                 # Only flag if there's a base signal name (at least 2 chars)
                 if len(name_upper) >= 3:
                     for suffix in diff_pair_suffixes:
-                        if name_upper.endswith(suffix) and len(suffix) < len(name_upper):
+                        if name_upper.endswith(suffix) and len(suffix) < len(
+                            name_upper
+                        ):
                             # Additional check: avoid single-char base names
-                            base = name_upper[:-len(suffix)]
-                            if len(base) >= 2 and base[-1] != '_':
+                            base = name_upper[: -len(suffix)]
+                            if len(base) >= 2 and base[-1] != "_":
                                 hs_nets.append(net_name)
                                 break
 

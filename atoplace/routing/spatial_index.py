@@ -7,9 +7,9 @@ Key insight: Any time you're using a tree (QuadTree, R-Tree) you're ignoring
 an O(~1) hash algorithm for a more complicated O(log(N)) algorithm.
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Set, Tuple, Optional
 import math
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -18,6 +18,7 @@ class Obstacle:
 
     Obstacles are axis-aligned bounding boxes (AABBs) that block routing.
     """
+
     min_x: float
     min_y: float
     max_x: float
@@ -27,8 +28,10 @@ class Obstacle:
     net_id: Optional[int] = None  # None = blocks all nets, else blocks other nets
     obstacle_type: str = "generic"  # "pad", "via", "trace", "component", "keepout"
     ref: Optional[str] = None  # Component reference if applicable
-    component_nets: Optional[Set[int]] = None  # For component bodies: nets that can pass through
-                                                 # (i.e., nets connected to component's pads)
+    component_nets: Optional[Set[int]] = (
+        None  # For component bodies: nets that can pass through
+    )
+    # (i.e., nets connected to component's pads)
 
     def __hash__(self):
         return hash((self.min_x, self.min_y, self.max_x, self.max_y, self.layer))
@@ -58,18 +61,24 @@ class Obstacle:
             net_id=self.net_id,
             obstacle_type=self.obstacle_type,
             ref=self.ref,
-            component_nets=self.component_nets
+            component_nets=self.component_nets,
         )
 
     def contains_point(self, x: float, y: float) -> bool:
         """Check if point is inside obstacle (including clearance)."""
-        return (self.min_x - self.clearance <= x <= self.max_x + self.clearance and
-                self.min_y - self.clearance <= y <= self.max_y + self.clearance)
+        return (
+            self.min_x - self.clearance <= x <= self.max_x + self.clearance
+            and self.min_y - self.clearance <= y <= self.max_y + self.clearance
+        )
 
     def intersects(self, other: "Obstacle") -> bool:
         """Check if this obstacle intersects another."""
-        return not (self.max_x < other.min_x or other.max_x < self.min_x or
-                    self.max_y < other.min_y or other.max_y < self.min_y)
+        return not (
+            self.max_x < other.min_x
+            or other.max_x < self.min_x
+            or self.max_y < other.min_y
+            or other.max_y < self.min_y
+        )
 
 
 @dataclass
@@ -84,6 +93,7 @@ class SpatialHashIndex:
     - Too large: many obstacles per cell, slow queries
     - Rule of thumb: 2-3x the average obstacle size
     """
+
     cell_size: float = 1.0  # Size of each hash cell in mm
     cells: Dict[Tuple[int, int], List[Obstacle]] = field(default_factory=dict)
     all_obstacles: List[Obstacle] = field(default_factory=list)
@@ -91,8 +101,10 @@ class SpatialHashIndex:
 
     def _get_cell(self, x: float, y: float) -> Tuple[int, int]:
         """Hash position to cell coordinates."""
-        return (int(math.floor(x / self.cell_size)),
-                int(math.floor(y / self.cell_size)))
+        return (
+            int(math.floor(x / self.cell_size)),
+            int(math.floor(y / self.cell_size)),
+        )
 
     def _get_cells_for_rect(
         self, min_x: float, min_y: float, max_x: float, max_y: float
@@ -116,7 +128,7 @@ class SpatialHashIndex:
             obstacle.min_x - obstacle.clearance,
             obstacle.min_y - obstacle.clearance,
             obstacle.max_x + obstacle.clearance,
-            obstacle.max_y + obstacle.clearance
+            obstacle.max_y + obstacle.clearance,
         )
         for cell in cells:
             if cell not in self.cells:
@@ -132,7 +144,7 @@ class SpatialHashIndex:
             obstacle.min_x - obstacle.clearance,
             obstacle.min_y - obstacle.clearance,
             obstacle.max_x + obstacle.clearance,
-            obstacle.max_y + obstacle.clearance
+            obstacle.max_y + obstacle.clearance,
         )
         for cell in cells:
             if cell in self.cells:
@@ -148,11 +160,7 @@ class SpatialHashIndex:
             pass
 
     def query_point(
-        self,
-        x: float,
-        y: float,
-        layer: int,
-        net_id: Optional[int] = None
+        self, x: float, y: float, layer: int, net_id: Optional[int] = None
     ) -> List[Obstacle]:
         """
         Query obstacles near a point.
@@ -181,7 +189,11 @@ class SpatialHashIndex:
                         if net_id is not None and obs.net_id == net_id:
                             continue
                         # Component body check: allow routing nets connected to component pads
-                        if net_id is not None and obs.component_nets is not None and net_id in obs.component_nets:
+                        if (
+                            net_id is not None
+                            and obs.component_nets is not None
+                            and net_id in obs.component_nets
+                        ):
                             continue
                         candidates.append(obs)
 
@@ -194,7 +206,7 @@ class SpatialHashIndex:
         max_x: float,
         max_y: float,
         layer: int,
-        net_id: Optional[int] = None
+        net_id: Optional[int] = None,
     ) -> List[Obstacle]:
         """Query obstacles that might intersect a rectangle."""
         cells = self._get_cells_for_rect(min_x, min_y, max_x, max_y)
@@ -215,7 +227,11 @@ class SpatialHashIndex:
                     if net_id is not None and obs.net_id == net_id:
                         continue
                     # Component body check: allow routing nets connected to component pads
-                    if net_id is not None and obs.component_nets is not None and net_id in obs.component_nets:
+                    if (
+                        net_id is not None
+                        and obs.component_nets is not None
+                        and net_id in obs.component_nets
+                    ):
                         continue
                     candidates.append(obs)
 
@@ -227,7 +243,7 @@ class SpatialHashIndex:
         y: float,
         layer: int,
         clearance: float = 0.0,
-        net_id: Optional[int] = None
+        net_id: Optional[int] = None,
     ) -> bool:
         """
         Check if a point collides with any obstacle.
@@ -244,20 +260,24 @@ class SpatialHashIndex:
         for obs in self.query_point(x, y, layer, net_id):
             # AABB check with clearance
             total_clearance = obs.clearance + clearance
-            if (x >= obs.min_x - total_clearance and
-                x <= obs.max_x + total_clearance and
-                y >= obs.min_y - total_clearance and
-                y <= obs.max_y + total_clearance):
+            if (
+                x >= obs.min_x - total_clearance
+                and x <= obs.max_x + total_clearance
+                and y >= obs.min_y - total_clearance
+                and y <= obs.max_y + total_clearance
+            ):
                 return True
         return False
 
     def check_segment_collision(
         self,
-        x1: float, y1: float,
-        x2: float, y2: float,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         layer: int,
         width: float = 0.0,
-        net_id: Optional[int] = None
+        net_id: Optional[int] = None,
     ) -> bool:
         """
         Check if a line segment collides with any obstacle.
@@ -281,19 +301,30 @@ class SpatialHashIndex:
 
         for obs in self.query_rect(min_x, min_y, max_x, max_y, layer, net_id):
             if self._segment_intersects_rect(
-                x1, y1, x2, y2, width / 2 + obs.clearance,
-                obs.min_x, obs.min_y, obs.max_x, obs.max_y
+                x1,
+                y1,
+                x2,
+                y2,
+                width / 2 + obs.clearance,
+                obs.min_x,
+                obs.min_y,
+                obs.max_x,
+                obs.max_y,
             ):
                 return True
         return False
 
     def _segment_intersects_rect(
         self,
-        x1: float, y1: float,
-        x2: float, y2: float,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         half_width: float,
-        rect_min_x: float, rect_min_y: float,
-        rect_max_x: float, rect_max_y: float
+        rect_min_x: float,
+        rect_min_y: float,
+        rect_max_x: float,
+        rect_max_y: float,
     ) -> bool:
         """Check if line segment with width intersects rectangle.
 
@@ -340,11 +371,20 @@ class SpatialHashIndex:
 
     def _segments_intersect(
         self,
-        ax1: float, ay1: float, ax2: float, ay2: float,
-        bx1: float, by1: float, bx2: float, by2: float
+        ax1: float,
+        ay1: float,
+        ax2: float,
+        ay2: float,
+        bx1: float,
+        by1: float,
+        bx2: float,
+        by2: float,
     ) -> bool:
         """Check if two line segments intersect using cross products."""
-        def cross(ox: float, oy: float, ax: float, ay: float, bx: float, by: float) -> float:
+
+        def cross(
+            ox: float, oy: float, ax: float, ay: float, bx: float, by: float
+        ) -> float:
             return (ax - ox) * (by - oy) - (ay - oy) * (bx - ox)
 
         d1 = cross(bx1, by1, bx2, by2, ax1, ay1)
@@ -352,8 +392,9 @@ class SpatialHashIndex:
         d3 = cross(ax1, ay1, ax2, ay2, bx1, by1)
         d4 = cross(ax1, ay1, ax2, ay2, bx2, by2)
 
-        if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
-           ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
+        if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and (
+            (d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)
+        ):
             return True
 
         # Collinear cases (point on segment)
@@ -361,8 +402,7 @@ class SpatialHashIndex:
         EPSILON = 1e-10
 
         def on_segment(px, py, qx, qy, rx, ry):
-            return (min(px, rx) <= qx <= max(px, rx) and
-                    min(py, ry) <= qy <= max(py, ry))
+            return min(px, rx) <= qx <= max(px, rx) and min(py, ry) <= qy <= max(py, ry)
 
         if abs(d1) < EPSILON and on_segment(bx1, by1, ax1, ay1, bx2, by2):
             return True
@@ -389,8 +429,7 @@ class SpatialHashIndex:
 
 
 def auto_calibrate_cell_size(
-    obstacle_sizes: List[Tuple[float, float]],
-    default: float = 1.0
+    obstacle_sizes: List[Tuple[float, float]], default: float = 1.0
 ) -> float:
     """
     Determine optimal cell size based on obstacle sizes.

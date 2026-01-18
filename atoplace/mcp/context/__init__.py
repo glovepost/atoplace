@@ -7,8 +7,8 @@ Provides multi-level context for LLM spatial reasoning:
 - Vision: Visual representations for multimodal models
 """
 
-from .micro import Microscope, MicroscopeData, ObjectView, GapView, Viewport
-from .macro import MacroContext, BoardSummary, SemanticGrid, ModuleMap
+from .macro import BoardSummary, MacroContext, ModuleMap, SemanticGrid
+from .micro import GapView, Microscope, MicroscopeData, ObjectView, Viewport
 from .vision import VisionContext
 
 __all__ = [

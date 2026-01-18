@@ -12,14 +12,16 @@ Usage:
 """
 
 import math
-from typing import List, Optional, Tuple, Literal
 from dataclasses import dataclass
+from typing import List, Literal, Optional, Tuple
 
 from ..board.abstraction import Board, Component
+
 
 @dataclass
 class ActionResult:
     """Result of an atomic action."""
+
     success: bool
     message: str
     modified_refs: List[str]
@@ -31,7 +33,9 @@ class LayoutActions:
     def __init__(self, board: Board):
         self.board = board
 
-    def move_absolute(self, ref: str, x: float, y: float, rotation: Optional[float] = None) -> ActionResult:
+    def move_absolute(
+        self, ref: str, x: float, y: float, rotation: Optional[float] = None
+    ) -> ActionResult:
         """Move component to absolute coordinates."""
         comp = self.board.components.get(ref)
         if not comp:
@@ -65,7 +69,7 @@ class LayoutActions:
         comp = self.board.components.get(ref)
         if not comp:
             return ActionResult(False, f"Component {ref} not found", [])
-        
+
         if comp.locked:
             return ActionResult(False, f"Component {ref} is locked", [])
 
@@ -73,98 +77,119 @@ class LayoutActions:
         return ActionResult(True, f"Rotated {ref} to {angle:.1f}°", [ref])
 
     def place_next_to(
-        self, 
-        ref: str, 
-        target_ref: str, 
-        side: Literal["top", "bottom", "left", "right"] = "right", 
+        self,
+        ref: str,
+        target_ref: str,
+        side: Literal["top", "bottom", "left", "right"] = "right",
         clearance: float = 0.5,
-        align: Literal["center", "top", "bottom", "left", "right"] = "center"
+        align: Literal["center", "top", "bottom", "left", "right"] = "center",
     ) -> ActionResult:
         """
         Place 'ref' next to 'target_ref' with specific clearance.
-        
+
         This calculates the bounding boxes and snaps 'ref' to the edge of 'target_ref'.
         """
         comp = self.board.components.get(ref)
         target = self.board.components.get(target_ref)
-        
+
         if not comp or not target:
             return ActionResult(False, "Component not found", [])
-            
+
         if comp.locked:
             return ActionResult(False, f"Component {ref} is locked", [])
 
         # Get dimensions (accounting for rotation roughly - assuming 90 degree increments for Manhattan)
         w1, h1 = self._get_dims(comp)
         w2, h2 = self._get_dims(target)
-        
+
         x2, y2 = target.x, target.y
         new_x, new_y = comp.x, comp.y
 
         if side == "right":
             new_x = x2 + (w2 / 2) + clearance + (w1 / 2)
-            if align == "center": new_y = y2
-            elif align == "top": new_y = y2 - (h2 / 2) + (h1 / 2)
-            elif align == "bottom": new_y = y2 + (h2 / 2) - (h1 / 2)
-            
+            if align == "center":
+                new_y = y2
+            elif align == "top":
+                new_y = y2 - (h2 / 2) + (h1 / 2)
+            elif align == "bottom":
+                new_y = y2 + (h2 / 2) - (h1 / 2)
+
         elif side == "left":
             new_x = x2 - (w2 / 2) - clearance - (w1 / 2)
-            if align == "center": new_y = y2
-            elif align == "top": new_y = y2 - (h2 / 2) + (h1 / 2)
-            elif align == "bottom": new_y = y2 + (h2 / 2) - (h1 / 2)
-            
+            if align == "center":
+                new_y = y2
+            elif align == "top":
+                new_y = y2 - (h2 / 2) + (h1 / 2)
+            elif align == "bottom":
+                new_y = y2 + (h2 / 2) - (h1 / 2)
+
         elif side == "top":
             new_y = y2 - (h2 / 2) - clearance - (h1 / 2)
-            if align == "center": new_x = x2
-            elif align == "left": new_x = x2 - (w2 / 2) + (w1 / 2)
-            elif align == "right": new_x = x2 + (w2 / 2) - (w1 / 2)
-            
+            if align == "center":
+                new_x = x2
+            elif align == "left":
+                new_x = x2 - (w2 / 2) + (w1 / 2)
+            elif align == "right":
+                new_x = x2 + (w2 / 2) - (w1 / 2)
+
         elif side == "bottom":
             new_y = y2 + (h2 / 2) + clearance + (h1 / 2)
-            if align == "center": new_x = x2
-            elif align == "left": new_x = x2 - (w2 / 2) + (w1 / 2)
-            elif align == "right": new_x = x2 + (w2 / 2) - (w1 / 2)
+            if align == "center":
+                new_x = x2
+            elif align == "left":
+                new_x = x2 - (w2 / 2) + (w1 / 2)
+            elif align == "right":
+                new_x = x2 + (w2 / 2) - (w1 / 2)
 
         comp.x = new_x
         comp.y = new_y
-        
+
         return ActionResult(True, f"Placed {ref} {side} of {target_ref}", [ref])
 
     def align_components(
-        self, 
-        refs: List[str], 
-        axis: Literal["x", "y"] = "x", 
-        anchor: Literal["first", "last", "center"] = "first"
+        self,
+        refs: List[str],
+        axis: Literal["x", "y"] = "x",
+        anchor: Literal["first", "last", "center"] = "first",
     ) -> ActionResult:
         """Align a list of components along an axis."""
         if len(refs) < 2:
             return ActionResult(False, "Need at least 2 components to align", [])
-            
+
         components = []
         for r in refs:
             c = self.board.components.get(r)
-            if not c: return ActionResult(False, f"Component {r} not found", [])
+            if not c:
+                return ActionResult(False, f"Component {r} not found", [])
             components.append(c)
 
         # Determine anchor value
         target_val = 0.0
         if axis == "x":
             # Align Y coordinates (make them a row)
-            if anchor == "first": target_val = components[0].y
-            elif anchor == "last": target_val = components[-1].y
-            elif anchor == "center": target_val = sum(c.y for c in components) / len(components)
-            
+            if anchor == "first":
+                target_val = components[0].y
+            elif anchor == "last":
+                target_val = components[-1].y
+            elif anchor == "center":
+                target_val = sum(c.y for c in components) / len(components)
+
             for c in components:
-                if not c.locked: c.y = target_val
-                
+                if not c.locked:
+                    c.y = target_val
+
         elif axis == "y":
             # Align X coordinates (make them a col)
-            if anchor == "first": target_val = components[0].x
-            elif anchor == "last": target_val = components[-1].x
-            elif anchor == "center": target_val = sum(c.x for c in components) / len(components)
-            
+            if anchor == "first":
+                target_val = components[0].x
+            elif anchor == "last":
+                target_val = components[-1].x
+            elif anchor == "center":
+                target_val = sum(c.x for c in components) / len(components)
+
             for c in components:
-                if not c.locked: c.x = target_val
+                if not c.locked:
+                    c.x = target_val
 
         return ActionResult(True, f"Aligned {len(refs)} components", refs)
 
@@ -186,7 +211,8 @@ class LayoutActions:
         components = []
         for r in refs:
             c = self.board.components.get(r)
-            if not c: return ActionResult(False, f"Component {r} not found", [])
+            if not c:
+                return ActionResult(False, f"Component {r} not found", [])
             components.append(c)
 
         # Normalize axis selection
@@ -222,8 +248,12 @@ class LayoutActions:
 
         # Filter out locked components (except anchors which define the span)
         # Anchors are never moved regardless of lock state
-        movable = [c for c in components
-                   if not c.locked and c.reference not in (start_comp.reference, end_comp.reference)]
+        movable = [
+            c
+            for c in components
+            if not c.locked
+            and c.reference not in (start_comp.reference, end_comp.reference)
+        ]
         skipped = [c.reference for c in components if c.locked]
 
         if len(movable) == 0:
@@ -242,7 +272,9 @@ class LayoutActions:
             start_pos = start_comp.x
 
             # Distribute only movable components (anchors stay fixed)
-            for i, comp in enumerate(movable, start=1):  # start=1 to skip anchor position
+            for i, comp in enumerate(
+                movable, start=1
+            ):  # start=1 to skip anchor position
                 comp.x = start_pos + (i * pitch)
         else:
             total_dist = end_comp.y - start_comp.y
@@ -250,7 +282,9 @@ class LayoutActions:
             start_pos = start_comp.y
 
             # Distribute only movable components (anchors stay fixed)
-            for i, comp in enumerate(movable, start=1):  # start=1 to skip anchor position
+            for i, comp in enumerate(
+                movable, start=1
+            ):  # start=1 to skip anchor position
                 comp.y = start_pos + (i * pitch)
 
         moved_refs = [c.reference for c in movable]
@@ -264,7 +298,7 @@ class LayoutActions:
         refs: List[str],
         direction: Literal["up", "down", "left", "right"] = "down",
         spacing: float = 0.5,
-        alignment: Literal["center", "left", "right", "top", "bottom"] = "center"
+        alignment: Literal["center", "left", "right", "top", "bottom"] = "center",
     ) -> ActionResult:
         """
         Stack components sequentially in a direction.
@@ -273,18 +307,12 @@ class LayoutActions:
         if len(refs) < 2:
             return ActionResult(False, "Need at least 2 components to stack", [])
 
-        # Start with the first component as anchor
-        anchor_ref = refs[0]
+        # Start with the first component as anchor (refs[0])
         modified = []
 
         # Determine side for place_next_to
         # If stacking DOWN, we place NEXT component on BOTTOM
-        side_map = {
-            "down": "bottom",
-            "up": "top",
-            "right": "right",
-            "left": "left"
-        }
+        side_map = {"down": "bottom", "up": "top", "right": "right", "left": "left"}
         side = side_map.get(direction, "bottom")
 
         # Determine alignment
@@ -292,47 +320,59 @@ class LayoutActions:
         # Horizontal stack (left/right) -> align center/top/bottom
         if direction in ("up", "down") and alignment not in ("center", "left", "right"):
             alignment = "center"
-        if direction in ("left", "right") and alignment not in ("center", "top", "bottom"):
+        if direction in ("left", "right") and alignment not in (
+            "center",
+            "top",
+            "bottom",
+        ):
             alignment = "center"
 
         for i in range(1, len(refs)):
             target = refs[i]
-            prev = refs[i-1]
-            
-            res = self.place_next_to(target, prev, side=side, clearance=spacing, align=alignment)
+            prev = refs[i - 1]
+
+            res = self.place_next_to(
+                target, prev, side=side, clearance=spacing, align=alignment
+            )
             if res.success:
                 modified.append(target)
             else:
-                return ActionResult(False, f"Stack failed at {target}: {res.message}", modified)
+                return ActionResult(
+                    False, f"Stack failed at {target}: {res.message}", modified
+                )
 
-        return ActionResult(True, f"Stacked {len(refs)} components {direction}", modified)
+        return ActionResult(
+            True, f"Stacked {len(refs)} components {direction}", modified
+        )
 
     def group_components(self, refs: List[str], group_name: str) -> ActionResult:
         """Group components logically (store in properties)."""
         if not refs:
             return ActionResult(False, "No components to group", [])
-            
+
         modified = []
         for r in refs:
             c = self.board.components.get(r)
             if c:
                 c.properties["group"] = group_name
                 modified.append(r)
-                
-        return ActionResult(True, f"Grouped {len(modified)} components into '{group_name}'", modified)
+
+        return ActionResult(
+            True, f"Grouped {len(modified)} components into '{group_name}'", modified
+        )
 
     def lock_components(self, refs: List[str], locked: bool = True) -> ActionResult:
         """Set locked state for components."""
         if not refs:
             return ActionResult(False, "No components specified", [])
-            
+
         modified = []
         for r in refs:
             c = self.board.components.get(r)
             if c:
                 c.locked = locked
                 modified.append(r)
-                
+
         state = "Locked" if locked else "Unlocked"
         return ActionResult(True, f"{state} {len(modified)} components", modified)
 
@@ -403,7 +443,9 @@ class LayoutActions:
                 comp.y = center[1] + radius * math.sin(angle)
                 modified.append(comp.reference)
 
-        return ActionResult(True, f"Arranged {len(modified)} components in {pattern}", modified)
+        return ActionResult(
+            True, f"Arranged {len(modified)} components in {pattern}", modified
+        )
 
     def cluster_around(
         self,
@@ -457,10 +499,16 @@ class LayoutActions:
 
         if side in ("left", "right"):
             # Arrange vertically along the side
-            total_height = sum(d[1] for d in target_dims) + clearance * (len(targets) - 1)
+            total_height = sum(d[1] for d in target_dims) + clearance * (
+                len(targets) - 1
+            )
             start_y = anchor.y - total_height / 2
 
-            base_x = anchor.x + (aw / 2 + clearance) if side == "right" else anchor.x - (aw / 2 + clearance)
+            base_x = (
+                anchor.x + (aw / 2 + clearance)
+                if side == "right"
+                else anchor.x - (aw / 2 + clearance)
+            )
 
             current_y = start_y
             for i, t in enumerate(targets):
@@ -472,10 +520,16 @@ class LayoutActions:
 
         else:  # top or bottom
             # Arrange horizontally along the side
-            total_width = sum(d[0] for d in target_dims) + clearance * (len(targets) - 1)
+            total_width = sum(d[0] for d in target_dims) + clearance * (
+                len(targets) - 1
+            )
             start_x = anchor.x - total_width / 2
 
-            base_y = anchor.y - (ah / 2 + clearance) if side == "top" else anchor.y + (ah / 2 + clearance)
+            base_y = (
+                anchor.y - (ah / 2 + clearance)
+                if side == "top"
+                else anchor.y + (ah / 2 + clearance)
+            )
 
             current_x = start_x
             for i, t in enumerate(targets):
@@ -485,7 +539,11 @@ class LayoutActions:
                 current_x += tw + clearance
                 modified.append(t.reference)
 
-        return ActionResult(True, f"Clustered {len(modified)} components {side} of {anchor_ref}", modified)
+        return ActionResult(
+            True,
+            f"Clustered {len(modified)} components {side} of {anchor_ref}",
+            modified,
+        )
 
     def _get_dims(self, comp: Component) -> Tuple[float, float]:
         """Get effective width/height considering 90 degree rotation."""

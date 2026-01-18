@@ -11,13 +11,16 @@ This is Phase 0 of the routing pipeline - run before actual routing.
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
 from pathlib import Path
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-from .detector import SwapGroupDetector, SwapGroup, SwapGroupType
+from .constraints import ConstraintFormat, ConstraintGenerator
 from .crossing import CrossingCounter, CrossingResult
+from .detector import SwapGroup, SwapGroupDetector, SwapGroupType
 from .optimizer import BipartiteMatcher, MatchingResult, SwapAssignment
-from .constraints import ConstraintGenerator, ConstraintFormat
+
+if TYPE_CHECKING:
+    from atoplace.board.abstraction import Board, Net
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +28,14 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SwapConfig:
     """Configuration for pin swapping."""
+
     # Detection settings
-    min_group_size: int = 2          # Minimum pins in group to optimize
-    min_confidence: float = 0.5      # Minimum detection confidence
+    min_group_size: int = 2  # Minimum pins in group to optimize
+    min_confidence: float = 0.5  # Minimum detection confidence
 
     # Optimization settings
-    min_improvement: float = 5.0     # Minimum improvement % to apply
-    preserve_diff_pairs: bool = True # Don't break differential pairs
+    min_improvement: float = 5.0  # Minimum improvement % to apply
+    preserve_diff_pairs: bool = True  # Don't break differential pairs
 
     # What to optimize
     optimize_fpga: bool = True
@@ -43,6 +47,7 @@ class SwapConfig:
 @dataclass
 class SwapResult:
     """Result of pin swap optimization."""
+
     success: bool
     component_ref: str
 
@@ -69,14 +74,22 @@ class SwapResult:
         """Percentage reduction in crossings."""
         if self.original_crossings == 0:
             return 0.0
-        return (self.original_crossings - self.final_crossings) / self.original_crossings * 100
+        return (
+            (self.original_crossings - self.final_crossings)
+            / self.original_crossings
+            * 100
+        )
 
     @property
     def wire_improvement(self) -> float:
         """Percentage reduction in wire length."""
         if self.original_wire_length <= 0:
             return 0.0
-        return (self.original_wire_length - self.optimized_wire_length) / self.original_wire_length * 100
+        return (
+            (self.original_wire_length - self.optimized_wire_length)
+            / self.original_wire_length
+            * 100
+        )
 
 
 class PinSwapper:
@@ -146,14 +159,16 @@ class PinSwapper:
                 continue
 
             potential = self._matcher.estimate_improvement(group)
-            group_analysis.append({
-                "name": group.name,
-                "type": group.group_type.value,
-                "pins": group.size,
-                "connected_pins": len(group.connected_pins),
-                "potential_improvement": f"{potential:.1f}%",
-                "confidence": group.confidence
-            })
+            group_analysis.append(
+                {
+                    "name": group.name,
+                    "type": group.group_type.value,
+                    "pins": group.size,
+                    "connected_pins": len(group.connected_pins),
+                    "potential_improvement": f"{potential:.1f}%",
+                    "confidence": group.confidence,
+                }
+            )
 
         return {
             "component": ref,
@@ -161,14 +176,11 @@ class PinSwapper:
             "total_pads": len(comp.pads),
             "swap_groups": len(groups),
             "current_crossings": current_crossings,
-            "groups": group_analysis
+            "groups": group_analysis,
         }
 
     def optimize_component(
-        self,
-        ref: str,
-        apply: bool = True,
-        dry_run: bool = False
+        self, ref: str, apply: bool = True, dry_run: bool = False
     ) -> SwapResult:
         """
         Optimize pin assignments for a component.
@@ -186,17 +198,13 @@ class PinSwapper:
             return SwapResult(
                 success=False,
                 component_ref=ref,
-                failure_reason=f"Component {ref} not found"
+                failure_reason=f"Component {ref} not found",
             )
 
         # Detect swap groups
         groups = self._detector.detect_component(ref)
         if not groups:
-            return SwapResult(
-                success=True,
-                component_ref=ref,
-                groups_detected=0
-            )
+            return SwapResult(success=True, component_ref=ref, groups_detected=0)
 
         # Filter groups by config
         valid_groups = self._filter_groups(groups)
@@ -206,7 +214,7 @@ class PinSwapper:
                 success=True,
                 component_ref=ref,
                 groups_detected=len(groups),
-                failure_reason="No groups meet optimization criteria"
+                failure_reason="No groups meet optimization criteria",
             )
 
         # Measure initial state
@@ -222,7 +230,10 @@ class PinSwapper:
             result = self._matcher.optimize_group(group)
             group_results[group.name] = result
 
-            if result.success and result.improvement_percent >= self.config.min_improvement:
+            if (
+                result.success
+                and result.improvement_percent >= self.config.min_improvement
+            ):
                 optimized_count += 1
                 total_swaps += result.swaps_performed
 
@@ -247,16 +258,14 @@ class PinSwapper:
             original_crossings=initial_crossings,
             final_crossings=final_crossings,
             original_wire_length=initial_wire_length,
-            optimized_wire_length=final_wire_length
+            optimized_wire_length=final_wire_length,
         )
 
         self._results[ref] = result
         return result
 
     def optimize_all(
-        self,
-        refs: Optional[List[str]] = None,
-        apply: bool = True
+        self, refs: Optional[List[str]] = None, apply: bool = True
     ) -> Dict[str, SwapResult]:
         """
         Optimize pin assignments for multiple components.
@@ -288,8 +297,7 @@ class PinSwapper:
         # Summary
         total_swaps = sum(r.total_swaps for r in results.values())
         total_crossing_reduction = sum(
-            r.original_crossings - r.final_crossings
-            for r in results.values()
+            r.original_crossings - r.final_crossings for r in results.values()
         )
 
         logger.info(
@@ -314,13 +322,25 @@ class PinSwapper:
                 continue
 
             # Check type filters
-            if group.group_type == SwapGroupType.FPGA_BANK and not self.config.optimize_fpga:
+            if (
+                group.group_type == SwapGroupType.FPGA_BANK
+                and not self.config.optimize_fpga
+            ):
                 continue
-            if group.group_type == SwapGroupType.MCU_GPIO and not self.config.optimize_mcu:
+            if (
+                group.group_type == SwapGroupType.MCU_GPIO
+                and not self.config.optimize_mcu
+            ):
                 continue
-            if group.group_type == SwapGroupType.CONNECTOR and not self.config.optimize_connectors:
+            if (
+                group.group_type == SwapGroupType.CONNECTOR
+                and not self.config.optimize_connectors
+            ):
                 continue
-            if group.group_type in (SwapGroupType.MEMORY_DATA, SwapGroupType.MEMORY_ADDR):
+            if group.group_type in (
+                SwapGroupType.MEMORY_DATA,
+                SwapGroupType.MEMORY_ADDR,
+            ):
                 if not self.config.optimize_memory:
                     continue
 
@@ -328,12 +348,7 @@ class PinSwapper:
 
         return valid
 
-    def _apply_group_swaps(
-        self,
-        ref: str,
-        group: SwapGroup,
-        result: MatchingResult
-    ):
+    def _apply_group_swaps(self, ref: str, group: SwapGroup, result: MatchingResult):
         """Apply swaps from a matching result to the board."""
         comp = self.board.get_component(ref)
         if not comp:
@@ -376,11 +391,7 @@ class PinSwapper:
                 f"{assignment.from_pin} -> {assignment.to_pin}"
             )
 
-    def _calculate_wire_length(
-        self,
-        ref: str,
-        groups: List[SwapGroup]
-    ) -> float:
+    def _calculate_wire_length(self, ref: str, groups: List[SwapGroup]) -> float:
         """Calculate total wire length for nets in swap groups."""
         total = 0.0
         seen_nets = set()
@@ -421,18 +432,19 @@ class PinSwapper:
 
         # Simple MST approximation: connect nearest neighbors
         import math
+
         total = 0.0
         remaining = set(range(1, len(positions)))
         current = 0
 
         while remaining:
-            best_dist = float('inf')
+            best_dist = float("inf")
             best_idx = None
 
             cx, cy = positions[current]
             for idx in remaining:
                 px, py = positions[idx]
-                dist = math.sqrt((px - cx)**2 + (py - cy)**2)
+                dist = math.sqrt((px - cx) ** 2 + (py - cy) ** 2)
                 if dist < best_dist:
                     best_dist = dist
                     best_idx = idx
@@ -445,10 +457,7 @@ class PinSwapper:
         return total
 
     def export_constraints(
-        self,
-        path: Path,
-        format: Optional[ConstraintFormat] = None,
-        comment: str = ""
+        self, path: Path, format: Optional[ConstraintFormat] = None, comment: str = ""
     ):
         """
         Export accumulated pin swap constraints to a file.
@@ -461,8 +470,7 @@ class PinSwapper:
         self._constraint_gen.save(path, format, comment)
 
     def get_constraint_preview(
-        self,
-        format: ConstraintFormat = ConstraintFormat.XDC
+        self, format: ConstraintFormat = ConstraintFormat.XDC
     ) -> str:
         """
         Get a preview of the constraint file content.
