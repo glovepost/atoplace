@@ -12,8 +12,10 @@ visual updates in KiCad, without save/reload cycles.
 
 import logging
 import os
+import threading
+import time
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ class BackendNotAvailableError(Exception):
     pass
 
 
-def get_backend_mode() -> BackendMode:
+def get_backend_mode() -> Optional[BackendMode]:
     """
     Determine backend mode from environment variables.
 
@@ -40,10 +42,10 @@ def get_backend_mode() -> BackendMode:
     1. ATOPLACE_BACKEND: Explicit mode selection (direct/ipc/kipy)
     2. ATOPLACE_USE_KIPY: Set to 1/true for kipy mode
     3. ATOPLACE_USE_IPC: Set to 1/true for IPC mode
-    4. Default: direct mode
+    4. Default: None (signals auto-detection with fallback)
 
     Returns:
-        BackendMode enum value
+        BackendMode enum value, or None for auto-detection
     """
     # Explicit backend selection
     explicit = os.environ.get("ATOPLACE_BACKEND", "").lower().strip()
@@ -54,7 +56,7 @@ def get_backend_mode() -> BackendMode:
             return BackendMode.IPC
         if explicit in ("direct", "pcbnew", "swig"):
             return BackendMode.DIRECT
-        logger.warning("Unknown ATOPLACE_BACKEND value: %s, using direct", explicit)
+        logger.warning("Unknown ATOPLACE_BACKEND value: %s, using auto-detection", explicit)
 
     # Legacy environment variables
     if os.environ.get("ATOPLACE_USE_KIPY", "").lower() in ("1", "true", "yes"):
@@ -62,7 +64,8 @@ def get_backend_mode() -> BackendMode:
     if os.environ.get("ATOPLACE_USE_IPC", "").lower() in ("1", "true", "yes"):
         return BackendMode.IPC
 
-    return BackendMode.DIRECT
+    # Return None to signal auto-detection with fallback chain
+    return None
 
 
 def check_kipy_available() -> Tuple[bool, str]:
@@ -160,6 +163,12 @@ def create_session(mode: Optional[BackendMode] = None):
     """
     if mode is None:
         mode = get_backend_mode()
+
+    # If still None after env check, use auto-fallback with KIPY preference
+    if mode is None:
+        session, actual_mode = create_session_with_fallback(BackendMode.KIPY)
+        logger.info("Auto-selected backend: %s", actual_mode.value)
+        return session
 
     logger.info("Creating session with backend: %s", mode.value)
 
@@ -273,3 +282,45 @@ def _get_socket_paths() -> list:
     paths.append(None)
 
     return paths
+
+
+def start_kicad_monitor(
+    callback: Callable[[BackendMode], None],
+    poll_interval: float = 3.0,
+) -> threading.Thread:
+    """
+    Monitor for KiCad becoming available and notify callback.
+
+    Starts a daemon thread that periodically checks if KiCad's IPC API
+    is available. When KiCad is detected, the callback is invoked once.
+    The monitor continues running to detect reconnection after KiCad restarts.
+
+    Args:
+        callback: Called with BackendMode.KIPY when KiCad is detected
+        poll_interval: Seconds between availability checks (default: 3.0)
+
+    Returns:
+        The monitor thread (daemon, auto-stops when process exits)
+    """
+
+    def _monitor():
+        was_available = False
+        while True:
+            try:
+                available, msg = check_kipy_available()
+                if available and not was_available:
+                    logger.info("KiCad detected: %s", msg)
+                    try:
+                        callback(BackendMode.KIPY)
+                    except Exception as e:
+                        logger.warning("KiCad availability callback failed: %s", e)
+                was_available = available
+            except Exception as e:
+                logger.debug("KiCad monitor check failed: %s", e)
+                was_available = False
+            time.sleep(poll_interval)
+
+    thread = threading.Thread(target=_monitor, daemon=True, name="kicad-monitor")
+    thread.start()
+    logger.debug("Started KiCad availability monitor (poll_interval=%.1fs)", poll_interval)
+    return thread

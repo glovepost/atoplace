@@ -131,7 +131,9 @@ mcp = FastMCP("atoplace")
 from .backends import (
     BackendMode,
     BackendNotAvailableError,
+    check_kipy_available,
     create_session_with_fallback,
+    start_kicad_monitor,
 )
 
 
@@ -155,6 +157,7 @@ class SessionProvider:
         self._session: Optional[Session] = None
         self._actual_mode: Optional[BackendMode] = None
         self._initialized = False
+        self._kicad_monitor = None
 
     def _initialize(self):
         """Initialize session with backend fallback chain."""
@@ -180,6 +183,65 @@ class SessionProvider:
             self._actual_mode = BackendMode.DIRECT
 
         self._initialized = True
+
+        # Start monitoring for KiCad if not already using KiPy and no explicit backend set
+        if self._actual_mode != BackendMode.KIPY and not env_backend:
+            self._kicad_monitor = start_kicad_monitor(self._on_kicad_available)
+            logger.info("Monitoring for KiCad availability...")
+
+    def _on_kicad_available(self, mode: BackendMode):
+        """Callback when KiCad becomes available."""
+        if self.try_upgrade_to_kipy():
+            logger.info("Successfully upgraded to KiPy backend - real-time sync enabled")
+
+    def try_upgrade_to_kipy(self) -> bool:
+        """
+        Attempt to upgrade current session to KiPy backend.
+
+        Called when KiCad becomes available. Preserves loaded board path
+        and attempts to reload in the new session.
+
+        Returns:
+            True if successfully upgraded, False otherwise
+        """
+        if self._actual_mode == BackendMode.KIPY:
+            return True  # Already using KiPy
+
+        logger.info("Attempting to upgrade to KiPy backend...")
+
+        # Check if KiPy is actually available
+        available, msg = check_kipy_available()
+        if not available:
+            logger.debug("KiPy not available: %s", msg)
+            return False
+
+        # Preserve current state
+        old_path = getattr(self._session, "source_path", None)
+
+        try:
+            new_session, new_mode = create_session_with_fallback(BackendMode.KIPY)
+
+            if new_mode != BackendMode.KIPY:
+                logger.debug("Fallback didn't result in KiPy mode")
+                return False
+
+            # Swap sessions
+            self._session = new_session
+            self._actual_mode = new_mode
+
+            # Reload board if one was loaded
+            if old_path:
+                logger.info("Reloading board in KiPy session: %s", old_path)
+                try:
+                    self._session.load(old_path)
+                except Exception as e:
+                    logger.warning("Could not reload board in KiPy session: %s", e)
+
+            return True
+
+        except Exception as e:
+            logger.warning("Could not upgrade to KiPy: %s", e)
+            return False
 
     @property
     def session(self) -> Session:
@@ -210,6 +272,7 @@ class SessionProvider:
         self._session = None
         self._actual_mode = None
         self._initialized = False
+        self._kicad_monitor = None
 
 
 # Global session provider instance
