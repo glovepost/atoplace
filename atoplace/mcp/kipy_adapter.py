@@ -205,9 +205,16 @@ def _kipy_footprint_to_component(fp) -> Component:
         locked=getattr(fp, "locked", False),
     )
 
-    # Extract pads
-    if hasattr(fp, "pads"):
-        for kipy_pad in fp.pads:
+    # Extract pads - check both fp.pads and fp.definition.pads
+    # KiPy stores pads in definition.pads for most footprints
+    pads_source = None
+    if hasattr(fp, "pads") and fp.pads:
+        pads_source = fp.pads
+    elif hasattr(fp, "definition") and fp.definition and hasattr(fp.definition, "pads"):
+        pads_source = fp.definition.pads
+
+    if pads_source:
+        for kipy_pad in pads_source:
             try:
                 pad = _kipy_pad_to_pad(kipy_pad, fp)
                 component.pads.append(pad)
@@ -290,14 +297,26 @@ def _kipy_pad_to_pad(kipy_pad, fp) -> Pad:
     rel_x = nm_to_mm(pad_pos.x - fp_pos.x) if hasattr(pad_pos, "x") else 0
     rel_y = nm_to_mm(pad_pos.y - fp_pos.y) if hasattr(pad_pos, "y") else 0
 
-    # Get pad size
+    # Get pad size - check multiple locations
     width = 0.5
     height = 0.5
-    if hasattr(kipy_pad, "size"):
+
+    # Try direct size attribute first (older kipy)
+    if hasattr(kipy_pad, "size") and kipy_pad.size:
         size = kipy_pad.size
         if hasattr(size, "x") and hasattr(size, "y"):
             width = nm_to_mm(size.x)
             height = nm_to_mm(size.y)
+    # Try padstack.copper_layers (newer kipy)
+    elif hasattr(kipy_pad, "padstack") and kipy_pad.padstack:
+        padstack = kipy_pad.padstack
+        if hasattr(padstack, "copper_layers"):
+            layers = list(padstack.copper_layers)
+            if layers and hasattr(layers[0], "size"):
+                size = layers[0].size
+                if hasattr(size, "x") and hasattr(size, "y"):
+                    width = nm_to_mm(size.x)
+                    height = nm_to_mm(size.y)
 
     # Get net name
     net = None
@@ -314,25 +333,44 @@ def _kipy_pad_to_pad(kipy_pad, fp) -> Pad:
     elif hasattr(kipy_pad, "name"):
         number = str(kipy_pad.name)
 
-    # Get pad shape
+    # Get pad shape - check both direct and padstack locations
     shape = "rect"
+    shape_val = None
     if hasattr(kipy_pad, "shape"):
         shape_val = str(kipy_pad.shape).lower()
-        if "circle" in shape_val:
+    elif hasattr(kipy_pad, "padstack") and kipy_pad.padstack:
+        padstack = kipy_pad.padstack
+        if hasattr(padstack, "copper_layers"):
+            layers = list(padstack.copper_layers)
+            if layers and hasattr(layers[0], "shape"):
+                shape_val = str(layers[0].shape).lower()
+
+    if shape_val:
+        if "circle" in shape_val or shape_val == "0":
             shape = "circle"
-        elif "oval" in shape_val:
+        elif "oval" in shape_val or shape_val == "1":
             shape = "oval"
-        elif "roundrect" in shape_val:
+        elif "roundrect" in shape_val or shape_val == "2":
             shape = "roundrect"
 
     # Get drill size (for through-hole)
     drill = None
+    # Check direct drill attribute
     if hasattr(kipy_pad, "drill") and kipy_pad.drill:
         drill_val = kipy_pad.drill
         if hasattr(drill_val, "x"):
             drill = nm_to_mm(drill_val.x)
         elif isinstance(drill_val, (int, float)):
             drill = nm_to_mm(drill_val)
+    # Check padstack.drill
+    elif hasattr(kipy_pad, "padstack") and kipy_pad.padstack:
+        padstack = kipy_pad.padstack
+        if hasattr(padstack, "drill") and padstack.drill:
+            drill_props = padstack.drill
+            if hasattr(drill_props, "diameter"):
+                diam = drill_props.diameter
+                if hasattr(diam, "x"):
+                    drill = nm_to_mm(diam.x)
 
     return Pad(
         number=number,

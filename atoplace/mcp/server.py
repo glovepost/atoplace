@@ -557,6 +557,19 @@ def redo() -> str:
 # =============================================================================
 
 
+def _check_move_overlaps(ref: str) -> List[dict]:
+    """Check for overlaps after moving a component.
+
+    Only checks components on the same layer (top vs bottom).
+    Returns list of overlap dictionaries.
+    """
+    inspector = BoardInspector(session.board)
+    # Get all overlaps involving the moved component
+    all_overlaps = inspector.check_overlaps(same_layer_only=True)
+    # Filter to only include overlaps involving the moved component
+    return [o for o in all_overlaps if ref in o["refs"]]
+
+
 @mcp.tool()
 def move_absolute(
     ref: str, x: float, y: float, rotation: Optional[float] = None
@@ -565,6 +578,7 @@ def move_absolute(
     Move component to absolute coordinates.
 
     In kipy mode, changes appear instantly in KiCad viewport.
+    Automatically checks for overlaps with other components on the same layer.
     """
     try:
         _require_board()
@@ -578,6 +592,18 @@ def move_absolute(
         if result.success:
             session.mark_modified(result.modified_refs)
             logger.debug("Move absolute successful: %s", result.message)
+
+            # Check for overlaps after successful move
+            overlaps = _check_move_overlaps(ref)
+            if overlaps:
+                overlap_refs = [o["refs"] for o in overlaps]
+                logger.warning("Move created overlaps: %s", overlap_refs)
+                return _success_response({
+                    "success": True,
+                    "message": result.message,
+                    "warning": "Move created overlaps with other components",
+                    "overlaps": overlaps,
+                })
         else:
             logger.warning("Move absolute failed: %s", result.message)
 
@@ -601,6 +627,7 @@ def move_relative(ref: str, dx: float, dy: float) -> str:
     Move component by a relative delta.
 
     In kipy mode, changes appear instantly in KiCad viewport.
+    Automatically checks for overlaps with other components on the same layer.
     """
     try:
         _require_board()
@@ -613,6 +640,18 @@ def move_relative(ref: str, dx: float, dy: float) -> str:
 
         if result.success:
             session.mark_modified(result.modified_refs)
+
+            # Check for overlaps after successful move
+            overlaps = _check_move_overlaps(ref)
+            if overlaps:
+                overlap_refs = [o["refs"] for o in overlaps]
+                logger.warning("Move created overlaps: %s", overlap_refs)
+                return _success_response({
+                    "success": True,
+                    "message": result.message,
+                    "warning": "Move created overlaps with other components",
+                    "overlaps": overlaps,
+                })
 
         return _success_response({"success": result.success, "message": result.message})
     except Exception as e:
@@ -655,6 +694,7 @@ def place_next_to(
     Place a component next to another with specified clearance.
 
     In kipy mode, changes appear instantly in KiCad viewport.
+    Automatically checks for overlaps with other components on the same layer.
     """
     try:
         _require_board()
@@ -671,6 +711,18 @@ def place_next_to(
 
         if result.success:
             session.mark_modified(result.modified_refs)
+
+            # Check for overlaps after successful placement
+            overlaps = _check_move_overlaps(ref)
+            if overlaps:
+                overlap_refs = [o["refs"] for o in overlaps]
+                logger.warning("Placement created overlaps: %s", overlap_refs)
+                return _success_response({
+                    "success": True,
+                    "message": result.message,
+                    "warning": "Placement created overlaps with other components",
+                    "overlaps": overlaps,
+                })
 
         return _success_response({"success": result.success, "message": result.message})
     except Exception as e:

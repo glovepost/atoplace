@@ -28,7 +28,10 @@ class BoardInspector:
         self.board = board
 
     def check_overlaps(
-        self, refs: Optional[List[str]] = None, include_pads: bool = True
+        self,
+        refs: Optional[List[str]] = None,
+        include_pads: bool = True,
+        same_layer_only: bool = True,
     ) -> List[Dict[str, any]]:
         """Check for component overlaps.
 
@@ -40,12 +43,16 @@ class BoardInspector:
             include_pads: If True (default), use bounding boxes that include pad extents.
                          This catches overlaps where pads protrude beyond the component body
                          (e.g., edge-mounted connectors, irregular footprints).
+            same_layer_only: If True (default), only check overlaps between components
+                            on the same layer. Components on opposite sides of the board
+                            (e.g., TOP vs BOTTOM) cannot physically overlap.
 
         Returns:
             List of overlap dictionaries with keys:
             - refs: [ref1, ref2] - pair of overlapping component references
             - overlap_x: float - overlap distance in X axis (mm)
             - overlap_y: float - overlap distance in Y axis (mm)
+            - layer: str - the layer where the overlap occurs
         """
         # Select components to check
         components = []
@@ -60,6 +67,10 @@ class BoardInspector:
         overlaps = []
         for i, c1 in enumerate(components):
             for c2 in components[i + 1 :]:
+                # Skip components on different layers if same_layer_only is True
+                if same_layer_only and c1.layer != c2.layer:
+                    continue
+
                 # Get proper bounding boxes (with rotation and optionally pads)
                 if include_pads:
                     bbox1 = c1.get_bounding_box_with_pads()
@@ -82,6 +93,7 @@ class BoardInspector:
                             "refs": [c1.reference, c2.reference],
                             "overlap_x": round(overlap_x, 3),
                             "overlap_y": round(overlap_y, 3),
+                            "layer": c1.layer.name,
                         }
                     )
 
