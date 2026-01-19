@@ -477,7 +477,7 @@ class PlacementVisualizer:
             )
 
         # Find overlaps (format is (ref1, ref2, distance))
-        overlap_pairs = self.board.find_overlaps(clearance=0.1)
+        overlap_pairs = self.board.find_overlaps(clearance=0.1, include_pads=True)
         overlaps = [(pair[0], pair[1]) for pair in overlap_pairs]
 
         self.capture_frame(

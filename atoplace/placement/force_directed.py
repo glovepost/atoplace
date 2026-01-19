@@ -349,6 +349,7 @@ class ForceDirectedRefiner:
 
         Unlike board.find_overlaps() which uses stale board component positions,
         this method uses the current simulated positions from state.positions.
+        Uses pad-inclusive component sizes for accurate collision reporting.
 
         Args:
             state: Current placement state with simulated positions
@@ -366,21 +367,8 @@ class ForceDirectedRefiner:
                 continue
 
             x1, y1 = state.positions[ref1]
-            rot1 = state.rotations.get(ref1, comp1.rotation)
-            hw1, hh1 = comp1.width / 2, comp1.height / 2
-
-            # Compute rotated AABB for comp1
-            rad1 = math.radians(rot1)
-            cos1, sin1 = abs(math.cos(rad1)), abs(math.sin(rad1))
-            half_w1 = hw1 * cos1 + hh1 * sin1
-            half_h1 = hw1 * sin1 + hh1 * cos1
-
-            # Bounding box with clearance
-            bb1 = (
-                x1 - half_w1 - clearance,
-                y1 - half_h1 - clearance,
-                x1 + half_w1 + clearance,
-                y1 + half_h1 + clearance,
+            half_w1, half_h1 = self._component_sizes.get(
+                ref1, (max(comp1.width / 2, 0.1), max(comp1.height / 2, 0.1))
             )
 
             for ref2 in refs[i + 1 :]:
@@ -389,20 +377,14 @@ class ForceDirectedRefiner:
                     continue
 
                 x2, y2 = state.positions[ref2]
-                rot2 = state.rotations.get(ref2, comp2.rotation)
-                hw2, hh2 = comp2.width / 2, comp2.height / 2
+                half_w2, half_h2 = self._component_sizes.get(
+                    ref2, (max(comp2.width / 2, 0.1), max(comp2.height / 2, 0.1))
+                )
 
-                # Compute rotated AABB for comp2
-                rad2 = math.radians(rot2)
-                cos2, sin2 = abs(math.cos(rad2)), abs(math.sin(rad2))
-                half_w2 = hw2 * cos2 + hh2 * sin2
-                half_h2 = hw2 * sin2 + hh2 * cos2
-
-                bb2 = (x2 - half_w2, y2 - half_h2, x2 + half_w2, y2 + half_h2)
-
-                # Check AABB intersection
-                overlap_x = min(bb1[2], bb2[2]) - max(bb1[0], bb2[0])
-                overlap_y = min(bb1[3], bb2[3]) - max(bb1[1], bb2[1])
+                dx = x1 - x2
+                dy = y1 - y2
+                overlap_x = (half_w1 + half_w2 + clearance) - abs(dx)
+                overlap_y = (half_h1 + half_h2 + clearance) - abs(dy)
 
                 if overlap_x > 0 and overlap_y > 0:
                     # Penetration depth is minimum separation needed

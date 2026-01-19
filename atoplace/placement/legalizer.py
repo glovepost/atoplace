@@ -364,16 +364,11 @@ class PlacementLegalizer:
 
     def _update_component_size(self, ref: str, comp: Component):
         """Update cached size for a single component after rotation change."""
-        w, h = comp.width, comp.height
-        rot_rad = math.radians(comp.rotation)
-
-        cos_r = abs(math.cos(rot_rad))
-        sin_r = abs(math.sin(rot_rad))
-
-        half_w = (w / 2) * cos_r + (h / 2) * sin_r
-        half_h = (w / 2) * sin_r + (h / 2) * cos_r
-
-        self._component_sizes[ref] = (half_w, half_h)
+        bbox = comp.get_bounding_box_with_pads()
+        min_x, min_y, max_x, max_y = bbox
+        half_w = max(abs(max_x - comp.x), abs(comp.x - min_x))
+        half_h = max(abs(max_y - comp.y), abs(comp.y - min_y))
+        self._component_sizes[ref] = (max(half_w, 0.1), max(half_h, 0.1))
 
     def _align_rows(self) -> Tuple[int, int]:
         """
@@ -920,7 +915,7 @@ class PlacementLegalizer:
         # Also check using board.find_overlaps() to catch any geometry mismatches
         # Use check_layers=True to ignore cross-layer overlaps (TOP vs BOTTOM)
         board_overlaps = self.board.find_overlaps(
-            self.config.min_clearance, check_layers=True
+            self.config.min_clearance, check_layers=True, include_pads=True
         )
         board_overlaps = [
             (r1, r2, d)

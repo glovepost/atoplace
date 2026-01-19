@@ -658,6 +658,40 @@ class TestComponentSizes:
             or abs(original_size[1] - new_size[0]) < 0.5
         )
 
+    def test_overlap_detection_uses_pad_extents(self):
+        """Ensure overlap detection accounts for pad geometry, not just body."""
+        board = Board(name="pad_overlap_test")
+        c1 = Component(
+            reference="C1",
+            footprint="Test:PadExtents",
+            value="",
+            x=0.0,
+            y=0.0,
+            width=1.0,
+            height=1.0,
+        )
+        c1.pads = [Pad(number="1", x=1.5, y=0.0, width=1.0, height=1.0)]
+
+        c2 = Component(
+            reference="C2",
+            footprint="Test:PadExtents",
+            value="",
+            x=3.0,
+            y=0.0,
+            width=1.0,
+            height=1.0,
+        )
+        c2.pads = [Pad(number="1", x=-1.5, y=0.0, width=1.0, height=1.0)]
+
+        board.components = {"C1": c1, "C2": c2}
+        board.nets = {}
+
+        refiner = ForceDirectedRefiner(board, RefinementConfig(max_iterations=1))
+        state = refiner._initialize_state()
+        overlaps = refiner._compute_overlaps_from_state(state, clearance=0.0)
+
+        assert overlaps, "Pad-only overlaps should be detected"
+
 
 # =============================================================================
 # DNP Component Tests
